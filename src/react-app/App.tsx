@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { InboxPage } from "./pages/InboxPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ProjectPage } from "./pages/ProjectPage";
+import { ReviewPage } from "./pages/ReviewPage";
 import { SearchPage } from "./pages/SearchPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { Shell } from "./pages/Shell";
@@ -26,6 +27,7 @@ export default function App() {
 							<Route path="waiting" element={<StatusListPage status="waiting" />} />
 							<Route path="someday" element={<StatusListPage status="someday" />} />
 							<Route path="inbox" element={<InboxPage />} />
+							<Route path="review" element={<ReviewPage />} />
 							<Route path="search" element={<SearchPage />} />
 							<Route path="projects/:id" element={<ProjectPage />} />
 							<Route path="settings" element={<SettingsPage />} />

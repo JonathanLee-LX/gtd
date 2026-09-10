@@ -47,6 +47,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import {
 	CalendarDaysIcon,
+	ClipboardCheckIcon,
 	ClockIcon,
 	CloudyIcon,
 	FolderIcon,
@@ -193,6 +194,16 @@ export function Shell() {
 									>
 										<CloudyIcon />
 										<span>将来</span>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										isActive={location.pathname === "/review"}
+										tooltip="周回顾"
+										render={<NavLink to="/review" />}
+									>
+										<ClipboardCheckIcon />
+										<span>周回顾</span>
 									</SidebarMenuButton>
 								</SidebarMenuItem>
 								<SidebarMenuItem>

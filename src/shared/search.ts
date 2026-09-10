@@ -28,6 +28,6 @@ export function truncateUtf8Bytes(input: string, maxBytes: number): string {
  * Caller wraps the result as `%term%` (total ≤ {@link D1_LIKE_PATTERN_MAX_BYTES}).
  */
 export function sanitizeSearchQuery(q: string): string {
-	const cleaned = q.replaceAll("%", "").replaceAll("_", "").trim();
+	const cleaned = q.replace(/%/g, "").replace(/_/g, "").trim();
 	return truncateUtf8Bytes(cleaned, SEARCH_Q_MAX_BYTES);
 }

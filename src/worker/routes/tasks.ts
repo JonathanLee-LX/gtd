@@ -13,6 +13,7 @@ import { requireUser, type AppVariables } from "../middleware/require-user";
 import {
 	completeTask,
 	createTask,
+	deleteTask,
 	getTask,
 	listTasks,
 	todayFocus,
@@ -81,4 +82,14 @@ export const taskRoutes = new Hono<{
 			);
 			return { task };
 		}),
+	)
+	.delete("/:id", (c) =>
+		handleRoute(c, async () =>
+			deleteTask(
+				createDb(c.env.DB),
+				c.get("user").id,
+				c.req.param("id"),
+				c.get("source"),
+			),
+		),
 	);

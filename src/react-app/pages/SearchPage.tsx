@@ -68,6 +68,10 @@ export function SearchPage() {
 				await api.completeTask(id);
 				await load();
 			}}
+			onDelete={async (id) => {
+				await api.deleteTask(id);
+				await load();
+			}}
 			onReload={load}
 		/>
 	);

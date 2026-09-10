@@ -87,6 +87,8 @@ export const api = {
 		}),
 	completeTask: (id: string) =>
 		request<{ task: Task }>(`/api/tasks/${id}/complete`, { method: "POST" }),
+	deleteTask: (id: string) =>
+		request<{ ok: true }>(`/api/tasks/${id}`, { method: "DELETE" }),
 	tags: () => request<{ items: Tag[] }>("/api/tags"),
 	createTag: (name: string) =>
 		request<{ tag: Tag }>("/api/tags", {

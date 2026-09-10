@@ -1,4 +1,15 @@
 import { useEffect, useState } from "react";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+	AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -13,7 +24,7 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { CheckIcon, XIcon } from "lucide-react";
+import { CheckIcon, TrashIcon, XIcon } from "lucide-react";
 import { TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
 import type { TaskPriority, TaskStatus } from "../../shared/schemas";
 import { api, type Project, type Tag, type Task } from "../api";
@@ -32,11 +43,13 @@ export function TaskDetail({
 	projects,
 	onSave,
 	onComplete,
+	onDelete,
 }: {
 	task: Task;
 	projects: Project[];
 	onSave: (patch: Record<string, unknown>) => Promise<void>;
 	onComplete: () => Promise<void>;
+	onDelete: () => Promise<void>;
 }) {
 	const [title, setTitle] = useState(task.title);
 	const [notes, setNotes] = useState(task.notes ?? "");
@@ -49,6 +62,8 @@ export function TaskDetail({
 	const [localTags, setLocalTags] = useState<Tag[]>(task.tags);
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
+	const [deleting, setDeleting] = useState(false);
+	const [confirmOpen, setConfirmOpen] = useState(false);
 	const projectItems = projects.map((project) => ({
 		value: project.id,
 		label: project.name,
@@ -65,6 +80,7 @@ export function TaskDetail({
 		setLocalTags(task.tags);
 		setTagDraft("");
 		setError(null);
+		setConfirmOpen(false);
 	}, [task]);
 
 	async function save(event: React.FormEvent) {
@@ -86,6 +102,19 @@ export function TaskDetail({
 			setError(err instanceof Error ? err.message : "保存失败");
 		} finally {
 			setBusy(false);
+		}
+	}
+
+	async function confirmDelete() {
+		setDeleting(true);
+		setError(null);
+		try {
+			await onDelete();
+			setConfirmOpen(false);
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "删除失败");
+		} finally {
+			setDeleting(false);
 		}
 	}
 
@@ -241,15 +270,45 @@ export function TaskDetail({
 			<Badge variant="outline">来源：{task.source}</Badge>
 			{error ? <FieldError>{error}</FieldError> : null}
 			</div>
-			<div className="flex gap-2">
-				<Button type="submit" disabled={busy}>
+			<div className="flex flex-wrap gap-2">
+				<Button type="submit" disabled={busy || deleting}>
 					{busy ? <Spinner data-icon="inline-start" /> : null}
 					保存
 				</Button>
-				<Button type="button" variant="outline" onClick={() => void onComplete()}>
+				<Button type="button" variant="outline" disabled={deleting} onClick={() => void onComplete()}>
 					<CheckIcon data-icon="inline-start" />
 					完成
 				</Button>
+				<AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+					<AlertDialogTrigger
+						render={<Button type="button" variant="destructive" disabled={deleting} />}
+					>
+						<TrashIcon data-icon="inline-start" />
+						删除
+					</AlertDialogTrigger>
+					<AlertDialogContent>
+						<AlertDialogHeader>
+							<AlertDialogTitle>确认删除任务？</AlertDialogTitle>
+							<AlertDialogDescription>
+								将软删除「{task.title}」。删除后列表和今日焦点不再显示，可从数据库恢复。
+							</AlertDialogDescription>
+						</AlertDialogHeader>
+						<AlertDialogFooter>
+							<AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+							<AlertDialogAction
+								variant="destructive"
+								disabled={deleting}
+								onClick={(event) => {
+									event.preventDefault();
+									void confirmDelete();
+								}}
+							>
+								{deleting ? <Spinner data-icon="inline-start" /> : null}
+								确认删除
+							</AlertDialogAction>
+						</AlertDialogFooter>
+					</AlertDialogContent>
+				</AlertDialog>
 			</div>
 		</form>
 	);

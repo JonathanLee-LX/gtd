@@ -176,6 +176,29 @@ export async function completeTask(
 	return updateTask(db, userId, id, { status: "completed" }, source);
 }
 
+export async function deleteTask(
+	db: AppDatabase,
+	userId: string,
+	id: string,
+	source: TaskSource,
+) {
+	const current = await getTask(db, userId, id);
+	const now = nowIso();
+	await db
+		.update(tasks)
+		.set({ deletedAt: now, updatedAt: now })
+		.where(and(eq(tasks.id, id), eq(tasks.userId, userId), isNull(tasks.deletedAt)));
+	await logActivity(db, {
+		userId,
+		source,
+		action: "task.delete",
+		entityType: "task",
+		entityId: id,
+		summary: `删除任务「${current.title}」`,
+	});
+	return { ok: true as const };
+}
+
 export async function listTasks(
 	db: AppDatabase,
 	userId: string,

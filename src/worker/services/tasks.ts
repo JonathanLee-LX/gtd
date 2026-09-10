@@ -9,7 +9,7 @@ import type {
 	TaskSource,
 	UpdateTaskInput,
 } from "../../shared/schemas";
-import { dueDatePart, isFocusTask, ymdInZone } from "../../shared/today";
+import { ymdInZone } from "../../shared/today";
 import { badRequest, notFound } from "../lib/errors";
 import { newId, nowIso } from "../lib/ids";
 import { logActivity } from "./activity";
@@ -254,6 +254,26 @@ export async function todayFocus(
 	timeZone = DEFAULT_TIME_ZONE,
 ) {
 	const today = ymdInZone(new Date(), timeZone);
+	// Match isFocusTask: overdue / due today / status=next / priority=p1
+	const focusPredicate = or(
+		sql`${tasks.dueAt} is not null and substr(${tasks.dueAt}, 1, 10) < ${today}`,
+		sql`${tasks.dueAt} is not null and substr(${tasks.dueAt}, 1, 10) = ${today}`,
+		eq(tasks.status, "next"),
+		eq(tasks.priority, "p1"),
+	)!;
+	// P1 > P2 > P3 > none (text DESC would put p3 first)
+	const priorityRank = sql`case ${tasks.priority}
+		when 'p1' then 1
+		when 'p2' then 2
+		when 'p3' then 3
+		else 4
+	end`;
+	const focusRank = sql`case
+		when ${tasks.dueAt} is not null and substr(${tasks.dueAt}, 1, 10) < ${today} then 0
+		when ${tasks.dueAt} is not null and substr(${tasks.dueAt}, 1, 10) = ${today} then 1
+		when ${tasks.status} = 'next' then 2
+		else 3
+	end`;
 	const rows = await db
 		.select()
 		.from(tasks)
@@ -262,20 +282,15 @@ export async function todayFocus(
 				eq(tasks.userId, userId),
 				isNull(tasks.deletedAt),
 				sql`${tasks.status} not in ('completed', 'cancelled')`,
+				focusPredicate,
 			),
 		)
-		.orderBy(desc(tasks.priority), desc(tasks.dueAt), desc(tasks.createdAt))
-		.limit(200);
-	const focused = rows.filter((row) =>
-		isFocusTask(
-			{ status: row.status, priority: row.priority, dueAt: dueDatePart(row.dueAt) },
-			today,
-		),
-	);
+		.orderBy(priorityRank, focusRank, desc(tasks.dueAt), desc(tasks.createdAt))
+		.limit(100);
 	return {
 		today,
 		timeZone,
-		items: await hydrate(db, userId, focused.slice(0, 100)),
+		items: await hydrate(db, userId, rows),
 	};
 }
 

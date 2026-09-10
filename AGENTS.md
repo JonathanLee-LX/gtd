@@ -5,7 +5,7 @@
 ## 目录
 
 - `src/shared/` Zod 契约、焦点规则、分页游标。改任务字段先改这里。
-- `src/db/schema.ts` Drizzle 表。改表后同步 `drizzle/0001_init.sql`（或新增迁移）。
+- `src/db/schema.ts` Drizzle 表（含部分唯一索引与 FK，须与迁移一致）。改表后同步 `drizzle/0001_init.sql`（或新增 `0002_*.sql`）。
 - `src/worker/services/` 领域逻辑。禁止在 route / MCP 里写 SQL。
 - `src/worker/routes/` REST。入口把 `source` 设成 `human` 或 `mcp`。
 - `src/worker/mcp/` MCP JSON-RPC。工具要少，优先 `today_focus`。

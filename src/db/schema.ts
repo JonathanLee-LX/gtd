@@ -6,6 +6,7 @@ import {
 	sqliteTable,
 	text,
 	uniqueIndex,
+	type AnySQLiteColumn,
 } from "drizzle-orm/sqlite-core";
 
 export const user = sqliteTable("user", {
@@ -106,7 +107,12 @@ export const projects = sqliteTable(
 		createdAt: text("created_at").notNull(),
 		updatedAt: text("updated_at").notNull(),
 	},
-	(table) => [index("projects_user_id_idx").on(table.userId)],
+	(table) => [
+		index("projects_user_id_idx").on(table.userId),
+		uniqueIndex("projects_one_inbox")
+			.on(table.userId)
+			.where(sql`${table.isInbox} = 1`),
+	],
 );
 
 export const tasks = sqliteTable(
@@ -126,7 +132,9 @@ export const tasks = sqliteTable(
 		dueAt: text("due_at"),
 		startAt: text("start_at"),
 		completedAt: text("completed_at"),
-		parentId: text("parent_id"),
+		parentId: text("parent_id").references((): AnySQLiteColumn => tasks.id, {
+			onDelete: "set null",
+		}),
 		waitingOn: text("waiting_on"),
 		source: text("source").default("human").notNull(),
 		idempotencyKey: text("idempotency_key"),
@@ -138,6 +146,9 @@ export const tasks = sqliteTable(
 		index("tasks_user_status_idx").on(table.userId, table.status),
 		index("tasks_user_due_idx").on(table.userId, table.dueAt),
 		index("tasks_user_project_idx").on(table.userId, table.projectId),
+		uniqueIndex("tasks_user_idempotency_idx")
+			.on(table.userId, table.idempotencyKey)
+			.where(sql`${table.idempotencyKey} IS NOT NULL`),
 	],
 );
 

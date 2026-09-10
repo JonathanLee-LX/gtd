@@ -90,13 +90,17 @@ export const MCP_TOOLS = [
 	{
 		name: "create_task",
 		description:
-			"创建任务。不传 projectId 时进入收件箱。建议传 idempotencyKey 避免重复创建。dueAt 用 YYYY-MM-DD。",
+			"创建任务。不传 projectId 时进入收件箱。可选 parentId 挂到已有任务下（禁止成环）。建议传 idempotencyKey 避免重复创建。dueAt 用 YYYY-MM-DD。",
 		inputSchema: {
 			type: "object",
 			properties: {
 				title: { type: "string" },
 				notes: { type: "string" },
 				projectId: { type: "string" },
+				parentId: {
+					type: ["string", "null"],
+					description: "父任务 id；省略或 null 表示顶层。不能指向自身或形成循环。",
+				},
 				status: {
 					type: "string",
 					enum: ["inbox", "next", "waiting", "scheduled", "someday", "completed", "cancelled"],
@@ -112,7 +116,7 @@ export const MCP_TOOLS = [
 	},
 	{
 		name: "update_task",
-		description: "部分更新任务字段。完成任务请改用 complete_task。",
+		description: "部分更新任务字段。可改 parentId（null 取消父子）；禁止成环。完成任务请改用 complete_task。",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -120,6 +124,10 @@ export const MCP_TOOLS = [
 				title: { type: "string" },
 				notes: { type: "string" },
 				projectId: { type: "string" },
+				parentId: {
+					type: ["string", "null"],
+					description: "父任务 id；null 表示顶层。不能指向自身或形成循环。",
+				},
 				status: {
 					type: "string",
 					enum: ["inbox", "next", "waiting", "scheduled", "someday", "completed", "cancelled"],

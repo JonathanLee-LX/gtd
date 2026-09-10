@@ -13,12 +13,19 @@
 | `today_focus` | 逾期 + 今天 + 下一步 + P1 |
 | `list_projects` / `create_project` | 项目 |
 | `list_tasks` / `get_task` / `search_tasks` | 查询 |
-| `create_task` | 创建（建议 `idempotencyKey`） |
-| `update_task` | 部分更新 |
+| `create_task` | 创建（建议 `idempotencyKey`；可选 `parentId` 挂子任务） |
+| `update_task` | 部分更新（可改 `parentId`，`null` 取消父子） |
 | `complete_task` | 完成 |
 | `delete_task` | 软删除 |
 
 `dueAt` 使用 `YYYY-MM-DD`。
+
+### `parentId` 子任务
+
+- `create_task` / `update_task` 可传 `parentId`（任务 id）把当前任务挂到父任务下。
+- 省略或 `null` 表示顶层任务。
+- 服务端会拒绝自引用与成环（例如 A 父是 B、B 父是 A）。
+- 硬删除父任务时，子任务的 `parent_id` 由数据库 `ON DELETE SET NULL` 清成顶层。
 
 ## 客户端配置示例
 

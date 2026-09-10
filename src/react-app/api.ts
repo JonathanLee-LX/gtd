@@ -22,6 +22,7 @@ export type Task = {
 	waitingOn: string | null;
 	projectId: string;
 	projectName: string;
+	parentId: string | null;
 	source: string;
 	createdAt: string;
 	updatedAt: string;

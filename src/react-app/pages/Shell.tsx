@@ -47,8 +47,11 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import {
 	CalendarDaysIcon,
+	ClockIcon,
+	CloudyIcon,
 	FolderIcon,
 	InboxIcon,
+	ListTodoIcon,
 	LogOutIcon,
 	PlusIcon,
 	SearchIcon,
@@ -162,6 +165,36 @@ export function Shell() {
 										</SidebarMenuButton>
 									</SidebarMenuItem>
 								) : null}
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										isActive={location.pathname === "/next"}
+										tooltip="下一步"
+										render={<NavLink to="/next" />}
+									>
+										<ListTodoIcon />
+										<span>下一步</span>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										isActive={location.pathname === "/waiting"}
+										tooltip="等待"
+										render={<NavLink to="/waiting" />}
+									>
+										<ClockIcon />
+										<span>等待</span>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										isActive={location.pathname === "/someday"}
+										tooltip="将来"
+										render={<NavLink to="/someday" />}
+									>
+										<CloudyIcon />
+										<span>将来</span>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
 								<SidebarMenuItem>
 									<SidebarMenuButton
 										isActive={location.pathname === "/search"}

@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import type { WorkerEnv } from "../lib/auth";
 import { userFromBearer } from "../services/tokens";
 import { AppError } from "../lib/errors";
+import type { AppDatabase } from "../../db/client";
 import { callMcpTool, MCP_TOOLS } from "./tools";
 
 type JsonRpc = {
@@ -12,6 +13,8 @@ type JsonRpc = {
 	method?: string;
 	params?: Record<string, unknown>;
 };
+
+type AuthContext = { db: AppDatabase; userId: string };
 
 function jsonRpcResult(id: string | number | null | undefined, result: unknown) {
 	return { jsonrpc: "2.0", id: id ?? null, result };
@@ -25,7 +28,9 @@ function jsonRpcError(
 	return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
 }
 
-async function authenticate(request: Request, env: WorkerEnv) {
+const AUTH_REQUIRED = "需要 Authorization: Bearer gtd_... Token";
+
+async function authenticate(request: Request, env: WorkerEnv): Promise<AuthContext | null> {
 	const header = request.headers.get("authorization");
 	if (!header?.startsWith("Bearer ")) return null;
 	const db = createDb(env.DB);
@@ -35,7 +40,7 @@ async function authenticate(request: Request, env: WorkerEnv) {
 	return rows[0] ? { db, userId: rows[0].id } : null;
 }
 
-async function handleOne(request: Request, env: WorkerEnv, body: JsonRpc) {
+async function handleOne(auth: AuthContext, body: JsonRpc) {
 	const id = body.id ?? null;
 	const method = body.method ?? "";
 	const isNotification = body.id === undefined;
@@ -63,8 +68,6 @@ async function handleOne(request: Request, env: WorkerEnv, body: JsonRpc) {
 	if (method === "resources/list") return jsonRpcResult(id, { resources: [] });
 	if (method === "prompts/list") return jsonRpcResult(id, { prompts: [] });
 	if (method === "tools/call") {
-		const auth = await authenticate(request, env);
-		if (!auth) return jsonRpcError(id, -32001, "需要 Authorization: Bearer gtd_... Token");
 		const params = body.params ?? {};
 		const name = String(params.name ?? "");
 		const args =
@@ -126,16 +129,32 @@ export async function handleMcp(request: Request, env: WorkerEnv): Promise<Respo
 		);
 	}
 
+	const auth = await authenticate(request, env);
+	if (!auth) {
+		if (Array.isArray(payload)) {
+			return Response.json(
+				payload.map((item) =>
+					jsonRpcError((item as JsonRpc)?.id ?? null, -32001, AUTH_REQUIRED),
+				),
+				{ headers: cors },
+			);
+		}
+		return Response.json(
+			jsonRpcError((payload as JsonRpc)?.id ?? null, -32001, AUTH_REQUIRED),
+			{ headers: cors },
+		);
+	}
+
 	if (Array.isArray(payload)) {
 		const results = [];
 		for (const item of payload) {
-			const result = await handleOne(request, env, item as JsonRpc);
+			const result = await handleOne(auth, item as JsonRpc);
 			if (result) results.push(result);
 		}
 		return Response.json(results, { headers: cors });
 	}
 
-	const result = await handleOne(request, env, payload as JsonRpc);
+	const result = await handleOne(auth, payload as JsonRpc);
 	if (!result) return new Response(null, { status: 202, headers: cors });
 	return Response.json(result, { headers: cors });
 }

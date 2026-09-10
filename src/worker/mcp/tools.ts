@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createTaskInput, updateTaskInput } from "../../shared/schemas";
+import { createTagInput, createTaskInput, updateTaskInput } from "../../shared/schemas";
 import type { AppDatabase } from "../../db/client";
 import {
 	completeTask,
@@ -11,6 +11,7 @@ import {
 	updateTask,
 } from "../services/tasks";
 import { createProject, listProjects } from "../services/projects";
+import { createTag, listTags } from "../services/tags";
 
 const listTasksToolInput = z.object({
 	status: z
@@ -37,6 +38,21 @@ export const MCP_TOOLS = [
 				name: { type: "string" },
 				color: { type: "string" },
 			},
+			required: ["name"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "list_tags",
+		description: "列出当前用户的所有标签。了解今天该做什么请优先用 today_focus。",
+		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+	},
+	{
+		name: "create_tag",
+		description: "创建标签。同名已存在则返回已有标签。",
+		inputSchema: {
+			type: "object",
+			properties: { name: { type: "string" } },
 			required: ["name"],
 			additionalProperties: false,
 		},
@@ -158,6 +174,12 @@ export async function callMcpTool(
 		case "create_project": {
 			const input = z.object({ name: z.string(), color: z.string().optional() }).parse(args);
 			return { project: await createProject(db, userId, input, "mcp") };
+		}
+		case "list_tags":
+			return { items: await listTags(db, userId) };
+		case "create_tag": {
+			const input = createTagInput.parse(args);
+			return { tag: await createTag(db, userId, input.name, "mcp") };
 		}
 		case "list_tasks":
 			return listTasks(db, userId, listTasksToolInput.parse(args));

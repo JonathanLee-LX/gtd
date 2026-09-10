@@ -8,8 +8,16 @@ export type WorkerEnv = {
 	DB: D1Database;
 	BETTER_AUTH_SECRET: string;
 	BETTER_AUTH_URL?: string;
+	/** Explicitly enable email/password signup. Default off (secure for public workers.dev). */
+	ALLOW_SIGNUP?: string;
 	XAI_API_KEY?: string;
 };
+
+/** Signup is off unless ALLOW_SIGNUP is explicitly "true" or "1". */
+export function isSignupEnabled(env: Pick<WorkerEnv, "ALLOW_SIGNUP">): boolean {
+	const raw = env.ALLOW_SIGNUP?.trim().toLowerCase();
+	return raw === "true" || raw === "1";
+}
 
 export function createAuth(env: WorkerEnv, db: AppDatabase, origin: string) {
 	const baseURL = env.BETTER_AUTH_URL || origin;
@@ -19,6 +27,7 @@ export function createAuth(env: WorkerEnv, db: AppDatabase, origin: string) {
 		trustedOrigins: [baseURL, "http://localhost:5173", "http://127.0.0.1:5173"],
 		emailAndPassword: {
 			enabled: true,
+			disableSignUp: !isSignupEnabled(env),
 			minPasswordLength: 8,
 		},
 		database: drizzleAdapter(db, {

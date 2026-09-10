@@ -221,5 +221,29 @@ describe("task service", () => {
 					item.tags.some((t) => t.id === tag.id),
 			),
 		).toBe(true);
+	it("searches by short keyword", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		await createTask(db as never, me.id, { title: "写周报" }, "human");
+		await createTask(db as never, me.id, { title: "买菜" }, "human");
+		const listed = await listTasks(db as never, me.id, { q: "周报" });
+		expect(listed.items.map((item) => item.title)).toEqual(["写周报"]);
+	});
+
+	it("truncates overlong Chinese search instead of failing", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		// 16×测 == 48 UTF-8 bytes == SEARCH_Q_MAX_BYTES; longer input is truncated to this.
+		const prefix = "测".repeat(16);
+		await createTask(
+			db as never,
+			me.id,
+			{ title: `${prefix}还有下文`, notes: "备注" },
+			"human",
+		);
+		await createTask(db as never, me.id, { title: "无关任务" }, "human");
+		const overlong = "测".repeat(40);
+		const listed = await listTasks(db as never, me.id, { q: overlong });
+		expect(listed.items.map((item) => item.title)).toEqual([`${prefix}还有下文`]);
 	});
 });

@@ -51,7 +51,7 @@ export function SearchPage() {
 	return (
 		<TaskBoard
 			title={title}
-			hint="按标题、备注搜索；也可以按标签筛选。"
+			hint="按标题、备注搜索；也可以按标签筛选。过长关键词会自动截断以适配数据库限制。"
 			placeholder="新建一条下一步任务"
 			tasks={tasks}
 			projects={projects}

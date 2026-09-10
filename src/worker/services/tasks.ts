@@ -1,5 +1,5 @@
-import { and, desc, eq, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
-import { projects, tasks } from "../../db/schema";
+import { and, desc, eq, exists, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
+import { projects, taskTags, tasks } from "../../db/schema";
 import type { AppDatabase } from "../../db/client";
 import { DEFAULT_PAGE_SIZE, DEFAULT_TIME_ZONE } from "../../shared/constants";
 import { decodeCursor, encodeCursor } from "../../shared/cursor";
@@ -205,6 +205,22 @@ export async function listTasks(
 		filters.push(isNull(tasks.dueAt));
 	}
 
+	if (query.tagId) {
+		filters.push(
+			exists(
+				db
+					.select({ _: sql`1` })
+					.from(taskTags)
+					.where(
+						and(
+							eq(taskTags.taskId, tasks.id),
+							eq(taskTags.tagId, query.tagId),
+						),
+					),
+			),
+		);
+	}
+
 	if (query.cursor) {
 		const cursor = decodeCursor(query.cursor);
 		if (!cursor) throw badRequest("无效的分页游标", "invalid_cursor");
@@ -223,20 +239,9 @@ export async function listTasks(
 		.orderBy(desc(tasks.createdAt), desc(tasks.id))
 		.limit(limit + 1);
 
-	let tagFiltered = rows;
-	if (query.tagId) {
-		const tagMap = await tagsForTasks(
-			db,
-			rows.map((row) => row.id),
-		);
-		tagFiltered = rows.filter((row) =>
-			(tagMap.get(row.id) ?? []).some((tag) => tag.id === query.tagId),
-		);
-	}
-
-	const page = tagFiltered.slice(0, limit);
+	const page = rows.slice(0, limit);
 	const next =
-		tagFiltered.length > limit
+		rows.length > limit
 			? encodeCursor({
 					createdAt: page[page.length - 1]!.createdAt,
 					id: page[page.length - 1]!.id,

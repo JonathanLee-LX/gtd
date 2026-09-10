@@ -1,6 +1,10 @@
+import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { tasks } from "../../db/schema";
 import { createTestDb, seedUser } from "../test/db";
+import { nowIso } from "../lib/ids";
 import { createProject } from "./projects";
+import { createTag } from "./tags";
 import { completeTask, createTask, listTasks, todayFocus, updateTask } from "./tasks";
 
 describe("task service", () => {
@@ -136,5 +140,86 @@ describe("task service", () => {
 		const next = await updateTask(db as never, me.id, task.id, { status: "next" }, "ai");
 		expect(next.status).toBe("next");
 		expect(next.source).toBe("human");
+	});
+
+	it("paginates tag-filtered tasks across pages without skip or dup", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		const tag = await createTag(db as never, me.id, "工作", "human");
+		const other = await createTag(db as never, me.id, "生活", "human");
+
+		const tagged: string[] = [];
+		for (let i = 0; i < 5; i++) {
+			const task = await createTask(
+				db as never,
+				me.id,
+				{ title: `tagged-${i}`, tagIds: [tag.id] },
+				"human",
+			);
+			tagged.push(task.id);
+		}
+		await createTask(
+			db as never,
+			me.id,
+			{ title: "untagged", tagIds: [] },
+			"human",
+		);
+		await createTask(
+			db as never,
+			me.id,
+			{ title: "other-tag", tagIds: [other.id] },
+			"human",
+		);
+		const deleted = await createTask(
+			db as never,
+			me.id,
+			{ title: "deleted-tagged", tagIds: [tag.id] },
+			"human",
+		);
+		await db
+			.update(tasks)
+			.set({ deletedAt: nowIso() })
+			.where(eq(tasks.id, deleted.id));
+
+		const limit = 2;
+		const page1 = await listTasks(db as never, me.id, { tagId: tag.id, limit });
+		expect(page1.items).toHaveLength(limit);
+		expect(page1.nextCursor).toBeTruthy();
+		expect(page1.items.every((item) => item.tags.some((t) => t.id === tag.id))).toBe(
+			true,
+		);
+
+		const page2 = await listTasks(db as never, me.id, {
+			tagId: tag.id,
+			limit,
+			cursor: page1.nextCursor!,
+		});
+		expect(page2.items).toHaveLength(limit);
+		expect(page2.nextCursor).toBeTruthy();
+
+		const page3 = await listTasks(db as never, me.id, {
+			tagId: tag.id,
+			limit,
+			cursor: page2.nextCursor!,
+		});
+		expect(page3.items).toHaveLength(1);
+		expect(page3.nextCursor).toBeNull();
+
+		const allIds = [
+			...page1.items,
+			...page2.items,
+			...page3.items,
+		].map((item) => item.id);
+		expect(allIds).toHaveLength(5);
+		expect(new Set(allIds).size).toBe(5);
+		expect(allIds.sort()).toEqual([...tagged].sort());
+		expect(allIds).not.toContain(deleted.id);
+		expect(
+			[...page1.items, ...page2.items, ...page3.items].every(
+				(item) =>
+					item.title.startsWith("tagged-") &&
+					item.tags.some((t) => t.id === tag.id),
+			),
+		).toBe(true);
 	});
 });

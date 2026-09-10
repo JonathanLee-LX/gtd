@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+:root {
+	--paper: #f3efe4;
+	--ink: #1c1915;
+	--muted: #6b6458;
+	--line: #ddd4c4;
+	--forest: #1f2a24;
+	--forest-2: #2a3b32;
+	--leaf: #c8e0c2;
+	--ember: #c45c26;
+	--gold: #c9a227;
+}
+
+html,
+body,
+#root {
+	height: 100%;
+	margin: 0;
+}
+
+body {
+	font-family:
+		"PingFang SC", "Hiragino Sans GB", "Noto Sans SC", ui-sans-serif, system-ui,
+		sans-serif;
+	background: var(--paper);
+	color: var(--ink);
+}
+
+button,
+input,
+select,
+textarea {
+	font: inherit;
+}
+
+::selection {
+	background: #ead7a8;
+}

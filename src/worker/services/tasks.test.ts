@@ -5,7 +5,7 @@ import { createTestDb, seedUser } from "../test/db";
 import { nowIso } from "../lib/ids";
 import { createProject } from "./projects";
 import { createTag } from "./tags";
-import { completeTask, createTask, listTasks, todayFocus, updateTask } from "./tasks";
+import { completeTask, createTask, deleteTask, getTask, listTasks, todayFocus, updateTask } from "./tasks";
 
 describe("task service", () => {
 	it("isolates users and honors idempotency", async () => {
@@ -248,4 +248,34 @@ describe("task service", () => {
 		const listed = await listTasks(db as never, me.id, { q: overlong });
 		expect(listed.items.map((item) => item.title)).toEqual([`${prefix}还有下文`]);
 	});
+
+it("soft-deletes tasks: gone from lists/focus, get 404, row remains", async () => {
+		const { db, sqlite } = createTestDb();
+		const me = await seedUser(db);
+		const task = await createTask(
+			db as never,
+			me.id,
+			{ title: "误建", status: "next", priority: "p1", dueAt: "2020-01-01" },
+			"human",
+		);
+		const result = await deleteTask(db as never, me.id, task.id, "mcp");
+		expect(result).toEqual({ ok: true });
+
+		const listed = await listTasks(db as never, me.id, {});
+		expect(listed.items.map((item) => item.id)).not.toContain(task.id);
+
+		const focus = await todayFocus(db as never, me.id, "Asia/Shanghai");
+		expect(focus.items.map((item) => item.id)).not.toContain(task.id);
+
+		await expect(getTask(db as never, me.id, task.id)).rejects.toMatchObject({
+			status: 404,
+			code: "not_found",
+		});
+
+		const row = sqlite.prepare("select deleted_at from tasks where id = ?").get(task.id) as {
+			deleted_at: string | null;
+		};
+		expect(row.deleted_at).toBeTruthy();
+});
+
 });

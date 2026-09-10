@@ -4,6 +4,7 @@ import type { AppDatabase } from "../../db/client";
 import {
 	completeTask,
 	createTask,
+	deleteTask,
 	getTask,
 	listTasks,
 	searchTasks,
@@ -142,6 +143,16 @@ export const MCP_TOOLS = [
 		},
 	},
 	{
+		name: "delete_task",
+		description: "软删除任务。删除后列表/今日焦点不再出现，GET 返回不存在。",
+		inputSchema: {
+			type: "object",
+			properties: { id: { type: "string" } },
+			required: ["id"],
+			additionalProperties: false,
+		},
+	},
+	{
 		name: "search_tasks",
 		description: "按标题/备注搜索，包含已完成任务。",
 		inputSchema: {
@@ -199,6 +210,10 @@ export async function callMcpTool(
 		case "complete_task": {
 			const input = z.object({ id: z.string() }).parse(args);
 			return { task: await completeTask(db, userId, input.id, "mcp") };
+		}
+		case "delete_task": {
+			const input = z.object({ id: z.string() }).parse(args);
+			return deleteTask(db, userId, input.id, "mcp");
 		}
 		case "search_tasks": {
 			const input = z.object({ q: z.string(), tz: z.string().optional() }).parse(args);

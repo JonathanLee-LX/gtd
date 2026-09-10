@@ -16,6 +16,7 @@
 | `create_task` | 创建（建议 `idempotencyKey`） |
 | `update_task` | 部分更新 |
 | `complete_task` | 完成 |
+| `delete_task` | 软删除 |
 
 `dueAt` 使用 `YYYY-MM-DD`。
 

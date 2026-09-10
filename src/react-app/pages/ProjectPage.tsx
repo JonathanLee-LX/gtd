@@ -54,6 +54,10 @@ export function ProjectPage() {
 				await api.completeTask(taskId);
 				await load();
 			}}
+			onDelete={async (taskId) => {
+				await api.deleteTask(taskId);
+				await load();
+			}}
 			onReload={load}
 		/>
 	);

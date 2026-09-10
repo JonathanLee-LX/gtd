@@ -45,6 +45,7 @@ export function TaskBoard({
 	onCreate,
 	onSave,
 	onComplete,
+	onDelete,
 	onReload,
 }: {
 	title: string;
@@ -56,6 +57,7 @@ export function TaskBoard({
 	onCreate: (title: string) => Promise<void>;
 	onSave: (id: string, patch: Record<string, unknown>) => Promise<void>;
 	onComplete: (id: string) => Promise<void>;
+	onDelete: (id: string) => Promise<void>;
 	onReload?: () => Promise<void>;
 }) {
 	const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -71,6 +73,11 @@ export function TaskBoard({
 			projects={projects}
 			onSave={(patch) => onSave(selected.id, patch)}
 			onComplete={() => onComplete(selected.id)}
+			onDelete={async () => {
+				const id = selected.id;
+				await onDelete(id);
+				setSelectedId(null);
+			}}
 		/>
 	) : null;
 

@@ -21,12 +21,14 @@
 
 ## 客户端配置示例
 
+Cursor 全局配置：`~/.cursor/mcp.json`
+
 ```json
 {
   "mcpServers": {
     "gtd": {
       "type": "http",
-      "url": "http://localhost:5173/mcp",
+      "url": "https://gtd.jonathanleelx.workers.dev/mcp",
       "headers": {
         "Authorization": "Bearer gtd_your_token"
       }
@@ -34,3 +36,5 @@
   }
 }
 ```
+
+本地开发可把 `url` 换成 `http://localhost:5173/mcp`。改完后在 Cursor 里打开 **Settings → MCP**，确认 `gtd` 已启用；必要时 Reload。

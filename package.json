@@ -49,7 +49,7 @@
 		"build": "tsc -b && vite build",
 		"cf-typegen": "wrangler types",
 		"check": "tsc -b && vitest run && vite build && wrangler deploy --dry-run",
-		"deploy": "wrangler deploy",
+		"deploy": "vite build && wrangler deploy",
 		"dev": "vite",
 		"db:migrate:local": "wrangler d1 migrations apply gtd --local",
 		"db:migrate": "wrangler d1 migrations apply gtd --remote",

@@ -8,6 +8,7 @@ import { ProjectPage } from "./pages/ProjectPage";
 import { SearchPage } from "./pages/SearchPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { Shell } from "./pages/Shell";
+import { StatusListPage } from "./pages/StatusListPage";
 import { TodayPage } from "./pages/TodayPage";
 
 export default function App() {
@@ -21,6 +22,9 @@ export default function App() {
 						<Route path="/" element={<Shell />}>
 							<Route index element={<Navigate to="/today" replace />} />
 							<Route path="today" element={<TodayPage />} />
+							<Route path="next" element={<StatusListPage status="next" />} />
+							<Route path="waiting" element={<StatusListPage status="waiting" />} />
+							<Route path="someday" element={<StatusListPage status="someday" />} />
 							<Route path="inbox" element={<InboxPage />} />
 							<Route path="search" element={<SearchPage />} />
 							<Route path="projects/:id" element={<ProjectPage />} />

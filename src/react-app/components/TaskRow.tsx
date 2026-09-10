@@ -51,6 +51,9 @@ export function TaskRow({
 						{task.dueAt ? (
 							<Badge variant={overdue ? "destructive" : "outline"}>{dueLabel(task.dueAt)}</Badge>
 						) : null}
+						{task.waitingOn ? (
+							<Badge variant="secondary">等谁：{task.waitingOn}</Badge>
+						) : null}
 					</div>
 				</button>
 				{task.tags.length > 0 ? (

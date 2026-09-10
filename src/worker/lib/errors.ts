@@ -24,3 +24,7 @@ export function unauthorized(): AppError {
 export function serviceUnavailable(message: string): AppError {
 	return new AppError(503, "unavailable", message);
 }
+
+export function tooManyRequests(message: string): AppError {
+	return new AppError(429, "rate_limited", message);
+}

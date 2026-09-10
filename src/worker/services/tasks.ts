@@ -9,6 +9,7 @@ import type {
 	TaskSource,
 	UpdateTaskInput,
 } from "../../shared/schemas";
+import { sanitizeSearchQuery } from "../../shared/search";
 import { ymdInZone } from "../../shared/today";
 import { badRequest, notFound } from "../lib/errors";
 import { newId, nowIso } from "../lib/ids";
@@ -192,8 +193,12 @@ export async function listTasks(
 		filters.push(sql`${tasks.status} not in ('completed', 'cancelled')`);
 	}
 	if (query.q) {
-		const needle = `%${query.q.replaceAll("%", "").replaceAll("_", "")}%`;
-		filters.push(or(like(tasks.title, needle), like(tasks.notes, needle))!);
+		const term = sanitizeSearchQuery(query.q);
+		if (term) {
+			const needle = `%${term}%`;
+			// D1 LIKE/GLOB patterns are capped at 50 UTF-8 bytes (`%` + term + `%`).
+			filters.push(or(like(tasks.title, needle), like(tasks.notes, needle))!);
+		}
 	}
 	if (query.due === "overdue") {
 		filters.push(sql`${tasks.dueAt} is not null and ${tasks.dueAt} < ${today}`);

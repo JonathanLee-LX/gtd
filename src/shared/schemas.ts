@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SEARCH_Q_MAX_CHARS } from "./search";
 
 export const taskStatusSchema = z.enum([
 	"inbox",
@@ -63,7 +64,7 @@ export const listTasksQuery = z.object({
 	tagId: z.string().min(1).optional(),
 	priority: taskPrioritySchema.optional(),
 	due: z.enum(["overdue", "today", "upcoming", "none"]).optional(),
-	q: z.string().max(200).optional(),
+	q: z.string().max(SEARCH_Q_MAX_CHARS).optional(),
 	includeCompleted: z.enum(["true", "false"]).optional(),
 	limit: z.coerce.number().int().min(1).max(100).optional(),
 	cursor: z.string().optional(),

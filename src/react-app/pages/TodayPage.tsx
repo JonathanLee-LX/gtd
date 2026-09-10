@@ -23,7 +23,13 @@ export function TodayPage() {
 		void load();
 	}, []);
 
-	if (error) return <p className="p-8 text-[#8a3b2b]">{error}</p>;
+	if (error) {
+		return (
+			<p className="p-6 text-sm text-destructive" role="alert">
+				{error}
+			</p>
+		);
+	}
 
 	return (
 		<TaskBoard

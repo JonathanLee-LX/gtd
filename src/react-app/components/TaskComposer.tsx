@@ -1,4 +1,13 @@
 import { useState } from "react";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import {
+	InputGroup,
+	InputGroupAddon,
+	InputGroupButton,
+	InputGroupInput,
+} from "@/components/ui/input-group";
+import { Spinner } from "@/components/ui/spinner";
+import { PlusIcon } from "lucide-react";
 
 export function TaskComposer({
 	placeholder,
@@ -28,23 +37,28 @@ export function TaskComposer({
 	}
 
 	return (
-		<form onSubmit={submit} className="mb-4">
-			<div className="flex gap-2">
-				<input
-					value={title}
-					onChange={(event) => setTitle(event.target.value)}
-					placeholder={placeholder}
-					className="w-full rounded-xl border border-[#ddd4c4] bg-white px-4 py-3 outline-none ring-[#c9a227] placeholder:text-[#9a9080] focus:ring-2"
-				/>
-				<button
-					type="submit"
-					disabled={busy}
-					className="shrink-0 rounded-xl bg-[#1f2a24] px-4 py-3 text-white disabled:opacity-50"
-				>
-					添加
-				</button>
-			</div>
-			{error ? <p className="mt-2 text-sm text-[#8a3b2b]">{error}</p> : null}
+		<form onSubmit={submit}>
+			<Field data-invalid={error ? true : undefined}>
+				<FieldLabel htmlFor="task-title" className="sr-only">
+					新任务
+				</FieldLabel>
+				<InputGroup className="h-10">
+					<InputGroupInput
+						id="task-title"
+						value={title}
+						onChange={(event) => setTitle(event.target.value)}
+						placeholder={placeholder}
+						aria-invalid={Boolean(error)}
+					/>
+					<InputGroupAddon align="inline-end">
+						<InputGroupButton type="submit" variant="default" size="sm" disabled={busy} aria-label="添加">
+							{busy ? <Spinner data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}
+							<span className="max-sm:hidden">添加</span>
+						</InputGroupButton>
+					</InputGroupAddon>
+				</InputGroup>
+				{error ? <FieldError>{error}</FieldError> : null}
+			</Field>
 		</form>
 	);
 }

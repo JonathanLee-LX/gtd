@@ -1,3 +1,7 @@
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { CircleIcon } from "lucide-react";
 import type { Task } from "../api";
 import { dueLabel, priorityLabel, statusLabel } from "../lib/format";
 
@@ -15,33 +19,40 @@ export function TaskRow({
 	const overdue = Boolean(task.dueAt && dueLabel(task.dueAt).startsWith("逾期"));
 	return (
 		<div
-			className={`flex items-start gap-3 rounded-xl border px-3 py-3 ${
-				active ? "border-[#c9a227] bg-white" : "border-transparent hover:bg-white/70"
-			}`}
+			className={cn(
+				"flex items-start gap-2 rounded-lg border border-transparent px-2 py-2",
+				active ? "border-border bg-muted/60" : "hover:bg-muted/40",
+			)}
 		>
-			<button
+			<Button
 				type="button"
+				variant="ghost"
+				size="icon-xs"
 				aria-label="完成任务"
+				className="mt-0.5"
 				onClick={onComplete}
-				className="mt-1 h-4 w-4 shrink-0 rounded-full border border-[#7d7466] bg-transparent"
-			/>
+			>
+				<CircleIcon />
+			</Button>
 			<button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
 				<div className="flex flex-wrap items-center gap-2">
 					<span className="font-medium">{task.title}</span>
 					{task.priority !== "none" ? (
-						<span className="text-xs text-[#c45c26]">{priorityLabel(task.priority)}</span>
+						<Badge variant={task.priority === "p1" ? "destructive" : "secondary"}>
+							{priorityLabel(task.priority)}
+						</Badge>
 					) : null}
 				</div>
-				<div className="mt-1 flex flex-wrap gap-2 text-xs text-[#6b6458]">
-					<span>{statusLabel(task.status)}</span>
-					{task.projectName && task.projectName !== statusLabel(task.status) ? (
-						<span>{task.projectName}</span>
-					) : null}
+				<div className="mt-1 flex flex-wrap items-center gap-1.5">
+					<Badge variant="outline">{statusLabel(task.status)}</Badge>
+					{task.projectName ? <Badge variant="ghost">{task.projectName}</Badge> : null}
 					{task.dueAt ? (
-						<span className={overdue ? "text-[#8a3b2b]" : ""}>{dueLabel(task.dueAt)}</span>
+						<Badge variant={overdue ? "destructive" : "outline"}>{dueLabel(task.dueAt)}</Badge>
 					) : null}
 					{task.tags.map((tag) => (
-						<span key={tag.id}>#{tag.name}</span>
+						<Badge key={tag.id} variant="secondary">
+							#{tag.name}
+						</Badge>
 					))}
 				</div>
 			</button>

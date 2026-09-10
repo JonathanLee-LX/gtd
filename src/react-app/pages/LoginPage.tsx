@@ -1,5 +1,19 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+	Card,
+	CardContent,
+	CardDescription,
+	CardFooter,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import { CircleAlertIcon } from "lucide-react";
 import { api } from "../api";
 
 export function LoginPage() {
@@ -30,57 +44,77 @@ export function LoginPage() {
 	}
 
 	return (
-		<div className="flex min-h-full items-center justify-center bg-[#1f2a24] p-6">
-			<form
-				onSubmit={submit}
-				className="w-full max-w-md rounded-2xl bg-[#f3efe4] p-8 shadow-xl"
-			>
-				<p className="text-sm tracking-[0.2em] text-[#6b6458]">PERSONAL GTD</p>
-				<h1 className="mt-2 text-3xl">把今天该做的事交给系统和助手</h1>
-				<p className="mt-3 text-sm text-[#6b6458]">
-					同一套任务，网页和 MCP 都能读写。
-				</p>
-				{mode === "up" ? (
-					<input
-						className="mt-6 w-full rounded-xl border border-[#ddd4c4] bg-white px-4 py-3"
-						placeholder="名字"
-						value={name}
-						onChange={(event) => setName(event.target.value)}
-					/>
-				) : null}
-				<input
-					className="mt-3 w-full rounded-xl border border-[#ddd4c4] bg-white px-4 py-3"
-					placeholder="邮箱"
-					type="email"
-					value={email}
-					onChange={(event) => setEmail(event.target.value)}
-					required
-				/>
-				<input
-					className="mt-3 w-full rounded-xl border border-[#ddd4c4] bg-white px-4 py-3"
-					placeholder="密码（至少 8 位）"
-					type="password"
-					value={password}
-					onChange={(event) => setPassword(event.target.value)}
-					required
-					minLength={8}
-				/>
-				{error ? <p className="mt-3 text-sm text-[#8a3b2b]">{error}</p> : null}
-				<button
-					type="submit"
-					disabled={busy}
-					className="mt-6 w-full rounded-xl bg-[#1f2a24] py-3 text-white disabled:opacity-50"
-				>
-					{mode === "in" ? "进入工作台" : "创建账号"}
-				</button>
-				<button
-					type="button"
-					className="mt-3 w-full text-sm text-[#6b6458]"
-					onClick={() => setMode(mode === "in" ? "up" : "in")}
-				>
-					{mode === "in" ? "没有账号？注册" : "已有账号？登录"}
-				</button>
-			</form>
+		<div className="flex min-h-svh items-center justify-center bg-muted/40 p-6">
+			<Card className="w-full max-w-md">
+				<CardHeader>
+					<p className="text-xs font-medium tracking-[0.2em] text-muted-foreground">
+						PERSONAL GTD
+					</p>
+					<CardTitle>进入工作台</CardTitle>
+					<CardDescription>同一套任务，网页和 MCP 都能读写。</CardDescription>
+				</CardHeader>
+				<CardContent>
+					<form onSubmit={submit} className="flex flex-col gap-5">
+						<FieldGroup>
+							{mode === "up" ? (
+								<Field>
+									<FieldLabel htmlFor="name">名字</FieldLabel>
+									<Input
+										id="name"
+										placeholder="怎么称呼你"
+										value={name}
+										onChange={(event) => setName(event.target.value)}
+									/>
+								</Field>
+							) : null}
+							<Field>
+								<FieldLabel htmlFor="email">邮箱</FieldLabel>
+								<Input
+									id="email"
+									placeholder="you@example.com"
+									type="email"
+									value={email}
+									onChange={(event) => setEmail(event.target.value)}
+									required
+								/>
+							</Field>
+							<Field>
+								<FieldLabel htmlFor="password">密码</FieldLabel>
+								<Input
+									id="password"
+									placeholder="至少 8 位"
+									type="password"
+									value={password}
+									onChange={(event) => setPassword(event.target.value)}
+									required
+									minLength={8}
+								/>
+							</Field>
+						</FieldGroup>
+						{error ? (
+							<Alert variant="destructive">
+								<CircleAlertIcon />
+								<AlertTitle>无法继续</AlertTitle>
+								<AlertDescription>{error}</AlertDescription>
+							</Alert>
+						) : null}
+						<Button type="submit" disabled={busy} className="w-full">
+							{busy ? <Spinner data-icon="inline-start" /> : null}
+							{mode === "in" ? "进入工作台" : "创建账号"}
+						</Button>
+					</form>
+				</CardContent>
+				<CardFooter>
+					<Button
+						type="button"
+						variant="link"
+						className="px-0"
+						onClick={() => setMode(mode === "in" ? "up" : "in")}
+					>
+						{mode === "in" ? "没有账号？注册" : "已有账号？登录"}
+					</Button>
+				</CardFooter>
+			</Card>
 		</div>
 	);
 }

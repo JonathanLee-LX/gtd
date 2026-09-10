@@ -23,8 +23,16 @@ export function InboxPage() {
 		void load();
 	}, [inbox?.id]);
 
-	if (!inbox) return <p className="p-8 text-[#6b6458]">正在准备收件箱…</p>;
-	if (error) return <p className="p-8 text-[#8a3b2b]">{error}</p>;
+	if (!inbox) {
+		return <p className="p-6 text-sm text-muted-foreground">正在准备收件箱…</p>;
+	}
+	if (error) {
+		return (
+			<p className="p-6 text-sm text-destructive" role="alert">
+				{error}
+			</p>
+		);
+	}
 
 	return (
 		<TaskBoard

@@ -24,8 +24,16 @@ export function ProjectPage() {
 		void load();
 	}, [id]);
 
-	if (!project) return <p className="p-8 text-[#6b6458]">找不到这个项目。</p>;
-	if (error) return <p className="p-8 text-[#8a3b2b]">{error}</p>;
+	if (!project) {
+		return <p className="p-6 text-sm text-muted-foreground">找不到这个项目。</p>;
+	}
+	if (error) {
+		return (
+			<p className="p-6 text-sm text-destructive" role="alert">
+				{error}
+			</p>
+		);
+	}
 
 	return (
 		<TaskBoard

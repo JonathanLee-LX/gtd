@@ -1,3 +1,9 @@
+# Single-package workspace so pnpm 7–9 `store path` (used by
+# actions/setup-node cache: pnpm) does not fail with
+# "packages field missing or empty".
+packages:
+  - "."
+
 # Pre-approve build scripts for the packages C3 itself installs that need
 # them: `workerd` downloads the platform binary and `esbuild` downloads/
 # builds native bindings. Without these, pnpm 11+ aborts the install with

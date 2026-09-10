@@ -1,3 +1,4 @@
+import { NavLink } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -34,28 +35,38 @@ export function TaskRow({
 			>
 				<CircleIcon />
 			</Button>
-			<button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
-				<div className="flex flex-wrap items-center gap-2">
-					<span className="font-medium">{task.title}</span>
-					{task.priority !== "none" ? (
-						<Badge variant={task.priority === "p1" ? "destructive" : "secondary"}>
-							{priorityLabel(task.priority)}
-						</Badge>
-					) : null}
-				</div>
-				<div className="mt-1 flex flex-wrap items-center gap-1.5">
-					<Badge variant="outline">{statusLabel(task.status)}</Badge>
-					{task.projectName ? <Badge variant="ghost">{task.projectName}</Badge> : null}
-					{task.dueAt ? (
-						<Badge variant={overdue ? "destructive" : "outline"}>{dueLabel(task.dueAt)}</Badge>
-					) : null}
-					{task.tags.map((tag) => (
-						<Badge key={tag.id} variant="secondary">
-							#{tag.name}
-						</Badge>
-					))}
-				</div>
-			</button>
+			<div className="min-w-0 flex-1">
+				<button type="button" onClick={onOpen} className="w-full text-left">
+					<div className="flex flex-wrap items-center gap-2">
+						<span className="font-medium">{task.title}</span>
+						{task.priority !== "none" ? (
+							<Badge variant={task.priority === "p1" ? "destructive" : "secondary"}>
+								{priorityLabel(task.priority)}
+							</Badge>
+						) : null}
+					</div>
+					<div className="mt-1 flex flex-wrap items-center gap-1.5">
+						<Badge variant="outline">{statusLabel(task.status)}</Badge>
+						{task.projectName ? <Badge variant="ghost">{task.projectName}</Badge> : null}
+						{task.dueAt ? (
+							<Badge variant={overdue ? "destructive" : "outline"}>{dueLabel(task.dueAt)}</Badge>
+						) : null}
+					</div>
+				</button>
+				{task.tags.length > 0 ? (
+					<div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+						{task.tags.map((tag) => (
+							<Badge
+								key={tag.id}
+								variant="secondary"
+								render={<NavLink to={`/search?tagId=${tag.id}`} />}
+							>
+								#{tag.name}
+							</Badge>
+						))}
+					</div>
+				) : null}
+			</div>
 		</div>
 	);
 }

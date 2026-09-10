@@ -21,6 +21,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+	InputGroup,
+	InputGroupAddon,
+	InputGroupInput,
+} from "@/components/ui/input-group";
 import { Separator } from "@/components/ui/separator";
 import {
 	Sidebar,
@@ -46,6 +51,7 @@ import {
 	InboxIcon,
 	LogOutIcon,
 	PlusIcon,
+	SearchIcon,
 	SettingsIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -59,6 +65,7 @@ export function Shell() {
 	const [projectOpen, setProjectOpen] = useState(false);
 	const [projectName, setProjectName] = useState("");
 	const [creating, setCreating] = useState(false);
+	const [query, setQuery] = useState("");
 
 	async function load() {
 		try {
@@ -155,6 +162,16 @@ export function Shell() {
 										</SidebarMenuButton>
 									</SidebarMenuItem>
 								) : null}
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										isActive={location.pathname === "/search"}
+										tooltip="搜索"
+										render={<NavLink to="/search" />}
+									>
+										<SearchIcon />
+										<span>搜索</span>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
 							</SidebarMenu>
 						</SidebarGroupContent>
 					</SidebarGroup>
@@ -228,7 +245,27 @@ export function Shell() {
 				<header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
 					<SidebarTrigger />
 					<Separator orientation="vertical" className="h-4" />
-					<p className="text-sm text-muted-foreground">网页和助手共用同一套任务</p>
+					<form
+						className="ml-auto w-full max-w-sm"
+						onSubmit={(event) => {
+							event.preventDefault();
+							const value = query.trim();
+							if (value) navigate(`/search?q=${encodeURIComponent(value)}`);
+							else navigate("/search");
+						}}
+					>
+						<InputGroup>
+							<InputGroupAddon>
+								<SearchIcon />
+							</InputGroupAddon>
+							<InputGroupInput
+								value={query}
+								onChange={(event) => setQuery(event.target.value)}
+								placeholder="搜索任务"
+								aria-label="搜索任务"
+							/>
+						</InputGroup>
+					</form>
 				</header>
 				<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
 					<Outlet context={{ projects, reloadProjects: load }} />

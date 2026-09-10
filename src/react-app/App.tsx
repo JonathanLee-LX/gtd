@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { InboxPage } from "./pages/InboxPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ProjectPage } from "./pages/ProjectPage";
+import { SearchPage } from "./pages/SearchPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { Shell } from "./pages/Shell";
 import { TodayPage } from "./pages/TodayPage";
@@ -21,6 +22,7 @@ export default function App() {
 							<Route index element={<Navigate to="/today" replace />} />
 							<Route path="today" element={<TodayPage />} />
 							<Route path="inbox" element={<InboxPage />} />
+							<Route path="search" element={<SearchPage />} />
 							<Route path="projects/:id" element={<ProjectPage />} />
 							<Route path="settings" element={<SettingsPage />} />
 						</Route>

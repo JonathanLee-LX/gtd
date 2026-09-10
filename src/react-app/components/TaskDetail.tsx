@@ -13,10 +13,10 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { CheckIcon } from "lucide-react";
+import { CheckIcon, XIcon } from "lucide-react";
 import { TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
 import type { TaskPriority, TaskStatus } from "../../shared/schemas";
-import type { Project, Task } from "../api";
+import { api, type Project, type Tag, type Task } from "../api";
 
 const statusItems = Object.entries(TASK_STATUS_LABELS).map(([value, label]) => ({
 	value,
@@ -45,6 +45,8 @@ export function TaskDetail({
 	const [dueAt, setDueAt] = useState(task.dueAt ?? "");
 	const [projectId, setProjectId] = useState(task.projectId);
 	const [waitingOn, setWaitingOn] = useState(task.waitingOn ?? "");
+	const [tagDraft, setTagDraft] = useState("");
+	const [localTags, setLocalTags] = useState<Tag[]>(task.tags);
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const projectItems = projects.map((project) => ({
@@ -60,6 +62,8 @@ export function TaskDetail({
 		setDueAt(task.dueAt ?? "");
 		setProjectId(task.projectId);
 		setWaitingOn(task.waitingOn ?? "");
+		setLocalTags(task.tags);
+		setTagDraft("");
 		setError(null);
 	}, [task]);
 
@@ -76,6 +80,7 @@ export function TaskDetail({
 				dueAt: dueAt || null,
 				projectId,
 				waitingOn: waitingOn || null,
+				tagIds: localTags.map((tag) => tag.id),
 			});
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "保存失败");
@@ -184,6 +189,52 @@ export function TaskDetail({
 						id="task-detail-waiting"
 						value={waitingOn}
 						onChange={(event) => setWaitingOn(event.target.value)}
+					/>
+				</Field>
+				<Field>
+					<FieldLabel htmlFor="task-detail-tag">标签</FieldLabel>
+					<div className="flex flex-wrap items-center gap-1.5">
+						{localTags.map((tag) => (
+							<Badge key={tag.id} variant="secondary">
+								#{tag.name}
+								<Button
+									type="button"
+									variant="ghost"
+									size="icon-xs"
+									aria-label={`移除 ${tag.name}`}
+									onClick={() =>
+										setLocalTags(localTags.filter((item) => item.id !== tag.id))
+									}
+								>
+									<XIcon />
+								</Button>
+							</Badge>
+						))}
+					</div>
+					<Input
+						id="task-detail-tag"
+						value={tagDraft}
+						placeholder="输入后回车，例如 电脑"
+						onChange={(event) => setTagDraft(event.target.value)}
+						onKeyDown={(event) => {
+							if (event.key !== "Enter") return;
+							event.preventDefault();
+							const name = tagDraft.trim().replace(/^#/, "");
+							if (!name) return;
+							void api
+								.createTag(name)
+								.then(({ tag }) => {
+									setLocalTags((current) =>
+										current.some((item) => item.id === tag.id)
+											? current
+											: [...current, tag],
+									);
+									setTagDraft("");
+								})
+								.catch((err: unknown) => {
+									setError(err instanceof Error ? err.message : "添加标签失败");
+								});
+						}}
 					/>
 				</Field>
 			</FieldGroup>

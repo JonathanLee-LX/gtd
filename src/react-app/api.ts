@@ -88,6 +88,11 @@ export const api = {
 	completeTask: (id: string) =>
 		request<{ task: Task }>(`/api/tasks/${id}/complete`, { method: "POST" }),
 	tags: () => request<{ items: Tag[] }>("/api/tags"),
+	createTag: (name: string) =>
+		request<{ tag: Tag }>("/api/tags", {
+			method: "POST",
+			body: JSON.stringify({ name }),
+		}),
 	tokens: () =>
 		request<{
 			items: {

@@ -82,6 +82,29 @@ export const todayFocusQuery = z.object({
 	tz: z.string().max(64).optional(),
 });
 
+export const parseAiInput = z.object({
+	text: z.string().trim().min(1).max(2000),
+	tz: z.string().max(64).optional(),
+});
+
+export const taskDraftSchema = z.object({
+	title: z.string().trim().min(1).max(500),
+	notes: z.string().max(8000).nullable(),
+	status: taskStatusSchema,
+	priority: taskPrioritySchema,
+	dueAt: dateOnlySchema.nullable(),
+	waitingOn: z.string().max(200).nullable(),
+	tagNames: z.array(z.string().trim().min(1).max(40)).max(8),
+});
+
+export const parseAiOutput = z.object({
+	tasks: z.array(taskDraftSchema).min(1).max(8),
+});
+
+export const commitAiInput = taskDraftSchema.extend({
+	projectId: z.string().min(1).optional(),
+});
+
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type TaskPriority = z.infer<typeof taskPrioritySchema>;
 export type TaskSource = z.infer<typeof taskSourceSchema>;
@@ -90,3 +113,6 @@ export type UpdateProjectInput = z.infer<typeof updateProjectInput>;
 export type CreateTaskInput = z.infer<typeof createTaskInput>;
 export type UpdateTaskInput = z.infer<typeof updateTaskInput>;
 export type ListTasksQuery = z.infer<typeof listTasksQuery>;
+export type TaskDraft = z.infer<typeof taskDraftSchema>;
+export type ParseAiOutput = z.infer<typeof parseAiOutput>;
+export type CommitAiInput = z.infer<typeof commitAiInput>;

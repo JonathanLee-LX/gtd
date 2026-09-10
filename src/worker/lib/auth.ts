@@ -8,6 +8,7 @@ export type WorkerEnv = {
 	DB: D1Database;
 	BETTER_AUTH_SECRET: string;
 	BETTER_AUTH_URL?: string;
+	XAI_API_KEY?: string;
 };
 
 export function createAuth(env: WorkerEnv, db: AppDatabase, origin: string) {

@@ -20,3 +20,7 @@ export function badRequest(message: string, code = "bad_request"): AppError {
 export function unauthorized(): AppError {
 	return new AppError(401, "unauthorized", "请先登录");
 }
+
+export function serviceUnavailable(message: string): AppError {
+	return new AppError(503, "unavailable", message);
+}

@@ -9,6 +9,7 @@ import { projectRoutes } from "./routes/projects";
 import { tagRoutes } from "./routes/tags";
 import { taskRoutes } from "./routes/tasks";
 import { tokenRoutes } from "./routes/tokens";
+import { aiRoutes } from "./routes/ai";
 
 const app = new Hono<{ Bindings: WorkerEnv }>();
 
@@ -36,6 +37,7 @@ app.route("/api/projects", projectRoutes);
 app.route("/api/tasks", taskRoutes);
 app.route("/api/tags", tagRoutes);
 app.route("/api/tokens", tokenRoutes);
+app.route("/api/ai", aiRoutes);
 
 app.all("/mcp", (c) => handleMcp(c.req.raw, c.env));
 app.all("/mcp/*", (c) => handleMcp(c.req.raw, c.env));

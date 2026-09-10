@@ -54,6 +54,7 @@ export function InboxPage() {
 				await api.completeTask(id);
 				await load();
 			}}
+			onReload={load}
 		/>
 	);
 }

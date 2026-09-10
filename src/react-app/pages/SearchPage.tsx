@@ -68,6 +68,7 @@ export function SearchPage() {
 				await api.completeTask(id);
 				await load();
 			}}
+			onReload={load}
 		/>
 	);
 }

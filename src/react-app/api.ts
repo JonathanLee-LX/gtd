@@ -1,4 +1,4 @@
-import type { TaskPriority, TaskStatus } from "../shared/schemas";
+import type { TaskDraft, TaskPriority, TaskStatus } from "../shared/schemas";
 
 export type Tag = { id: string; name: string };
 
@@ -110,4 +110,14 @@ export const api = {
 			{ method: "POST", body: JSON.stringify({ name }) },
 		),
 	revokeToken: (id: string) => request(`/api/tokens/${id}`, { method: "DELETE" }),
+	parseAi: (text: string) =>
+		request<{ tasks: TaskDraft[] }>("/api/ai/parse", {
+			method: "POST",
+			body: JSON.stringify({ text }),
+		}),
+	commitAi: (draft: TaskDraft) =>
+		request<{ task: Task }>("/api/ai/commit", {
+			method: "POST",
+			body: JSON.stringify(draft),
+		}),
 };

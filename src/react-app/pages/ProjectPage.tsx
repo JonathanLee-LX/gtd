@@ -54,6 +54,7 @@ export function ProjectPage() {
 				await api.completeTask(taskId);
 				await load();
 			}}
+			onReload={load}
 		/>
 	);
 }

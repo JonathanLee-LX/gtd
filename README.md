@@ -37,6 +37,8 @@ pnpm run deploy
 
 线上地址：https://gtd.jonathanleelx.workers.dev
 
+产品内 AI 需要 Worker secret `XAI_API_KEY`（https://console.x.ai）。没配时普通创建任务仍可用。
+
 ### GitHub 自动部署
 
 推送到 `main` 会跑 GitHub Actions：先测试，再应用 D1 迁移并 `wrangler deploy`。
@@ -63,4 +65,4 @@ pnpm wrangler secret put BETTER_AUTH_URL
 2. GTD Web
 3. MCP Token
 4. Cloudflare 部署
-5. 产品内 AI（xAI，未做）
+5. 产品内 AI（xAI：自然语言 → 草稿 → 确认写入）

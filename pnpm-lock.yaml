@@ -1,5 +1,10 @@
 lockfileVersion: 5.4
 
+onlyBuiltDependencies:
+  - better-sqlite3
+  - esbuild
+  - workerd
+
 importers:
 
   .:
@@ -438,7 +443,6 @@ packages:
     engines: {node: '>=16'}
     cpu: [x64]
     os: [darwin]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -447,7 +451,6 @@ packages:
     engines: {node: '>=16'}
     cpu: [x64]
     os: [darwin]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -456,7 +459,6 @@ packages:
     engines: {node: '>=16'}
     cpu: [arm64]
     os: [darwin]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -465,7 +467,6 @@ packages:
     engines: {node: '>=16'}
     cpu: [arm64]
     os: [darwin]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -474,7 +475,6 @@ packages:
     engines: {node: '>=16'}
     cpu: [x64]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -483,7 +483,6 @@ packages:
     engines: {node: '>=16'}
     cpu: [x64]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -492,7 +491,6 @@ packages:
     engines: {node: '>=16'}
     cpu: [arm64]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -501,7 +499,6 @@ packages:
     engines: {node: '>=16'}
     cpu: [arm64]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -510,7 +507,6 @@ packages:
     engines: {node: '>=16'}
     cpu: [x64]
     os: [win32]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -519,7 +515,6 @@ packages:
     engines: {node: '>=16'}
     cpu: [x64]
     os: [win32]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -535,7 +530,6 @@ packages:
 
   /@emnapi/runtime/1.11.3:
     resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
-    requiresBuild: true
     dependencies:
       tslib: 2.8.1
     dev: true
@@ -560,7 +554,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [ppc64]
     os: [aix]
-    requiresBuild: true
     optional: true
 
   /@esbuild/aix-ppc64/0.28.1:
@@ -568,7 +561,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [ppc64]
     os: [aix]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -577,7 +569,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [ppc64]
     os: [aix]
-    requiresBuild: true
     optional: true
 
   /@esbuild/android-arm/0.18.20:
@@ -585,7 +576,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [arm]
     os: [android]
-    requiresBuild: true
     optional: true
 
   /@esbuild/android-arm/0.25.12:
@@ -593,7 +583,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm]
     os: [android]
-    requiresBuild: true
     optional: true
 
   /@esbuild/android-arm/0.28.1:
@@ -601,7 +590,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm]
     os: [android]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -610,7 +598,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm]
     os: [android]
-    requiresBuild: true
     optional: true
 
   /@esbuild/android-arm64/0.18.20:
@@ -618,7 +605,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [arm64]
     os: [android]
-    requiresBuild: true
     optional: true
 
   /@esbuild/android-arm64/0.25.12:
@@ -626,7 +612,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [android]
-    requiresBuild: true
     optional: true
 
   /@esbuild/android-arm64/0.28.1:
@@ -634,7 +619,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [android]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -643,7 +627,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [android]
-    requiresBuild: true
     optional: true
 
   /@esbuild/android-x64/0.18.20:
@@ -651,7 +634,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [x64]
     os: [android]
-    requiresBuild: true
     optional: true
 
   /@esbuild/android-x64/0.25.12:
@@ -659,7 +641,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [android]
-    requiresBuild: true
     optional: true
 
   /@esbuild/android-x64/0.28.1:
@@ -667,7 +648,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [android]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -676,7 +656,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [android]
-    requiresBuild: true
     optional: true
 
   /@esbuild/darwin-arm64/0.18.20:
@@ -684,7 +663,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [arm64]
     os: [darwin]
-    requiresBuild: true
     optional: true
 
   /@esbuild/darwin-arm64/0.25.12:
@@ -692,7 +670,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [darwin]
-    requiresBuild: true
     optional: true
 
   /@esbuild/darwin-arm64/0.28.1:
@@ -700,7 +677,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [darwin]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -709,7 +685,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [darwin]
-    requiresBuild: true
     optional: true
 
   /@esbuild/darwin-x64/0.18.20:
@@ -717,7 +692,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [x64]
     os: [darwin]
-    requiresBuild: true
     optional: true
 
   /@esbuild/darwin-x64/0.25.12:
@@ -725,7 +699,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [darwin]
-    requiresBuild: true
     optional: true
 
   /@esbuild/darwin-x64/0.28.1:
@@ -733,7 +706,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [darwin]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -742,7 +714,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [darwin]
-    requiresBuild: true
     optional: true
 
   /@esbuild/freebsd-arm64/0.18.20:
@@ -750,7 +721,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [arm64]
     os: [freebsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/freebsd-arm64/0.25.12:
@@ -758,7 +728,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [freebsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/freebsd-arm64/0.28.1:
@@ -766,7 +735,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [freebsd]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -775,7 +743,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [freebsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/freebsd-x64/0.18.20:
@@ -783,7 +750,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [x64]
     os: [freebsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/freebsd-x64/0.25.12:
@@ -791,7 +757,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [freebsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/freebsd-x64/0.28.1:
@@ -799,7 +764,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [freebsd]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -808,7 +772,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [freebsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-arm/0.18.20:
@@ -816,7 +779,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [arm]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-arm/0.25.12:
@@ -824,7 +786,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-arm/0.28.1:
@@ -832,7 +793,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -841,7 +801,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-arm64/0.18.20:
@@ -849,7 +808,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [arm64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-arm64/0.25.12:
@@ -857,7 +815,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-arm64/0.28.1:
@@ -865,7 +822,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -874,7 +830,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-ia32/0.18.20:
@@ -882,7 +837,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [ia32]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-ia32/0.25.12:
@@ -890,7 +844,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [ia32]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-ia32/0.28.1:
@@ -898,7 +851,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [ia32]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -907,7 +859,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [ia32]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-loong64/0.18.20:
@@ -915,7 +866,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [loong64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-loong64/0.25.12:
@@ -923,7 +873,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [loong64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-loong64/0.28.1:
@@ -931,7 +880,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [loong64]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -940,7 +888,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [loong64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-mips64el/0.18.20:
@@ -948,7 +895,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [mips64el]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-mips64el/0.25.12:
@@ -956,7 +902,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [mips64el]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-mips64el/0.28.1:
@@ -964,7 +909,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [mips64el]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -973,7 +917,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [mips64el]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-ppc64/0.18.20:
@@ -981,7 +924,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [ppc64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-ppc64/0.25.12:
@@ -989,7 +931,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [ppc64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-ppc64/0.28.1:
@@ -997,7 +938,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [ppc64]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1006,7 +946,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [ppc64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-riscv64/0.18.20:
@@ -1014,7 +953,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [riscv64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-riscv64/0.25.12:
@@ -1022,7 +960,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [riscv64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-riscv64/0.28.1:
@@ -1030,7 +967,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [riscv64]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1039,7 +975,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [riscv64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-s390x/0.18.20:
@@ -1047,7 +982,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [s390x]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-s390x/0.25.12:
@@ -1055,7 +989,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [s390x]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-s390x/0.28.1:
@@ -1063,7 +996,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [s390x]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1072,7 +1004,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [s390x]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-x64/0.18.20:
@@ -1080,7 +1011,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [x64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-x64/0.25.12:
@@ -1088,7 +1018,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/linux-x64/0.28.1:
@@ -1096,7 +1025,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1105,7 +1033,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [linux]
-    requiresBuild: true
     optional: true
 
   /@esbuild/netbsd-arm64/0.25.12:
@@ -1113,7 +1040,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [netbsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/netbsd-arm64/0.28.1:
@@ -1121,7 +1047,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [netbsd]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1130,7 +1055,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [netbsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/netbsd-x64/0.18.20:
@@ -1138,7 +1062,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [x64]
     os: [netbsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/netbsd-x64/0.25.12:
@@ -1146,7 +1069,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [netbsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/netbsd-x64/0.28.1:
@@ -1154,7 +1076,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [netbsd]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1163,7 +1084,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [netbsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/openbsd-arm64/0.25.12:
@@ -1171,7 +1091,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [openbsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/openbsd-arm64/0.28.1:
@@ -1179,7 +1098,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [openbsd]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1188,7 +1106,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [openbsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/openbsd-x64/0.18.20:
@@ -1196,7 +1113,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [x64]
     os: [openbsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/openbsd-x64/0.25.12:
@@ -1204,7 +1120,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [openbsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/openbsd-x64/0.28.1:
@@ -1212,7 +1127,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [openbsd]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1221,7 +1135,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [openbsd]
-    requiresBuild: true
     optional: true
 
   /@esbuild/openharmony-arm64/0.25.12:
@@ -1229,7 +1142,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [openharmony]
-    requiresBuild: true
     optional: true
 
   /@esbuild/openharmony-arm64/0.28.1:
@@ -1237,7 +1149,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [openharmony]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1246,7 +1157,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [openharmony]
-    requiresBuild: true
     optional: true
 
   /@esbuild/sunos-x64/0.18.20:
@@ -1254,7 +1164,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [x64]
     os: [sunos]
-    requiresBuild: true
     optional: true
 
   /@esbuild/sunos-x64/0.25.12:
@@ -1262,7 +1171,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [sunos]
-    requiresBuild: true
     optional: true
 
   /@esbuild/sunos-x64/0.28.1:
@@ -1270,7 +1178,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [sunos]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1279,7 +1186,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [sunos]
-    requiresBuild: true
     optional: true
 
   /@esbuild/win32-arm64/0.18.20:
@@ -1287,7 +1193,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [arm64]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@esbuild/win32-arm64/0.25.12:
@@ -1295,7 +1200,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@esbuild/win32-arm64/0.28.1:
@@ -1303,7 +1207,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [win32]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1312,7 +1215,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@esbuild/win32-ia32/0.18.20:
@@ -1320,7 +1222,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [ia32]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@esbuild/win32-ia32/0.25.12:
@@ -1328,7 +1229,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [ia32]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@esbuild/win32-ia32/0.28.1:
@@ -1336,7 +1236,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [ia32]
     os: [win32]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1345,7 +1244,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [ia32]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@esbuild/win32-x64/0.18.20:
@@ -1353,7 +1251,6 @@ packages:
     engines: {node: '>=12'}
     cpu: [x64]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@esbuild/win32-x64/0.25.12:
@@ -1361,7 +1258,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@esbuild/win32-x64/0.28.1:
@@ -1369,7 +1265,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1378,7 +1273,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@eslint-community/eslint-utils/4.10.1_eslint@9.39.2:
@@ -1512,7 +1406,6 @@ packages:
     engines: {node: '>=20.9.0'}
     cpu: [arm64]
     os: [darwin]
-    requiresBuild: true
     optionalDependencies:
       '@img/sharp-libvips-darwin-arm64': 1.3.1
     dev: true
@@ -1523,7 +1416,6 @@ packages:
     engines: {node: '>=20.9.0'}
     cpu: [x64]
     os: [darwin]
-    requiresBuild: true
     optionalDependencies:
       '@img/sharp-libvips-darwin-x64': 1.3.1
     dev: true
@@ -1533,7 +1425,6 @@ packages:
     resolution: {integrity: sha512-YoAxdnd8hPUkvLHd3bWY+YA8nw3xM/RyRopYucNsWHVSan8NLVM3X2volsfoRDcXdUJPg6tXahSd7HXPK7lRnw==}
     engines: {node: '>=20.9.0'}
     os: [freebsd]
-    requiresBuild: true
     dependencies:
       '@img/sharp-wasm32': 0.35.2
     dev: true
@@ -1543,7 +1434,6 @@ packages:
     resolution: {integrity: sha512-4V/M3roRMTYjiwZY9IOVQOE8OyeCxFAkYmyZDrZl51uOKjibm3oeEJ4WAmLxutAfzFbC9jqUiPs2gbnGflH+7g==}
     cpu: [arm64]
     os: [darwin]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1551,7 +1441,6 @@ packages:
     resolution: {integrity: sha512-c0/DxItpJv2+dGhgycJBBgotdqruGYDvA79drdh0MD1dFpy7JzJ/PlXwi1H4rFf0eTy8tgbI91aHDnZIceY3jQ==}
     cpu: [x64]
     os: [darwin]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1560,7 +1449,6 @@ packages:
     cpu: [arm]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1569,7 +1457,6 @@ packages:
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1578,7 +1465,6 @@ packages:
     cpu: [ppc64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1587,7 +1473,6 @@ packages:
     cpu: [riscv64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1596,7 +1481,6 @@ packages:
     cpu: [s390x]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1605,7 +1489,6 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1614,7 +1497,6 @@ packages:
     cpu: [arm64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1623,7 +1505,6 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1633,7 +1514,6 @@ packages:
     cpu: [arm]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optionalDependencies:
       '@img/sharp-libvips-linux-arm': 1.3.1
     dev: true
@@ -1645,7 +1525,6 @@ packages:
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optionalDependencies:
       '@img/sharp-libvips-linux-arm64': 1.3.1
     dev: true
@@ -1657,7 +1536,6 @@ packages:
     cpu: [ppc64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optionalDependencies:
       '@img/sharp-libvips-linux-ppc64': 1.3.1
     dev: true
@@ -1669,7 +1547,6 @@ packages:
     cpu: [riscv64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optionalDependencies:
       '@img/sharp-libvips-linux-riscv64': 1.3.1
     dev: true
@@ -1681,7 +1558,6 @@ packages:
     cpu: [s390x]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optionalDependencies:
       '@img/sharp-libvips-linux-s390x': 1.3.1
     dev: true
@@ -1693,7 +1569,6 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optionalDependencies:
       '@img/sharp-libvips-linux-x64': 1.3.1
     dev: true
@@ -1705,7 +1580,6 @@ packages:
     cpu: [arm64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     optionalDependencies:
       '@img/sharp-libvips-linuxmusl-arm64': 1.3.1
     dev: true
@@ -1717,7 +1591,6 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     optionalDependencies:
       '@img/sharp-libvips-linuxmusl-x64': 1.3.1
     dev: true
@@ -1726,7 +1599,6 @@ packages:
   /@img/sharp-wasm32/0.35.2:
     resolution: {integrity: sha512-Mrv4JQNYVQ94xH+jzZ9r+gowleN8mv2FTgKT+PI6bx5C0G8TdNYndu161pg2i7uoBwxy2ImPMHrJOM2LZef7Bw==}
     engines: {node: '>=20.9.0'}
-    requiresBuild: true
     dependencies:
       '@emnapi/runtime': 1.11.3
     dev: true
@@ -1736,7 +1608,6 @@ packages:
     resolution: {integrity: sha512-QNV27pxs9wpApEiCfvHM1RDoP1w1+2KrUWWDPEhEwg+latvOrfuhWrHWZKwdSFwU6jh3myjw/yOCRsUIuOft3g==}
     engines: {node: '>=20.9.0'}
     cpu: [wasm32]
-    requiresBuild: true
     dependencies:
       '@img/sharp-wasm32': 0.35.2
     dev: true
@@ -1747,7 +1618,6 @@ packages:
     engines: {node: '>=20.9.0'}
     cpu: [arm64]
     os: [win32]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1756,7 +1626,6 @@ packages:
     engines: {node: ^20.9.0}
     cpu: [ia32]
     os: [win32]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1765,7 +1634,6 @@ packages:
     engines: {node: '>=20.9.0'}
     cpu: [x64]
     os: [win32]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -1809,7 +1677,6 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optional: true
 
   /@noble/ciphers/2.4.0:
@@ -1853,42 +1720,36 @@ packages:
     resolution: {integrity: sha512-UZ8sUxPTiHWYX9QNdJedb1kDZSpS1t/VPWBWGSgqHNi9w3Cu6IXvu2mzbhiTiPvtrqgTQJ+zqiAq2iPIPilpaQ==}
     cpu: [arm]
     os: [android]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-android-arm64/4.63.1:
     resolution: {integrity: sha512-cQ4nFQABN5cDvDpbvJ7bMStCpnaVxynZrRMfUJYgxcIk9Sh54FIO1vtfkg0B69REjER77ioZ/ov+eAApx/KmLQ==}
     cpu: [arm64]
     os: [android]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-darwin-arm64/4.63.1:
     resolution: {integrity: sha512-FQNqd1lRy/0QhDk3xeRIkSBiCpXCiDnZO3YLVdcDKN1UBiKToNftCzcXYNLshmPDUMlu2TdeS8tGcsU6f3YF1Q==}
     cpu: [arm64]
     os: [darwin]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-darwin-x64/4.63.1:
     resolution: {integrity: sha512-pvD16V939D3CloK0+qikpGaxiPrDUXTe7Y5cWOMkMSy7m1cawa8EGy/kXYi/G/cKAC4HDAbSnzCIk1WmsoOKXg==}
     cpu: [x64]
     os: [darwin]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-freebsd-arm64/4.63.1:
     resolution: {integrity: sha512-pcFGeL2345VwdTnJhA6zLbew+YgWB0qBG2+dMtXjCicf6+rm6kO6cOoh5VnTe0ZMrMRgRyuHmCJxZWrIdzYuOw==}
     cpu: [arm64]
     os: [freebsd]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-freebsd-x64/4.63.1:
     resolution: {integrity: sha512-mRJlqSRulVzcKq/LKA6ICSIc3K/l4fzlVn/gePn2nXIHy8seRi5z/eeRE0d/XMBxcMldiXtQTSpRj0tkkC3g8Q==}
     cpu: [x64]
     os: [freebsd]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-arm-gnueabihf/4.63.1:
@@ -1896,7 +1757,6 @@ packages:
     cpu: [arm]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-arm-musleabihf/4.63.1:
@@ -1904,7 +1764,6 @@ packages:
     cpu: [arm]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-arm64-gnu/4.63.1:
@@ -1912,7 +1771,6 @@ packages:
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-arm64-musl/4.63.1:
@@ -1920,7 +1778,6 @@ packages:
     cpu: [arm64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-loong64-gnu/4.63.1:
@@ -1928,7 +1785,6 @@ packages:
     cpu: [loong64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-loong64-musl/4.63.1:
@@ -1936,7 +1792,6 @@ packages:
     cpu: [loong64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-ppc64-gnu/4.63.1:
@@ -1944,7 +1799,6 @@ packages:
     cpu: [ppc64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-ppc64-musl/4.63.1:
@@ -1952,7 +1806,6 @@ packages:
     cpu: [ppc64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-riscv64-gnu/4.63.1:
@@ -1960,7 +1813,6 @@ packages:
     cpu: [riscv64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-riscv64-musl/4.63.1:
@@ -1968,7 +1820,6 @@ packages:
     cpu: [riscv64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-s390x-gnu/4.63.1:
@@ -1976,7 +1827,6 @@ packages:
     cpu: [s390x]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-x64-gnu/4.63.1:
@@ -1984,7 +1834,6 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-linux-x64-musl/4.63.1:
@@ -1992,49 +1841,42 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-openbsd-x64/4.63.1:
     resolution: {integrity: sha512-dlfCOa87o1VAYegLQ9EKilx2JCeRofiyPGhTCmqnuXZ6bMPiycO1rq1+sKoulAp7pGLIsTIw+1x5R+zgh5LhhA==}
     cpu: [x64]
     os: [openbsd]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-openharmony-arm64/4.63.1:
     resolution: {integrity: sha512-cjkLbOlfcm3QGhMM1J5zaZjsw1GggbN6rw9UTSSRrPrR1KkcXnN7Uq9rPw34xImQ9VOY9GN+6u2Zj80B9ptkcw==}
     cpu: [arm64]
     os: [openharmony]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-win32-arm64-msvc/4.63.1:
     resolution: {integrity: sha512-Li1KdUnWGE4N3e1F/B4RTB1ms+nG4WBgjByO46pkeBVX/2UBsY53xf5vK9WygVmnH3RwncIST7lkSdLSY6P9lg==}
     cpu: [arm64]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-win32-ia32-msvc/4.63.1:
     resolution: {integrity: sha512-t4ZYOSoLTgwhuFMrmTMLx/+i1DQVK7HYqMc6kY46EApwi8X0nIVphzdNoThU3xt6n+N5urG1/gxBdCaKDLavfg==}
     cpu: [ia32]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-win32-x64-gnu/4.63.1:
     resolution: {integrity: sha512-RgroPfMmKlD1RzSDxvwgcPiy2HNQKoYV7OmwIXDsk73uKW5t6B/V8KIy27SMv/FNXFo/oSBtWc9J0X7t91ezZg==}
     cpu: [x64]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@rollup/rollup-win32-x64-msvc/4.63.1:
     resolution: {integrity: sha512-at8QVep6S3h5Y6gSbdGU06bRY5WJkf6WUduM9YtvYMbYhB1MOFfUgc6kehitQXzOtMSaT70q7f9ydPhpqu821w==}
     cpu: [x64]
     os: [win32]
-    requiresBuild: true
     optional: true
 
   /@sindresorhus/is/7.2.0:
@@ -2067,7 +1909,6 @@ packages:
     engines: {node: '>= 20'}
     cpu: [arm64]
     os: [android]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -2076,7 +1917,6 @@ packages:
     engines: {node: '>= 20'}
     cpu: [arm64]
     os: [darwin]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -2085,7 +1925,6 @@ packages:
     engines: {node: '>= 20'}
     cpu: [x64]
     os: [darwin]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -2094,7 +1933,6 @@ packages:
     engines: {node: '>= 20'}
     cpu: [x64]
     os: [freebsd]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -2103,7 +1941,6 @@ packages:
     engines: {node: '>= 20'}
     cpu: [arm]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -2113,7 +1950,6 @@ packages:
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -2123,7 +1959,6 @@ packages:
     cpu: [arm64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -2133,7 +1968,6 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -2143,7 +1977,6 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -2151,7 +1984,6 @@ packages:
     resolution: {integrity: sha512-jx1+rPhY/5Ympkktd656HBWEBLxP7dH06losBLjjf5vgCODXvi9KhtftWcMIwTFIDqBr7cRnQkdLnAG+IOlGvQ==}
     engines: {node: '>=14.0.0'}
     cpu: [wasm32]
-    requiresBuild: true
     dev: true
     optional: true
     bundledDependencies:
@@ -2167,7 +1999,6 @@ packages:
     engines: {node: '>= 20'}
     cpu: [arm64]
     os: [win32]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -2176,7 +2007,6 @@ packages:
     engines: {node: '>= 20'}
     cpu: [x64]
     os: [win32]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -3179,7 +3009,6 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
-    requiresBuild: true
     optional: true
 
   /gensync/1.0.0-beta.2:
@@ -3349,7 +3178,6 @@ packages:
     engines: {node: '>= 12.0.0'}
     cpu: [arm64]
     os: [android]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -3358,7 +3186,6 @@ packages:
     engines: {node: '>= 12.0.0'}
     cpu: [arm64]
     os: [darwin]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -3367,7 +3194,6 @@ packages:
     engines: {node: '>= 12.0.0'}
     cpu: [x64]
     os: [darwin]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -3376,7 +3202,6 @@ packages:
     engines: {node: '>= 12.0.0'}
     cpu: [x64]
     os: [freebsd]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -3385,7 +3210,6 @@ packages:
     engines: {node: '>= 12.0.0'}
     cpu: [arm]
     os: [linux]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -3395,7 +3219,6 @@ packages:
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -3405,7 +3228,6 @@ packages:
     cpu: [arm64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -3415,7 +3237,6 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -3425,7 +3246,6 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [musl]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -3434,7 +3254,6 @@ packages:
     engines: {node: '>= 12.0.0'}
     cpu: [arm64]
     os: [win32]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -3443,7 +3262,6 @@ packages:
     engines: {node: '>= 12.0.0'}
     cpu: [x64]
     os: [win32]
-    requiresBuild: true
     dev: true
     optional: true
 
@@ -3883,7 +3701,6 @@ packages:
 
   /tslib/2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
-    requiresBuild: true
     dev: true
     optional: true
 

@@ -60,6 +60,10 @@
 	},
 	"type": "module",
 	"pnpm": {
-		"onlyBuiltDependencies": ["esbuild", "workerd", "better-sqlite3"]
+		"onlyBuiltDependencies": [
+			"better-sqlite3",
+			"esbuild",
+			"workerd"
+		]
 	}
 }

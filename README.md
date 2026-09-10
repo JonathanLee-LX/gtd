@@ -32,8 +32,23 @@ pnpm dev
 ```sh
 pnpm wrangler secret put BETTER_AUTH_SECRET
 pnpm db:migrate
-pnpm deploy
+pnpm run deploy
 ```
+
+线上地址：https://gtd.jonathanleelx.workers.dev
+
+### GitHub 自动部署
+
+推送到 `main` 会跑 GitHub Actions：先测试，再应用 D1 迁移并 `wrangler deploy`。
+
+仓库 Secrets（Settings → Secrets and variables → Actions）：
+
+- `CLOUDFLARE_ACCOUNT_ID`：Cloudflare 账号 ID
+- `CLOUDFLARE_API_TOKEN`：权限至少包含 **Edit Cloudflare Workers** 和 **D1 Edit**
+
+创建 Token：https://dash.cloudflare.com/profile/api-tokens
+
+`BETTER_AUTH_SECRET` 已写在 Worker secrets 里，部署不会覆盖。
 
 生产环境 `BETTER_AUTH_URL` 不写进 `wrangler.json`，Worker 会用请求 Origin。需要固定值时：
 

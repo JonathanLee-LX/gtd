@@ -1,6 +1,9 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "gtd",
+	"account_id": "a14077258f7fbeab388171ea87ec4811",
+	"workers_dev": true,
+	"preview_urls": true,
 	"main": "./src/worker/index.ts",
 	"compatibility_date": "2026-08-18",
 	"compatibility_flags": ["nodejs_compat"],

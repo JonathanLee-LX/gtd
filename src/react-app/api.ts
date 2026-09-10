@@ -49,7 +49,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
 	me: () => request<Me>("/api/me"),
-	health: () => request<{ ok: boolean }>("/api/health"),
+	health: () => request<{ ok: boolean; signupEnabled: boolean }>("/api/health"),
 	signIn: (email: string, password: string) =>
 		request("/api/auth/sign-in/email", {
 			method: "POST",

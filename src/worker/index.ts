@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createDb } from "../db/client";
 import { AppError } from "./lib/errors";
-import { createAuth, type WorkerEnv } from "./lib/auth";
+import { createAuth, isSignupEnabled, type WorkerEnv } from "./lib/auth";
 import { handleMcp } from "./mcp/handler";
 import { meRoutes } from "./routes/me";
 import { projectRoutes } from "./routes/projects";
@@ -24,7 +24,9 @@ app.onError((error, c) => {
 	return c.json({ error: "internal", message: "服务器出错了" }, 500);
 });
 
-app.get("/api/health", (c) => c.json({ ok: true, name: "gtd" }));
+app.get("/api/health", (c) =>
+	c.json({ ok: true, name: "gtd", signupEnabled: isSignupEnabled(c.env) }),
+);
 
 app.on(["GET", "POST"], "/api/auth/*", (c) => {
 	const origin = new URL(c.req.url).origin;

@@ -23,7 +23,7 @@ pnpm test
 pnpm dev
 ```
 
-打开 http://localhost:5173 注册后即可用。MCP 说明见 `docs/mcp.md`。
+打开 http://localhost:5173。公开注册默认关闭；本地若需注册，在 `.dev.vars` 设置 `ALLOW_SIGNUP=true`。MCP 说明见 `docs/mcp.md`。
 
 ## 部署
 

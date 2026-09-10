@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import { api } from "../api";
 
 export function LoginPage() {
 	const navigate = useNavigate();
+	const [signupEnabled, setSignupEnabled] = useState(false);
 	const [mode, setMode] = useState<"in" | "up">("in");
 	const [name, setName] = useState("");
 	const [email, setEmail] = useState("");
@@ -25,12 +26,34 @@ export function LoginPage() {
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 
+	useEffect(() => {
+		let cancelled = false;
+		api
+			.health()
+			.then((health) => {
+				if (!cancelled) setSignupEnabled(Boolean(health.signupEnabled));
+			})
+			.catch(() => {
+				if (!cancelled) setSignupEnabled(false);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	useEffect(() => {
+		if (!signupEnabled && mode === "up") setMode("in");
+	}, [signupEnabled, mode]);
+
 	async function submit(event: React.FormEvent) {
 		event.preventDefault();
 		setBusy(true);
 		setError(null);
 		try {
 			if (mode === "up") {
+				if (!signupEnabled) {
+					throw new Error("当前环境未开放注册");
+				}
 				await api.signUp(name || email.split("@")[0]!, email, password);
 			} else {
 				await api.signIn(email, password);
@@ -104,16 +127,22 @@ export function LoginPage() {
 						</Button>
 					</form>
 				</CardContent>
-				<CardFooter>
-					<Button
-						type="button"
-						variant="link"
-						className="px-0"
-						onClick={() => setMode(mode === "in" ? "up" : "in")}
-					>
-						{mode === "in" ? "没有账号？注册" : "已有账号？登录"}
-					</Button>
-				</CardFooter>
+				{signupEnabled ? (
+					<CardFooter>
+						<Button
+							type="button"
+							variant="link"
+							className="px-0"
+							onClick={() => setMode(mode === "in" ? "up" : "in")}
+						>
+							{mode === "in" ? "没有账号？注册" : "已有账号？登录"}
+						</Button>
+					</CardFooter>
+				) : (
+					<CardFooter>
+						<p className="text-sm text-muted-foreground">本站未开放公开注册，请使用已有账号登录。</p>
+					</CardFooter>
+				)}
 			</Card>
 		</div>
 	);

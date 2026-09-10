@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -25,9 +25,12 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { CheckIcon, TrashIcon, XIcon } from "lucide-react";
+import { createsParentCycle } from "../../shared/task-tree";
 import { TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
 import type { TaskPriority, TaskStatus } from "../../shared/schemas";
 import { api, type Project, type Tag, type Task } from "../api";
+
+const NONE_PARENT = "__none__";
 
 const statusItems = Object.entries(TASK_STATUS_LABELS).map(([value, label]) => ({
 	value,
@@ -41,12 +44,14 @@ const priorityItems = Object.entries(TASK_PRIORITY_LABELS).map(([value, label]) 
 export function TaskDetail({
 	task,
 	projects,
+	tasks,
 	onSave,
 	onComplete,
 	onDelete,
 }: {
 	task: Task;
 	projects: Project[];
+	tasks: Task[];
 	onSave: (patch: Record<string, unknown>) => Promise<void>;
 	onComplete: () => Promise<void>;
 	onDelete: () => Promise<void>;
@@ -57,6 +62,7 @@ export function TaskDetail({
 	const [priority, setPriority] = useState<TaskPriority>(task.priority);
 	const [dueAt, setDueAt] = useState(task.dueAt ?? "");
 	const [projectId, setProjectId] = useState(task.projectId);
+	const [parentId, setParentId] = useState(task.parentId ?? NONE_PARENT);
 	const [waitingOn, setWaitingOn] = useState(task.waitingOn ?? "");
 	const [tagDraft, setTagDraft] = useState("");
 	const [localTags, setLocalTags] = useState<Tag[]>(task.tags);
@@ -69,6 +75,31 @@ export function TaskDetail({
 		label: project.name,
 	}));
 
+	const parentItems = useMemo(() => {
+		const parentOf = new Map(tasks.map((item) => [item.id, item.parentId]));
+		const items = [
+			{ value: NONE_PARENT, label: "无（顶层任务）" },
+			...tasks
+				.filter(
+					(item) =>
+						item.id !== task.id &&
+						!createsParentCycle(task.id, item.id, (id) => parentOf.get(id) ?? null),
+				)
+				.map((item) => ({ value: item.id, label: item.title })),
+		];
+		if (
+			task.parentId &&
+			task.parentId !== NONE_PARENT &&
+			!items.some((item) => item.value === task.parentId)
+		) {
+			items.push({
+				value: task.parentId,
+				label: "父任务（当前不可见，删除后已解绑或未在本列表）",
+			});
+		}
+		return items;
+	}, [tasks, task.id, task.parentId]);
+
 	useEffect(() => {
 		setTitle(task.title);
 		setNotes(task.notes ?? "");
@@ -76,6 +107,7 @@ export function TaskDetail({
 		setPriority(task.priority);
 		setDueAt(task.dueAt ?? "");
 		setProjectId(task.projectId);
+		setParentId(task.parentId ?? NONE_PARENT);
 		setWaitingOn(task.waitingOn ?? "");
 		setLocalTags(task.tags);
 		setTagDraft("");
@@ -95,6 +127,7 @@ export function TaskDetail({
 				priority,
 				dueAt: dueAt || null,
 				projectId,
+				parentId: parentId === NONE_PARENT ? null : parentId,
 				waitingOn: waitingOn || null,
 				tagIds: localTags.map((tag) => tag.id),
 			});
@@ -104,6 +137,7 @@ export function TaskDetail({
 			setBusy(false);
 		}
 	}
+
 
 	async function confirmDelete() {
 		setDeleting(true);
@@ -204,6 +238,30 @@ export function TaskDetail({
 					</Select>
 				</Field>
 				<Field>
+					<FieldLabel>父任务</FieldLabel>
+					<Select
+						items={parentItems}
+						value={parentId}
+						onValueChange={(value) => setParentId(String(value))}
+					>
+						<SelectTrigger className="w-full">
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectGroup>
+								{parentItems.map((item) => (
+									<SelectItem key={item.value} value={item.value}>
+										{item.label}
+									</SelectItem>
+								))}
+							</SelectGroup>
+						</SelectContent>
+					</Select>
+					<p className="text-xs text-muted-foreground">
+						删除父任务后，子任务会自动变为顶层（数据库 ON DELETE SET NULL）。
+					</p>
+				</Field>
+				<Field>
 					<FieldLabel htmlFor="task-detail-due">截止日期</FieldLabel>
 					<Input
 						id="task-detail-due"
@@ -290,7 +348,7 @@ export function TaskDetail({
 						<AlertDialogHeader>
 							<AlertDialogTitle>确认删除任务？</AlertDialogTitle>
 							<AlertDialogDescription>
-								将软删除「{task.title}」。删除后列表和今日焦点不再显示，可从数据库恢复。
+								将软删除「{task.title}」。删除后列表和今日焦点不再显示；子任务会自动变为顶层。
 							</AlertDialogDescription>
 						</AlertDialogHeader>
 						<AlertDialogFooter>

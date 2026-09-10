@@ -10,6 +10,7 @@ import type {
 	UpdateTaskInput,
 } from "../../shared/schemas";
 import { sanitizeSearchQuery } from "../../shared/search";
+import { createsParentCycle } from "../../shared/task-tree";
 import { ymdInZone } from "../../shared/today";
 import { badRequest, notFound } from "../lib/errors";
 import { newId, nowIso } from "../lib/ids";
@@ -60,6 +61,33 @@ export async function getTask(db: AppDatabase, userId: string, id: string) {
 	return view;
 }
 
+
+async function resolveParentId(
+	db: AppDatabase,
+	userId: string,
+	taskId: string | null,
+	parentId: string | null,
+) {
+	if (parentId === null) return null;
+	if (taskId && parentId === taskId) {
+		throw badRequest("任务不能把自身设为父任务", "parent_cycle");
+	}
+	const parent = await getTask(db, userId, parentId);
+	if (taskId) {
+		const rows = await db
+			.select({ id: tasks.id, parentId: tasks.parentId })
+			.from(tasks)
+			.where(and(eq(tasks.userId, userId), isNull(tasks.deletedAt)));
+		const parentOf = new Map(rows.map((row) => [row.id, row.parentId]));
+		if (
+			createsParentCycle(taskId, parentId, (id) => parentOf.get(id) ?? null)
+		) {
+			throw badRequest("不能形成父子循环", "parent_cycle");
+		}
+	}
+	return parent.id;
+}
+
 export async function createTask(
 	db: AppDatabase,
 	userId: string,
@@ -97,7 +125,7 @@ export async function createTask(
 		dueAt: input.dueAt ?? null,
 		startAt: input.startAt ?? null,
 		completedAt: status === "completed" ? now : null,
-		parentId: input.parentId ?? null,
+		parentId: await resolveParentId(db, userId, null, input.parentId ?? null),
 		waitingOn: input.waitingOn ?? null,
 		source,
 		idempotencyKey: input.idempotencyKey ?? null,
@@ -142,7 +170,9 @@ export async function updateTask(
 	if (input.dueAt !== undefined) patch.dueAt = input.dueAt;
 	if (input.startAt !== undefined) patch.startAt = input.startAt;
 	if (input.waitingOn !== undefined) patch.waitingOn = input.waitingOn;
-	if (input.parentId !== undefined) patch.parentId = input.parentId;
+	if (input.parentId !== undefined) {
+		patch.parentId = await resolveParentId(db, userId, id, input.parentId);
+	}
 	if (nextStatus === "completed" && current.status !== "completed") {
 		patch.completedAt = now;
 	}

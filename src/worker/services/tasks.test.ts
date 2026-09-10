@@ -249,7 +249,7 @@ describe("task service", () => {
 		expect(listed.items.map((item) => item.title)).toEqual([`${prefix}还有下文`]);
 	});
 
-it("soft-deletes tasks: gone from lists/focus, get 404, row remains", async () => {
+	it("soft-deletes tasks: gone from lists/focus, get 404, row remains", async () => {
 		const { db, sqlite } = createTestDb();
 		const me = await seedUser(db);
 		const task = await createTask(
@@ -276,6 +276,26 @@ it("soft-deletes tasks: gone from lists/focus, get 404, row remains", async () =
 			deleted_at: string | null;
 		};
 		expect(row.deleted_at).toBeTruthy();
-});
+	});
 
+	it("sets parentId and rejects cycles", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		const parent = await createTask(db as never, me.id, { title: "父任务" }, "human");
+		const child = await createTask(
+			db as never,
+			me.id,
+			{ title: "子任务", parentId: parent.id },
+			"human",
+		);
+		expect(child.parentId).toBe(parent.id);
+
+		await expect(
+			updateTask(db as never, me.id, parent.id, { parentId: child.id }, "human"),
+		).rejects.toMatchObject({ code: "parent_cycle" });
+
+		await expect(
+			updateTask(db as never, me.id, child.id, { parentId: child.id }, "human"),
+		).rejects.toMatchObject({ code: "parent_cycle" });
+});
 });

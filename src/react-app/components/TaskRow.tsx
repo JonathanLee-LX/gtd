@@ -9,11 +9,13 @@ import { dueLabel, priorityLabel, statusLabel } from "../lib/format";
 export function TaskRow({
 	task,
 	active,
+	depth = 0,
 	onOpen,
 	onComplete,
 }: {
 	task: Task;
 	active: boolean;
+	depth?: number;
 	onOpen: () => void;
 	onComplete: () => void;
 }) {
@@ -24,6 +26,7 @@ export function TaskRow({
 				"flex items-start gap-2 rounded-lg border border-transparent px-2 py-2",
 				active ? "border-border bg-muted/60" : "hover:bg-muted/40",
 			)}
+			style={{ paddingLeft: `${8 + depth * 20}px` }}
 		>
 			<Button
 				type="button"
@@ -38,6 +41,11 @@ export function TaskRow({
 			<div className="min-w-0 flex-1">
 				<button type="button" onClick={onOpen} className="w-full text-left">
 					<div className="flex flex-wrap items-center gap-2">
+						{depth > 0 ? (
+							<span className="text-xs text-muted-foreground" aria-hidden>
+								└
+							</span>
+						) : null}
 						<span className="font-medium">{task.title}</span>
 						{task.priority !== "none" ? (
 							<Badge variant={task.priority === "p1" ? "destructive" : "secondary"}>

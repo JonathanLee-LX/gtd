@@ -29,6 +29,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { InboxIcon, SparklesIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { TaskDraft } from "../../shared/schemas";
+import { orderTasksWithDepth } from "../../shared/task-tree";
 import { TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
 import { api, type Project, type Task } from "../api";
 import { TaskComposer } from "./TaskComposer";
@@ -66,11 +67,13 @@ export function TaskBoard({
 	const [committing, setCommitting] = useState<string | null>(null);
 	const selected = tasks.find((task) => task.id === selectedId) ?? null;
 	const isMobile = useIsMobile();
+	const ordered = orderTasksWithDepth(tasks);
 
 	const detail = selected ? (
 		<TaskDetail
 			task={selected}
 			projects={projects}
+			tasks={tasks}
 			onSave={(patch) => onSave(selected.id, patch)}
 			onComplete={() => onComplete(selected.id)}
 			onDelete={async () => {
@@ -114,10 +117,11 @@ export function TaskBoard({
 					</Empty>
 				) : (
 					<div className="flex flex-col gap-1">
-						{tasks.map((task) => (
+						{ordered.map(({ task, depth }) => (
 							<TaskRow
 								key={task.id}
 								task={task}
+								depth={depth}
 								active={task.id === selectedId}
 								onOpen={() => setSelectedId(task.id)}
 								onComplete={() => void onComplete(task.id)}

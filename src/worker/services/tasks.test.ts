@@ -221,6 +221,8 @@ describe("task service", () => {
 					item.tags.some((t) => t.id === tag.id),
 			),
 		).toBe(true);
+	});
+
 	it("searches by short keyword", async () => {
 		const { db } = createTestDb();
 		const me = await seedUser(db);

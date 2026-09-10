@@ -4,12 +4,8 @@ import { tasks } from "../../db/schema";
 import { createTestDb, seedUser } from "../test/db";
 import { nowIso } from "../lib/ids";
 import { createProject } from "./projects";
-<<<<<<< HEAD
 import { createTag } from "./tags";
-import { completeTask, createTask, listTasks, todayFocus, updateTask } from "./tasks";
-=======
 import { completeTask, createTask, deleteTask, getTask, listTasks, todayFocus, updateTask } from "./tasks";
->>>>>>> fb6ef7a (feat: soft-delete tasks via service, REST, MCP, and UI)
 
 describe("task service", () => {
 	it("isolates users and honors idempotency", async () => {
@@ -146,7 +142,6 @@ describe("task service", () => {
 		expect(next.source).toBe("human");
 	});
 
-<<<<<<< HEAD
 	it("paginates tag-filtered tasks across pages without skip or dup", async () => {
 		const { db } = createTestDb();
 		const me = await seedUser(db);
@@ -252,8 +247,9 @@ describe("task service", () => {
 		const overlong = "测".repeat(40);
 		const listed = await listTasks(db as never, me.id, { q: overlong });
 		expect(listed.items.map((item) => item.title)).toEqual([`${prefix}还有下文`]);
-=======
-	it("soft-deletes tasks: gone from lists/focus, get 404, row remains", async () => {
+	});
+
+it("soft-deletes tasks: gone from lists/focus, get 404, row remains", async () => {
 		const { db, sqlite } = createTestDb();
 		const me = await seedUser(db);
 		const task = await createTask(
@@ -280,6 +276,6 @@ describe("task service", () => {
 			deleted_at: string | null;
 		};
 		expect(row.deleted_at).toBeTruthy();
->>>>>>> fb6ef7a (feat: soft-delete tasks via service, REST, MCP, and UI)
-	});
+});
+
 });

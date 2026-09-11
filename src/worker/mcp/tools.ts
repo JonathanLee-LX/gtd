@@ -7,6 +7,7 @@ import {
 	deleteTask,
 	getTask,
 	listTasks,
+	nudgeWaiting,
 	searchTasks,
 	todayFocus,
 	updateTask,
@@ -141,6 +142,17 @@ export const MCP_TOOLS = [
 		},
 	},
 	{
+		name: "nudge_waiting",
+		description:
+			"周回顾「要催」：为等待中的任务生成一条下一步「催 {等谁}」。同一等待任务重复调用幂等，不会刷多条。",
+		inputSchema: {
+			type: "object",
+			properties: { id: { type: "string", description: "等待中的任务 id" } },
+			required: ["id"],
+			additionalProperties: false,
+		},
+	},
+	{
 		name: "complete_task",
 		description: "将任务标为已完成。",
 		inputSchema: {
@@ -214,6 +226,10 @@ export async function callMcpTool(
 				.and(updateTaskInput)
 				.parse(args);
 			return { task: await updateTask(db, userId, id, rest, "mcp") };
+		}
+		case "nudge_waiting": {
+			const input = z.object({ id: z.string() }).parse(args);
+			return { task: await nudgeWaiting(db, userId, input.id, "mcp") };
 		}
 		case "complete_task": {
 			const input = z.object({ id: z.string() }).parse(args);

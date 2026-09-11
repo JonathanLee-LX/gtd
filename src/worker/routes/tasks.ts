@@ -16,6 +16,7 @@ import {
 	deleteTask,
 	getTask,
 	listTasks,
+	nudgeWaiting,
 	todayFocus,
 	updateTask,
 } from "../services/tasks";
@@ -67,6 +68,17 @@ export const taskRoutes = new Hono<{
 				c.get("user").id,
 				c.req.param("id"),
 				c.req.valid("json"),
+				c.get("source"),
+			);
+			return { task };
+		}),
+	)
+	.post("/:id/nudge", (c) =>
+		handleRoute(c, async () => {
+			const task = await nudgeWaiting(
+				createDb(c.env.DB),
+				c.get("user").id,
+				c.req.param("id"),
 				c.get("source"),
 			);
 			return { task };

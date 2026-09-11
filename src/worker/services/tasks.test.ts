@@ -1,11 +1,11 @@
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { tasks } from "../../db/schema";
+import { activityLog, tasks } from "../../db/schema";
 import { createTestDb, seedUser } from "../test/db";
 import { nowIso } from "../lib/ids";
 import { createProject } from "./projects";
 import { createTag } from "./tags";
-import { completeTask, createTask, deleteTask, getTask, listTasks, todayFocus, updateTask } from "./tasks";
+import { completeTask, createTask, deleteTask, getTask, listTasks, nudgeWaiting, todayFocus, updateTask } from "./tasks";
 
 describe("task service", () => {
 	it("isolates users and honors idempotency", async () => {
@@ -278,6 +278,67 @@ describe("task service", () => {
 		expect(row.deleted_at).toBeTruthy();
 	});
 
+
+	it("nudgeWaiting creates next task with operator source and is idempotent", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		const waiting = await createTask(
+			db as never,
+			me.id,
+			{ title: "等设计稿", status: "waiting", waitingOn: "小王" },
+			"human",
+		);
+
+		const first = await nudgeWaiting(db as never, me.id, waiting.id, "mcp");
+		expect(first.title).toBe("催 小王");
+		expect(first.status).toBe("next");
+		expect(first.source).toBe("mcp");
+		expect(first.parentId).toBe(waiting.id);
+		expect(first.notes).toContain(waiting.id);
+
+		const again = await nudgeWaiting(db as never, me.id, waiting.id, "human");
+		expect(again.id).toBe(first.id);
+		expect(again.source).toBe("mcp");
+
+		const listed = await listTasks(db as never, me.id, { status: "next" });
+		expect(listed.items.filter((item) => item.title === "催 小王")).toHaveLength(1);
+
+		const activities = await db
+			.select()
+			.from(activityLog)
+			.where(eq(activityLog.userId, me.id));
+		const nudgeLogs = activities.filter((row) => row.action === "task.nudge");
+		expect(nudgeLogs).toHaveLength(1);
+		expect(nudgeLogs[0]?.entityId).toBe(waiting.id);
+		expect(nudgeLogs[0]?.actorType).toBe("mcp");
+		expect(nudgeLogs[0]?.summary).toContain(waiting.title);
+		expect(nudgeLogs[0]?.summary).toContain(first.id);
+	});
+
+	it("nudgeWaiting rejects non-waiting tasks and uses 未填写 when no waitingOn", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		const next = await createTask(
+			db as never,
+			me.id,
+			{ title: "普通下一步", status: "next" },
+			"human",
+		);
+		await expect(nudgeWaiting(db as never, me.id, next.id, "human")).rejects.toMatchObject({
+			code: "not_waiting",
+		});
+
+		const waiting = await createTask(
+			db as never,
+			me.id,
+			{ title: "等人", status: "waiting" },
+			"human",
+		);
+		const nudged = await nudgeWaiting(db as never, me.id, waiting.id, "ai");
+		expect(nudged.title).toBe("催 未填写");
+		expect(nudged.source).toBe("ai");
+	});
+
 	it("sets parentId and rejects cycles", async () => {
 		const { db } = createTestDb();
 		const me = await seedUser(db);
@@ -297,5 +358,5 @@ describe("task service", () => {
 		await expect(
 			updateTask(db as never, me.id, child.id, { parentId: child.id }, "human"),
 		).rejects.toMatchObject({ code: "parent_cycle" });
-});
+	});
 });

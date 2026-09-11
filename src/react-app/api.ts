@@ -88,6 +88,8 @@ export const api = {
 		}),
 	completeTask: (id: string) =>
 		request<{ task: Task }>(`/api/tasks/${id}/complete`, { method: "POST" }),
+	nudgeWaiting: (id: string) =>
+		request<{ task: Task }>(`/api/tasks/${id}/nudge`, { method: "POST" }),
 	deleteTask: (id: string) =>
 		request<{ ok: true }>(`/api/tasks/${id}`, { method: "DELETE" }),
 	tags: () => request<{ items: Tag[] }>("/api/tags"),

@@ -135,6 +135,20 @@ export function ReviewPage() {
 		}
 	}
 
+
+	async function nudgeWaitingTask(task: Task) {
+		setBusy(true);
+		try {
+			const { task: created } = await api.nudgeWaiting(task.id);
+			toast.success(`已生成下一步「${created.title}」`);
+			await load();
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : "催促失败");
+		} finally {
+			setBusy(false);
+		}
+	}
+
 	function goNext() {
 		const next = STEPS[stepIndex + 1];
 		if (next) setStep(next.id);
@@ -372,13 +386,7 @@ export function ReviewPage() {
 											size="sm"
 											variant="secondary"
 											disabled={busy}
-											onClick={() => {
-												toast.message("记得去催一下", {
-													description: task.waitingOn
-														? `对象：${task.waitingOn}`
-														: task.title,
-												});
-											}}
+											onClick={() => void nudgeWaitingTask(task)}
 										>
 											要催
 										</Button>

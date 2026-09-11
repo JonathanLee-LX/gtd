@@ -311,6 +311,68 @@ export async function listTasks(
 	};
 }
 
+
+/** Idempotent weekly-review 「要催」: create a next-action follow-up for a waiting task. */
+export async function nudgeWaiting(
+	db: AppDatabase,
+	userId: string,
+	waitingTaskId: string,
+	source: TaskSource,
+) {
+	const waiting = await getTask(db, userId, waitingTaskId);
+	if (waiting.status !== "waiting") {
+		throw badRequest("只能对等待中的任务催促", "not_waiting");
+	}
+
+	const idempotencyKey = `nudge-waiting:${waiting.id}`;
+	const existingRows = await db
+		.select()
+		.from(tasks)
+		.where(and(eq(tasks.userId, userId), eq(tasks.idempotencyKey, idempotencyKey)))
+		.limit(1);
+	const existing = existingRows[0];
+	if (existing) {
+		const open =
+			!existing.deletedAt &&
+			existing.status !== "completed" &&
+			existing.status !== "cancelled";
+		if (open) {
+			const [view] = await hydrate(db, userId, [existing]);
+			return view;
+		}
+		// Free the key so a new nudge can be created after the previous one finished.
+		await db
+			.update(tasks)
+			.set({ idempotencyKey: null })
+			.where(and(eq(tasks.id, existing.id), eq(tasks.userId, userId)));
+	}
+
+	const who = waiting.waitingOn?.trim() || "未填写";
+	const title = `催 ${who}`;
+	const task = await createTask(
+		db,
+		userId,
+		{
+			title,
+			status: "next",
+			projectId: waiting.projectId,
+			parentId: waiting.id,
+			notes: `催促自等待任务 ${waiting.id}`,
+			idempotencyKey,
+		},
+		source,
+	);
+	await logActivity(db, {
+		userId,
+		source,
+		action: "task.nudge",
+		entityType: "task",
+		entityId: waiting.id,
+		summary: `要催「${waiting.title}」→ 下一步「${title}」（${task.id}）`,
+	});
+	return task;
+}
+
 export async function todayFocus(
 	db: AppDatabase,
 	userId: string,

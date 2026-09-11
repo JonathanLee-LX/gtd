@@ -15,6 +15,7 @@
 | `list_tasks` / `get_task` / `search_tasks` | 查询 |
 | `create_task` | 创建（建议 `idempotencyKey`；可选 `parentId` 挂子任务） |
 | `update_task` | 部分更新（可改 `parentId`，`null` 取消父子） |
+| `nudge_waiting` | 对等待任务「要催」（生成下一步，幂等） |
 | `complete_task` | 完成 |
 | `delete_task` | 软删除 |
 

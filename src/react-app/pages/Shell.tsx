@@ -46,6 +46,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import {
+	CalendarClockIcon,
 	CalendarDaysIcon,
 	ClipboardCheckIcon,
 	ClockIcon,
@@ -184,6 +185,16 @@ export function Shell() {
 									>
 										<ClockIcon />
 										<span>等待</span>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+								<SidebarMenuItem>
+									<SidebarMenuButton
+										isActive={location.pathname === "/scheduled"}
+										tooltip="已安排"
+										render={<NavLink to="/scheduled" />}
+									>
+										<CalendarClockIcon />
+										<span>已安排</span>
 									</SidebarMenuButton>
 								</SidebarMenuItem>
 								<SidebarMenuItem>

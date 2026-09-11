@@ -25,6 +25,7 @@ export default function App() {
 							<Route path="today" element={<TodayPage />} />
 							<Route path="next" element={<StatusListPage status="next" />} />
 							<Route path="waiting" element={<StatusListPage status="waiting" />} />
+							<Route path="scheduled" element={<StatusListPage status="scheduled" />} />
 							<Route path="someday" element={<StatusListPage status="someday" />} />
 							<Route path="inbox" element={<InboxPage />} />
 							<Route path="review" element={<ReviewPage />} />

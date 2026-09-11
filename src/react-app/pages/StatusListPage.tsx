@@ -6,7 +6,7 @@ import { api, type Project, type Task } from "../api";
 import { TaskBoard } from "../components/TaskBoard";
 
 const LIST_COPY: Record<
-	"next" | "waiting" | "someday",
+	"next" | "waiting" | "scheduled" | "someday",
 	{ hint: string; placeholder: string; emptyText: string }
 > = {
 	next: {
@@ -19,6 +19,11 @@ const LIST_COPY: Record<
 		placeholder: "记下在等的事，回车创建",
 		emptyText: "没有等待中的任务。",
 	},
+	scheduled: {
+		hint: "已定日期、尚未按今日焦点处理的安排。",
+		placeholder: "记下一条已安排的事，回车创建",
+		emptyText: "还没有已安排的任务。",
+	},
 	someday: {
 		hint: "以后也许要做，现在先不推进。",
 		placeholder: "记下将来也许要做的事",
@@ -26,7 +31,7 @@ const LIST_COPY: Record<
 	},
 };
 
-export function StatusListPage({ status }: { status: "next" | "waiting" | "someday" }) {
+export function StatusListPage({ status }: { status: "next" | "waiting" | "scheduled" | "someday" }) {
 	const { projects } = useOutletContext<{ projects: Project[] }>();
 	const [tasks, setTasks] = useState<Task[]>([]);
 	const [error, setError] = useState<string | null>(null);

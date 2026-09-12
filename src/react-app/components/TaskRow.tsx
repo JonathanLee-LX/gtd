@@ -12,12 +12,15 @@ export function TaskRow({
 	depth = 0,
 	onOpen,
 	onComplete,
+	completeDisabled = false,
 }: {
 	task: Task;
 	active: boolean;
 	depth?: number;
 	onOpen: () => void;
 	onComplete: () => void;
+	/** True while an optimistic task mutation is in flight. */
+	completeDisabled?: boolean;
 }) {
 	const overdue = Boolean(task.dueAt && dueLabel(task.dueAt).startsWith("逾期"));
 	return (
@@ -35,6 +38,7 @@ export function TaskRow({
 				size="icon"
 				aria-label="完成任务"
 				className="size-11 shrink-0 md:mt-0.5 md:size-6"
+				disabled={completeDisabled}
 				onClick={onComplete}
 			>
 				<CircleIcon className="size-5 md:size-3" />

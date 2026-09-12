@@ -50,6 +50,7 @@ export function TaskDetail({
 	onSave,
 	onComplete,
 	onDelete,
+	mutationPending = false,
 }: {
 	task: Task;
 	projects: Project[];
@@ -59,6 +60,8 @@ export function TaskDetail({
 	onSave: (patch: Record<string, unknown>) => Promise<void>;
 	onComplete: () => Promise<void>;
 	onDelete: () => Promise<void>;
+	/** Disable save / complete / delete while any optimistic task mutation is in flight. */
+	mutationPending?: boolean;
 }) {
 	const [title, setTitle] = useState(task.title);
 	const [notes, setNotes] = useState(task.notes ?? "");
@@ -360,7 +363,7 @@ export function TaskDetail({
 			>
 				<Button
 					type="submit"
-					disabled={busy || deleting}
+					disabled={busy || deleting || mutationPending}
 					className={layout === "mobile" ? "min-h-11 flex-1" : undefined}
 				>
 					{busy ? <Spinner data-icon="inline-start" /> : null}
@@ -369,7 +372,7 @@ export function TaskDetail({
 				<Button
 					type="button"
 					variant="outline"
-					disabled={deleting}
+					disabled={deleting || mutationPending}
 					className={layout === "mobile" ? "min-h-11 flex-1" : undefined}
 					onClick={() => void onComplete()}
 				>
@@ -383,7 +386,7 @@ export function TaskDetail({
 								<Button
 									type="button"
 									variant="destructive"
-									disabled={deleting}
+									disabled={deleting || mutationPending}
 									className={layout === "mobile" ? "min-h-11 w-full" : undefined}
 								/>
 							}
@@ -399,10 +402,10 @@ export function TaskDetail({
 								</AlertDialogDescription>
 							</AlertDialogHeader>
 							<AlertDialogFooter>
-								<AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+								<AlertDialogCancel disabled={deleting || mutationPending}>取消</AlertDialogCancel>
 								<AlertDialogAction
 									variant="destructive"
-									disabled={deleting}
+									disabled={deleting || mutationPending}
 									onClick={(event) => {
 										event.preventDefault();
 										void confirmDelete();

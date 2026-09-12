@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimal capability for the desktop shell window (no remote IPC)",
+  "description": "Minimal capability for the desktop shell window (no remote IPC). HTTP cookies for the production origin are handled by the OS WebView, not by Tauri permissions.",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

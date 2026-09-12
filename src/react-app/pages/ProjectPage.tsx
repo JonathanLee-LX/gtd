@@ -1,28 +1,32 @@
-import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useOutletContext, useParams } from "react-router-dom";
-import { api, type Project, type Task } from "../api";
+import { Spinner } from "@/components/ui/spinner";
+import type { Project } from "../api";
 import { TaskBoard } from "../components/TaskBoard";
+import {
+	useCompleteTask,
+	useCreateTask,
+	useDeleteTask,
+	useUpdateTask,
+} from "../hooks/use-task-mutations";
+import { useTaskList } from "../hooks/use-task-queries";
+import { silentInvalidateTasks } from "../lib/task-cache";
 
 export function ProjectPage() {
 	const { id } = useParams();
 	const { projects } = useOutletContext<{ projects: Project[] }>();
 	const project = projects.find((item) => item.id === id);
-	const [tasks, setTasks] = useState<Task[]>([]);
-	const [error, setError] = useState<string | null>(null);
+	const queryClient = useQueryClient();
+	const { data, error, isPending } = useTaskList(
+		{ projectId: id },
+		{ enabled: Boolean(id) },
+	);
+	const createTask = useCreateTask();
+	const updateTask = useUpdateTask();
+	const completeTask = useCompleteTask();
+	const deleteTask = useDeleteTask();
 
-	async function load() {
-		if (!id) return;
-		try {
-			const data = await api.tasks({ projectId: id });
-			setTasks(data.items);
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "加载失败");
-		}
-	}
-
-	useEffect(() => {
-		void load();
-	}, [id]);
+	const tasks = data?.items ?? [];
 
 	if (!project) {
 		return <p className="p-6 text-sm text-muted-foreground">找不到这个项目。</p>;
@@ -30,8 +34,16 @@ export function ProjectPage() {
 	if (error) {
 		return (
 			<p className="p-6 text-sm text-destructive" role="alert">
-				{error}
+				{error instanceof Error ? error.message : "加载失败"}
 			</p>
+		);
+	}
+	if (isPending && !data) {
+		return (
+			<div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
+				<Spinner />
+				加载项目…
+			</div>
 		);
 	}
 
@@ -43,22 +55,20 @@ export function ProjectPage() {
 			projects={projects}
 			emptyText="这个项目还没有未完成任务。"
 			onCreate={async (title) => {
-				await api.createTask({ title, projectId: project.id, status: "next" });
-				await load();
+				await createTask.mutateAsync({ title, projectId: project.id, status: "next" });
 			}}
 			onSave={async (taskId, patch) => {
-				await api.updateTask(taskId, patch);
-				await load();
+				await updateTask.mutateAsync({ id: taskId, patch });
 			}}
 			onComplete={async (taskId) => {
-				await api.completeTask(taskId);
-				await load();
+				await completeTask.mutateAsync(taskId);
 			}}
 			onDelete={async (taskId) => {
-				await api.deleteTask(taskId);
-				await load();
+				await deleteTask.mutateAsync(taskId);
 			}}
-			onReload={load}
+			onReload={async () => {
+				await silentInvalidateTasks(queryClient);
+			}}
 		/>
 	);
 }

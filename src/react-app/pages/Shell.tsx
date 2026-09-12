@@ -73,7 +73,6 @@ export function Shell() {
 	const [projectName, setProjectName] = useState("");
 	const [creating, setCreating] = useState(false);
 	const [query, setQuery] = useState("");
-	const [collectTick, setCollectTick] = useState(0);
 
 	async function load() {
 		try {
@@ -328,7 +327,7 @@ export function Shell() {
 					</form>
 				</header>
 				<div className="flex min-h-0 flex-1 flex-col overflow-hidden pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0">
-					<Outlet context={{ projects, reloadProjects: load, collectTick }} />
+					<Outlet context={{ projects, reloadProjects: load }} />
 				</div>
 			</SidebarInset>
 			<MobileBottomNav
@@ -336,7 +335,7 @@ export function Shell() {
 				onNewProject={() => setProjectOpen(true)}
 				onSignOut={() => void signOut()}
 			/>
-			<MobileQuickCollect onCreated={() => setCollectTick((n) => n + 1)} />
+			<MobileQuickCollect />
 			<Dialog open={projectOpen} onOpenChange={setProjectOpen}>
 				<DialogContent>
 					<form onSubmit={addProject} className="flex flex-col gap-4">

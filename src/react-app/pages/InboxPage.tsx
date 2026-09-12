@@ -1,30 +1,33 @@
-import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useOutletContext } from "react-router-dom";
-import { api, type Project, type Task } from "../api";
+import { Spinner } from "@/components/ui/spinner";
+import type { Project } from "../api";
 import { TaskBoard } from "../components/TaskBoard";
+import {
+	useCompleteTask,
+	useCreateTask,
+	useDeleteTask,
+	useUpdateTask,
+} from "../hooks/use-task-mutations";
+import { useTaskList } from "../hooks/use-task-queries";
+import { silentInvalidateTasks } from "../lib/task-cache";
 
 export function InboxPage() {
-	const { projects, collectTick } = useOutletContext<{
+	const { projects } = useOutletContext<{
 		projects: Project[];
-		collectTick?: number;
 	}>();
 	const inbox = projects.find((project) => project.isInbox);
-	const [tasks, setTasks] = useState<Task[]>([]);
-	const [error, setError] = useState<string | null>(null);
+	const queryClient = useQueryClient();
+	const { data, error, isPending } = useTaskList(
+		{ projectId: inbox?.id },
+		{ enabled: Boolean(inbox?.id) },
+	);
+	const createTask = useCreateTask();
+	const updateTask = useUpdateTask();
+	const completeTask = useCompleteTask();
+	const deleteTask = useDeleteTask();
 
-	async function load() {
-		if (!inbox) return;
-		try {
-			const data = await api.tasks({ projectId: inbox.id });
-			setTasks(data.items);
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "加载失败");
-		}
-	}
-
-	useEffect(() => {
-		void load();
-	}, [inbox?.id, collectTick]);
+	const tasks = data?.items ?? [];
 
 	if (!inbox) {
 		return <p className="p-6 text-sm text-muted-foreground">正在准备收件箱…</p>;
@@ -32,8 +35,16 @@ export function InboxPage() {
 	if (error) {
 		return (
 			<p className="p-6 text-sm text-destructive" role="alert">
-				{error}
+				{error instanceof Error ? error.message : "加载失败"}
 			</p>
+		);
+	}
+	if (isPending && !data) {
+		return (
+			<div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
+				<Spinner />
+				加载收件箱…
+			</div>
 		);
 	}
 
@@ -46,22 +57,20 @@ export function InboxPage() {
 			projects={projects}
 			emptyText="收件箱是空的。这是一件好事。"
 			onCreate={async (title) => {
-				await api.createTask({ title, projectId: inbox.id, status: "inbox" });
-				await load();
+				await createTask.mutateAsync({ title, projectId: inbox.id, status: "inbox" });
 			}}
 			onSave={async (id, patch) => {
-				await api.updateTask(id, patch);
-				await load();
+				await updateTask.mutateAsync({ id, patch });
 			}}
 			onComplete={async (id) => {
-				await api.completeTask(id);
-				await load();
+				await completeTask.mutateAsync(id);
 			}}
 			onDelete={async (id) => {
-				await api.deleteTask(id);
-				await load();
+				await deleteTask.mutateAsync(id);
 			}}
-			onReload={load}
+			onReload={async () => {
+				await silentInvalidateTasks(queryClient);
+			}}
 			enableInboxProcess
 		/>
 	);

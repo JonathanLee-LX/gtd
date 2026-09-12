@@ -1,45 +1,50 @@
-import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
 import { NavLink, useOutletContext, useSearchParams } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import {
 	CONTEXT_TAG_EXAMPLES,
 	isContextTagName,
 } from "../../shared/constants";
-import { api, type Project, type Tag, type Task } from "../api";
+import { api, type Project, type Tag } from "../api";
 import { TaskBoard } from "../components/TaskBoard";
+import {
+	useCompleteTask,
+	useCreateTask,
+	useDeleteTask,
+	useUpdateTask,
+} from "../hooks/use-task-mutations";
+import { useTaskList } from "../hooks/use-task-queries";
+import { silentInvalidateTasks } from "../lib/task-cache";
 
 export function SearchPage() {
 	const { projects } = useOutletContext<{ projects: Project[] }>();
 	const [params, setSearchParams] = useSearchParams();
 	const q = params.get("q")?.trim() ?? "";
 	const tagId = params.get("tagId")?.trim() ?? "";
-	const [tasks, setTasks] = useState<Task[]>([]);
-	const [tags, setTags] = useState<Tag[]>([]);
-	const [error, setError] = useState<string | null>(null);
+	const queryClient = useQueryClient();
+	const enabled = Boolean(q || tagId);
+	const { data, error, isPending } = useTaskList(
+		{
+			q: q || undefined,
+			tagId: tagId || undefined,
+			includeCompleted: enabled ? "true" : undefined,
+		},
+		{ enabled },
+	);
+	const tagsQuery = useQuery({
+		queryKey: ["tags"],
+		queryFn: () => api.tags(),
+	});
+	const createTask = useCreateTask();
+	const updateTask = useUpdateTask();
+	const completeTask = useCompleteTask();
+	const deleteTask = useDeleteTask();
 
-	async function load() {
-		try {
-			const [data, tagRes] = await Promise.all([
-				q || tagId
-					? api.tasks({
-							q: q || undefined,
-							tagId: tagId || undefined,
-							includeCompleted: "true",
-						})
-					: Promise.resolve({ items: [] as Task[] }),
-				api.tags(),
-			]);
-			setTasks(data.items);
-			setTags(tagRes.items);
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "搜索失败");
-		}
-	}
-
-	useEffect(() => {
-		void load();
-	}, [q, tagId]);
+	const tasks = enabled ? (data?.items ?? []) : [];
+	const tags: Tag[] = tagsQuery.data?.items ?? [];
 
 	const sortedTags = useMemo(() => {
 		return [...tags].sort((a, b) => {
@@ -53,7 +58,7 @@ export function SearchPage() {
 	if (error) {
 		return (
 			<p className="p-6 text-sm text-destructive" role="alert">
-				{error}
+				{error instanceof Error ? error.message : "搜索失败"}
 			</p>
 		);
 	}
@@ -109,6 +114,18 @@ export function SearchPage() {
 		</div>
 	);
 
+	if (enabled && isPending && !data) {
+		return (
+			<div className="flex flex-1 flex-col gap-5 overflow-auto p-6">
+				{toolbar}
+				<div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+					<Spinner />
+					搜索中…
+				</div>
+			</div>
+		);
+	}
+
 	return (
 		<TaskBoard
 			title={title}
@@ -118,23 +135,21 @@ export function SearchPage() {
 			tasks={tasks}
 			projects={projects}
 			emptyText={emptyText}
-			onCreate={async (title) => {
-				await api.createTask({ title, status: "next" });
-				await load();
+			onCreate={async (titleText) => {
+				await createTask.mutateAsync({ title: titleText, status: "next" });
 			}}
 			onSave={async (id, patch) => {
-				await api.updateTask(id, patch);
-				await load();
+				await updateTask.mutateAsync({ id, patch });
 			}}
 			onComplete={async (id) => {
-				await api.completeTask(id);
-				await load();
+				await completeTask.mutateAsync(id);
 			}}
 			onDelete={async (id) => {
-				await api.deleteTask(id);
-				await load();
+				await deleteTask.mutateAsync(id);
 			}}
-			onReload={load}
+			onReload={async () => {
+				await silentInvalidateTasks(queryClient);
+			}}
 		/>
 	);
 }

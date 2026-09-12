@@ -32,6 +32,7 @@ import type { TaskDraft } from "../../shared/schemas";
 import { orderTasksWithDepth } from "../../shared/task-tree";
 import { TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
 import { api, type Project, type Task } from "../api";
+import { useCommitAiDraft, useProcessInboxTask } from "../hooks/use-task-mutations";
 import {
 	InboxProcessActions,
 	type InboxProcessAction,
@@ -52,7 +53,6 @@ export function TaskBoard({
 	onSave,
 	onComplete,
 	onDelete,
-	onReload,
 	enableInboxProcess = false,
 }: {
 	title: string;
@@ -75,6 +75,8 @@ export function TaskBoard({
 	const [parsing, setParsing] = useState(false);
 	const [committing, setCommitting] = useState<string | null>(null);
 	const [processBusy, setProcessBusy] = useState<string | null>(null);
+	const processInbox = useProcessInboxTask();
+	const commitAi = useCommitAiDraft();
 	const selected = tasks.find((task) => task.id === selectedId) ?? null;
 	const isMobile = useIsMobile();
 	const ordered = orderTasksWithDepth(tasks);
@@ -139,7 +141,7 @@ export function TaskBoard({
 	) {
 		setProcessBusy(taskId);
 		try {
-			await api.processInbox(taskId, { action, waitingOn });
+			await processInbox.mutateAsync({ id: taskId, body: { action, waitingOn } });
 			toast.success(
 				action === "discard"
 					? "已丢掉"
@@ -149,9 +151,8 @@ export function TaskBoard({
 							? "已标为等待"
 							: "已标为将来",
 			);
-			await onReload?.();
-		} catch (err) {
-			toast.error(err instanceof Error ? err.message : "处理失败");
+		} catch {
+			// toast + rollback handled in mutation
 		} finally {
 			setProcessBusy(null);
 		}
@@ -320,17 +321,16 @@ export function TaskBoard({
 										disabled={committing === draft.title}
 										onClick={() => {
 											setCommitting(draft.title);
-											void api
-												.commitAi(draft)
-												.then(async () => {
+											void commitAi
+												.mutateAsync(draft)
+												.then(() => {
 													toast.success(`已写入「${draft.title}」`);
 													setDrafts((current) =>
 														current.filter((item) => item !== draft),
 													);
-													await onReload?.();
 												})
-												.catch((err: unknown) => {
-													toast.error(err instanceof Error ? err.message : "写入失败");
+												.catch(() => {
+													// toast handled in mutation
 												})
 												.finally(() => setCommitting(null));
 										}}

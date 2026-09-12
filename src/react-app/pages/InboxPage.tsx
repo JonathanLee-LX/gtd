@@ -11,6 +11,7 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
+import { shouldShowTasksEmpty } from "../lib/task-list-ui";
 
 export function InboxPage() {
 	const { projects } = useOutletContext<{
@@ -39,6 +40,7 @@ export function InboxPage() {
 			</p>
 		);
 	}
+	// Spinner only for cold load. Empty gated by showEmptyState (S1).
 	if (isPending && !data) {
 		return (
 			<div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
@@ -56,6 +58,7 @@ export function InboxPage() {
 			tasks={tasks}
 			projects={projects}
 			emptyText="收件箱是空的。这是一件好事。"
+			showEmptyState={shouldShowTasksEmpty(data)}
 			onCreate={async (title) => {
 				await createTask.mutateAsync({ title, projectId: inbox.id, status: "inbox" });
 			}}

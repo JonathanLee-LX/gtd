@@ -13,6 +13,7 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
+import { shouldShowTasksEmpty } from "../lib/task-list-ui";
 
 const LIST_COPY: Record<
 	"next" | "waiting" | "scheduled" | "someday",
@@ -61,6 +62,7 @@ export function StatusListPage({ status }: { status: "next" | "waiting" | "sched
 		);
 	}
 
+	// Spinner only for cold load. Empty gated by showEmptyState (S1).
 	if (isPending && !data) {
 		return (
 			<div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
@@ -78,6 +80,7 @@ export function StatusListPage({ status }: { status: "next" | "waiting" | "sched
 			tasks={tasks}
 			projects={projects}
 			emptyText={copy.emptyText}
+			showEmptyState={shouldShowTasksEmpty(data)}
 			onCreate={async (titleText) => {
 				await createTask.mutateAsync({ title: titleText, status });
 			}}

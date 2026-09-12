@@ -18,6 +18,7 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
+import { shouldShowTasksEmpty } from "../lib/task-list-ui";
 
 export function SearchPage() {
 	const { projects } = useOutletContext<{ projects: Project[] }>();
@@ -135,6 +136,7 @@ export function SearchPage() {
 			tasks={tasks}
 			projects={projects}
 			emptyText={emptyText}
+			showEmptyState={!enabled || shouldShowTasksEmpty(data)}
 			onCreate={async (titleText) => {
 				await createTask.mutateAsync({ title: titleText, status: "next" });
 			}}

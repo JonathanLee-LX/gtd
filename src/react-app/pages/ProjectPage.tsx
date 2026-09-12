@@ -11,6 +11,7 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
+import { shouldShowTasksEmpty } from "../lib/task-list-ui";
 
 export function ProjectPage() {
 	const { id } = useParams();
@@ -38,6 +39,7 @@ export function ProjectPage() {
 			</p>
 		);
 	}
+	// Spinner only for cold load. Empty gated by showEmptyState (S1).
 	if (isPending && !data) {
 		return (
 			<div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
@@ -54,6 +56,7 @@ export function ProjectPage() {
 			tasks={tasks}
 			projects={projects}
 			emptyText="这个项目还没有未完成任务。"
+			showEmptyState={shouldShowTasksEmpty(data)}
 			onCreate={async (title) => {
 				await createTask.mutateAsync({ title, projectId: project.id, status: "next" });
 			}}

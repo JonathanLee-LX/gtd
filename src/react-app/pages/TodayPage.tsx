@@ -11,6 +11,7 @@ import {
 } from "../hooks/use-task-mutations";
 import { useFocusTasks } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
+import { shouldShowTasksEmpty } from "../lib/task-list-ui";
 
 export function TodayPage() {
 	const { projects } = useOutletContext<{ projects: Project[] }>();
@@ -32,7 +33,8 @@ export function TodayPage() {
 		);
 	}
 
-	// First paint with cache: isPending is false when cached data exists.
+	// Spinner only for cold load (isPending && !data). Refetch keeps cached data (#51).
+	// Empty UI is gated by showEmptyState — never when data is undefined (S1).
 	if (isPending && !data) {
 		return (
 			<div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
@@ -50,6 +52,7 @@ export function TodayPage() {
 			tasks={tasks}
 			projects={projects}
 			emptyText="今天还没有焦点任务。先去收件箱清一轮，或在这里新建。"
+			showEmptyState={shouldShowTasksEmpty(data)}
 			onCreate={async (title) => {
 				await createTask.mutateAsync({ title, status: "next" });
 			}}

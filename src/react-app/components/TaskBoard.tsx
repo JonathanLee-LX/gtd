@@ -49,6 +49,7 @@ export function TaskBoard({
 	tasks,
 	projects,
 	emptyText,
+	showEmptyState = true,
 	onCreate,
 	onSave,
 	onComplete,
@@ -62,6 +63,11 @@ export function TaskBoard({
 	tasks: Task[];
 	projects: Project[];
 	emptyText: string;
+	/**
+	 * S1: only true when query `data` is defined and items is empty.
+	 * Never true while data is undefined (cache miss / remount) — avoids「没有任务」flash.
+	 */
+	showEmptyState?: boolean;
 	onCreate: (title: string) => Promise<void>;
 	onSave: (id: string, patch: Record<string, unknown>) => Promise<void>;
 	onComplete: (id: string) => Promise<void>;
@@ -200,15 +206,17 @@ export function TaskBoard({
 					}}
 				/>
 				{tasks.length === 0 ? (
-					<Empty className="border">
-						<EmptyHeader>
-							<EmptyMedia variant="icon">
-								<InboxIcon />
-							</EmptyMedia>
-							<EmptyTitle>没有任务</EmptyTitle>
-							<EmptyDescription>{emptyText}</EmptyDescription>
-						</EmptyHeader>
-					</Empty>
+					showEmptyState ? (
+						<Empty className="border">
+							<EmptyHeader>
+								<EmptyMedia variant="icon">
+									<InboxIcon />
+								</EmptyMedia>
+								<EmptyTitle>没有任务</EmptyTitle>
+								<EmptyDescription>{emptyText}</EmptyDescription>
+							</EmptyHeader>
+						</Empty>
+					) : null
 				) : (
 					<div className="flex flex-col gap-1">
 						{ordered.map(({ task, depth }) => (

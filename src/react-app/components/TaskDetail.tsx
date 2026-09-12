@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import { CheckIcon, TrashIcon, XIcon } from "lucide-react";
 import { createsParentCycle } from "../../shared/task-tree";
 import { CONTEXT_TAG_EXAMPLES, TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
@@ -45,6 +46,7 @@ export function TaskDetail({
 	task,
 	projects,
 	tasks,
+	layout = "aside",
 	onSave,
 	onComplete,
 	onDelete,
@@ -52,6 +54,8 @@ export function TaskDetail({
 	task: Task;
 	projects: Project[];
 	tasks: Task[];
+	/** Mobile fullscreen chrome: sticky thumb-reach action bar. Desktop aside unchanged. */
+	layout?: "aside" | "mobile";
 	onSave: (patch: Record<string, unknown>) => Promise<void>;
 	onComplete: () => Promise<void>;
 	onDelete: () => Promise<void>;
@@ -153,9 +157,24 @@ export function TaskDetail({
 	}
 
 	return (
-		<form onSubmit={save} className="flex min-h-0 flex-1 flex-col gap-4">
-			<div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto">
-			<FieldGroup>
+		<form
+			onSubmit={save}
+			className={cn(
+				"flex min-h-0 min-w-0 flex-1 flex-col gap-4",
+				layout === "mobile" && "overflow-hidden",
+			)}
+		>
+			<div
+				className={cn(
+					"flex min-h-0 min-w-0 flex-1 flex-col gap-4",
+					// Single inner scroll: y-only so labels are not x-clipped; panel itself does not scroll.
+					"overflow-x-hidden overflow-y-auto",
+					layout === "mobile"
+						? "pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]"
+						: undefined,
+				)}
+			>
+			<FieldGroup className="min-w-0 max-w-full">
 				<Field>
 					<FieldLabel htmlFor="task-detail-title">标题</FieldLabel>
 					<Input
@@ -331,45 +350,71 @@ export function TaskDetail({
 			<Badge variant="outline">来源：{task.source}</Badge>
 			{error ? <FieldError>{error}</FieldError> : null}
 			</div>
-			<div className="flex flex-wrap gap-2">
-				<Button type="submit" disabled={busy || deleting}>
+			<div
+				className={cn(
+					"flex gap-2",
+					layout === "mobile"
+						? "mt-auto shrink-0 flex-nowrap border-t bg-background pt-3 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+						: "flex-wrap",
+				)}
+			>
+				<Button
+					type="submit"
+					disabled={busy || deleting}
+					className={layout === "mobile" ? "min-h-11 flex-1" : undefined}
+				>
 					{busy ? <Spinner data-icon="inline-start" /> : null}
 					保存
 				</Button>
-				<Button type="button" variant="outline" disabled={deleting} onClick={() => void onComplete()}>
+				<Button
+					type="button"
+					variant="outline"
+					disabled={deleting}
+					className={layout === "mobile" ? "min-h-11 flex-1" : undefined}
+					onClick={() => void onComplete()}
+				>
 					<CheckIcon data-icon="inline-start" />
 					完成
 				</Button>
-				<AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-					<AlertDialogTrigger
-						render={<Button type="button" variant="destructive" disabled={deleting} />}
-					>
-						<TrashIcon data-icon="inline-start" />
-						删除
-					</AlertDialogTrigger>
-					<AlertDialogContent>
-						<AlertDialogHeader>
-							<AlertDialogTitle>确认删除任务？</AlertDialogTitle>
-							<AlertDialogDescription>
-								将软删除「{task.title}」。删除后列表和今日焦点不再显示；子任务会自动变为顶层。
-							</AlertDialogDescription>
-						</AlertDialogHeader>
-						<AlertDialogFooter>
-							<AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
-							<AlertDialogAction
-								variant="destructive"
-								disabled={deleting}
-								onClick={(event) => {
-									event.preventDefault();
-									void confirmDelete();
-								}}
-							>
-								{deleting ? <Spinner data-icon="inline-start" /> : null}
-								确认删除
-							</AlertDialogAction>
-						</AlertDialogFooter>
-					</AlertDialogContent>
-				</AlertDialog>
+				<div className={layout === "mobile" ? "min-h-11 flex-1" : undefined}>
+					<AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+						<AlertDialogTrigger
+							render={
+								<Button
+									type="button"
+									variant="destructive"
+									disabled={deleting}
+									className={layout === "mobile" ? "min-h-11 w-full" : undefined}
+								/>
+							}
+						>
+							<TrashIcon data-icon="inline-start" />
+							删除
+						</AlertDialogTrigger>
+						<AlertDialogContent>
+							<AlertDialogHeader>
+								<AlertDialogTitle>确认删除任务？</AlertDialogTitle>
+								<AlertDialogDescription>
+									将软删除「{task.title}」。删除后列表和今日焦点不再显示；子任务会自动变为顶层。
+								</AlertDialogDescription>
+							</AlertDialogHeader>
+							<AlertDialogFooter>
+								<AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+								<AlertDialogAction
+									variant="destructive"
+									disabled={deleting}
+									onClick={(event) => {
+										event.preventDefault();
+										void confirmDelete();
+									}}
+								>
+									{deleting ? <Spinner data-icon="inline-start" /> : null}
+									确认删除
+								</AlertDialogAction>
+							</AlertDialogFooter>
+						</AlertDialogContent>
+					</AlertDialog>
+				</div>
 			</div>
 		</form>
 	);

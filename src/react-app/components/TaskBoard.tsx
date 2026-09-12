@@ -162,6 +162,7 @@ export function TaskBoard({
 			task={selected}
 			projects={projects}
 			tasks={tasks}
+			layout={isMobile ? "mobile" : "aside"}
 			onSave={(patch) => onSave(selected.id, patch)}
 			onComplete={() => onComplete(selected.id)}
 			onDelete={async () => {
@@ -243,13 +244,17 @@ export function TaskBoard({
 						if (!open) closeDetail();
 					}}
 				>
-					{/* Fullscreen push-style sheet (<768). List stays mounted; scroll restored via client state. */}
+					{/*
+					  True fullscreen page (<768): bottom-up / fade, ~100dvw×100dvh.
+					  Not a right drawer — no list edge, no narrow max-w card.
+					  List stays mounted; scroll restored via client state (#43).
+					*/}
 					<SheetContent
-						side="right"
+						side="bottom"
 						showCloseButton={false}
-						className="inset-y-0 right-0 flex h-dvh w-full max-w-none flex-col gap-0 border-l-0 p-0 sm:max-w-none data-[side=right]:w-full"
+						className="inset-0 z-50 flex !h-dvh !max-h-dvh !w-full !max-w-none flex-col gap-0 overflow-hidden !rounded-none !border-0 bg-background p-0 !shadow-none data-[side=bottom]:!inset-0 data-[side=bottom]:!h-dvh data-[side=bottom]:!max-h-dvh data-[side=bottom]:!w-full data-[side=bottom]:!border-0 data-[side=bottom]:data-ending-style:!translate-y-full data-[side=bottom]:data-starting-style:!translate-y-full"
 					>
-						<SheetHeader className="flex-row items-center gap-1 space-y-0 border-b p-3 text-left">
+						<SheetHeader className="shrink-0 flex-row items-center gap-1 space-y-0 border-b py-3 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(0.75rem,env(safe-area-inset-top))] text-left">
 							<Button
 								type="button"
 								variant="ghost"
@@ -265,7 +270,7 @@ export function TaskBoard({
 								<SheetDescription>改状态、优先级和截止日期。</SheetDescription>
 							</div>
 						</SheetHeader>
-						<div className="flex min-h-0 flex-1 flex-col px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+						<div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-3">
 							{detail}
 						</div>
 					</SheetContent>

@@ -38,7 +38,6 @@ import {
 	prefersReducedMotion,
 	pulseCompleteHaptic,
 	scheduleCompleteFeedback,
-	toastTaskCompleted,
 } from "../lib/complete-feedback";
 import {
 	mergeOrderedWithExiting,
@@ -193,7 +192,8 @@ export function TaskBoard({
 
 	/**
 	 * Complete feedback: same-frame haptic + check, optimistic mutation immediately,
-	 * exit motion, then hard-drop. Failure cancels animation (row restored via #51 rollback).
+	 * exit motion, then hard-drop. Success toast only after mutate resolves (avoids
+	 * double toast when failure shows error). Failure cancels animation (#51 rollback).
 	 */
 	const beginComplete = useCallback(
 		(id: string) => {
@@ -210,9 +210,8 @@ export function TaskBoard({
 				depth: ordered[orderedIndex]?.depth ?? 0,
 			};
 
-			// Same frame as check visual — no queue / retry.
+			// Same frame as check visual — no queue / retry. Toast waits for mutation success.
 			pulseCompleteHaptic();
-			toastTaskCompleted();
 
 			if (!reduced) {
 				setExiting((prev) => {
@@ -250,8 +249,10 @@ export function TaskBoard({
 			void (async () => {
 				try {
 					await onComplete(id);
+					//「已完成」toast fires from useCompleteTask onSuccess (not on click).
 				} catch {
 					// Rollback + error toast handled in useCompleteTask (#51).
+					// No「已完成」toast on failure.
 					clearExiting(id);
 				}
 			})();

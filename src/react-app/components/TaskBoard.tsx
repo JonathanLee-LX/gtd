@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -34,6 +34,16 @@ import { TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants
 import { api, type Project, type Task } from "../api";
 import { useIsMutating } from "@tanstack/react-query";
 import { useCommitAiDraft, useProcessInboxTask } from "../hooks/use-task-mutations";
+import {
+	prefersReducedMotion,
+	pulseCompleteHaptic,
+	scheduleCompleteFeedback,
+	toastTaskCompleted,
+} from "../lib/complete-feedback";
+import {
+	mergeOrderedWithExiting,
+	type ExitingTaskEntry,
+} from "../lib/merge-exiting-tasks";
 import { TASK_MUTATION_KEY } from "../lib/task-mutation-lock";
 import {
 	InboxProcessActions,
@@ -83,13 +93,26 @@ export function TaskBoard({
 	const [parsing, setParsing] = useState(false);
 	const [committing, setCommitting] = useState<string | null>(null);
 	const [processBusy, setProcessBusy] = useState<string | null>(null);
+	/** Rows kept in DOM while complete feedback plays after optimistic cache remove. */
+	const [exiting, setExiting] = useState<Map<string, ExitingTaskEntry>>(() => new Map());
 	const processInbox = useProcessInboxTask();
 	const commitAi = useCommitAiDraft();
 	const taskMutationPending =
 		useIsMutating({ mutationKey: [...TASK_MUTATION_KEY] }) > 0;
-	const selected = tasks.find((task) => task.id === selectedId) ?? null;
+	const selectedIdRef = useRef<string | null>(null);
+	selectedIdRef.current = selectedId;
+	const cancelFeedbackRef = useRef<Map<string, () => void>>(new Map());
 	const isMobile = useIsMobile();
-	const ordered = orderTasksWithDepth(tasks);
+	const ordered = useMemo(() => orderTasksWithDepth(tasks), [tasks]);
+	const displayRows = useMemo(
+		() => mergeOrderedWithExiting(ordered, exiting),
+		[ordered, exiting],
+	);
+	/** Prefer live task; fall back to exiting snapshot so detail stays mounted through feedback. */
+	const selected =
+		tasks.find((task) => task.id === selectedId) ??
+		(selectedId ? (exiting.get(selectedId)?.task ?? null) : null);
+	const selectedCompleting = Boolean(selectedId && exiting.has(selectedId));
 	const listRef = useRef<HTMLDivElement>(null);
 	/** Client-side list scroll; restored when mobile detail closes (no remount / no API). */
 	const listScrollTopRef = useRef(0);
@@ -105,6 +128,7 @@ export function TaskBoard({
 
 	const openTask = useCallback(
 		(id: string) => {
+			if (exiting.has(id)) return;
 			if (listRef.current) listScrollTopRef.current = listRef.current.scrollTop;
 			setSelectedId(id);
 			if (isMobile && !detailHistoryPushedRef.current) {
@@ -112,7 +136,7 @@ export function TaskBoard({
 				detailHistoryPushedRef.current = true;
 			}
 		},
-		[isMobile],
+		[isMobile, exiting],
 	);
 
 	/** Close detail. If we pushed history for the mobile "route", pop it (unless already from popstate). */
@@ -138,11 +162,102 @@ export function TaskBoard({
 	}, [isMobile, restoreListScroll]);
 
 	// Task left the current list (complete / process / delete elsewhere) — drop detail + history.
+	// While complete feedback is playing, keep detail mounted until hard-drop.
 	useEffect(() => {
 		if (!selectedId) return;
 		if (tasks.some((task) => task.id === selectedId)) return;
+		if (exiting.has(selectedId)) return;
 		closeDetail();
-	}, [tasks, selectedId, closeDetail]);
+	}, [tasks, selectedId, closeDetail, exiting]);
+
+	useEffect(() => {
+		return () => {
+			for (const cancel of cancelFeedbackRef.current.values()) cancel();
+			cancelFeedbackRef.current.clear();
+		};
+	}, []);
+
+	const clearExiting = useCallback((id: string) => {
+		const cancel = cancelFeedbackRef.current.get(id);
+		if (cancel) {
+			cancel();
+			cancelFeedbackRef.current.delete(id);
+		}
+		setExiting((prev) => {
+			if (!prev.has(id)) return prev;
+			const next = new Map(prev);
+			next.delete(id);
+			return next;
+		});
+	}, []);
+
+	/**
+	 * Complete feedback: same-frame haptic + check, optimistic mutation immediately,
+	 * exit motion, then hard-drop. Failure cancels animation (row restored via #51 rollback).
+	 */
+	const beginComplete = useCallback(
+		(id: string) => {
+			if (taskMutationPending || exiting.has(id) || cancelFeedbackRef.current.has(id)) return;
+			const orderedIndex = ordered.findIndex((row) => row.task.id === id);
+			const live = ordered[orderedIndex]?.task ?? tasks.find((task) => task.id === id);
+			if (!live) return;
+
+			const reduced = prefersReducedMotion();
+			const entry: ExitingTaskEntry = {
+				task: live,
+				phase: "check",
+				index: orderedIndex >= 0 ? orderedIndex : ordered.length,
+				depth: ordered[orderedIndex]?.depth ?? 0,
+			};
+
+			// Same frame as check visual — no queue / retry.
+			pulseCompleteHaptic();
+			toastTaskCompleted();
+
+			if (!reduced) {
+				setExiting((prev) => {
+					const next = new Map(prev);
+					next.set(id, entry);
+					return next;
+				});
+			}
+
+			const cancel = scheduleCompleteFeedback({
+				reducedMotion: reduced,
+				onExit: () => {
+					setExiting((prev) => {
+						const current = prev.get(id);
+						if (!current) return prev;
+						const next = new Map(prev);
+						next.set(id, { ...current, phase: "exit" });
+						return next;
+					});
+				},
+				onDone: () => {
+					cancelFeedbackRef.current.delete(id);
+					setExiting((prev) => {
+						if (!prev.has(id)) return prev;
+						const next = new Map(prev);
+						next.delete(id);
+						return next;
+					});
+					// Detail: close sheet after feedback; list already from cache (no reload).
+					if (selectedIdRef.current === id) closeDetail();
+				},
+			});
+			cancelFeedbackRef.current.set(id, cancel);
+
+			void (async () => {
+				try {
+					await onComplete(id);
+				} catch {
+					// Rollback + error toast handled in useCompleteTask (#51).
+					clearExiting(id);
+				}
+			})();
+		},
+		[taskMutationPending, exiting, ordered, tasks, onComplete, clearExiting, closeDetail],
+	);
 
 	async function handleInboxProcess(
 		taskId: string,
@@ -176,8 +291,11 @@ export function TaskBoard({
 			tasks={tasks}
 			layout={isMobile ? "mobile" : "aside"}
 			mutationPending={taskMutationPending}
+			completing={selectedCompleting}
 			onSave={(patch) => onSave(selected.id, patch)}
-			onComplete={() => onComplete(selected.id)}
+			onComplete={async () => {
+				beginComplete(selected.id);
+			}}
 			onDelete={async () => {
 				const id = selected.id;
 				await onDelete(id);
@@ -185,6 +303,8 @@ export function TaskBoard({
 			}}
 		/>
 	) : null;
+
+	const listEmpty = tasks.length === 0 && exiting.size === 0;
 
 	return (
 		<div className="flex min-h-0 flex-1">
@@ -211,7 +331,7 @@ export function TaskBoard({
 						}
 					}}
 				/>
-				{tasks.length === 0 ? (
+				{listEmpty ? (
 					showEmptyState ? (
 						<Empty className="border">
 							<EmptyHeader>
@@ -225,20 +345,22 @@ export function TaskBoard({
 					) : null
 				) : (
 					<div className="flex flex-col gap-1">
-						{ordered.map(({ task, depth }) => (
+						{displayRows.map(({ task, depth, exiting: exitEntry }) => (
 							<div key={task.id} className="flex flex-col gap-1">
 								<TaskRow
 									task={task}
 									depth={depth}
 									active={task.id === selectedId}
+									completing={Boolean(exitEntry)}
+									completePhase={exitEntry?.phase ?? null}
 									onOpen={() => openTask(task.id)}
-									completeDisabled={taskMutationPending}
+									completeDisabled={taskMutationPending || Boolean(exitEntry)}
 									onComplete={() => {
-										if (taskMutationPending) return;
-										void onComplete(task.id);
+										if (taskMutationPending || exitEntry) return;
+										beginComplete(task.id);
 									}}
 								/>
-								{enableInboxProcess && task.status === "inbox" ? (
+								{enableInboxProcess && task.status === "inbox" && !exitEntry ? (
 									<div
 										className="pb-2"
 										style={{ paddingLeft: `${40 + depth * 20}px` }}

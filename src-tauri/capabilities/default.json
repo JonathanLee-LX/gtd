@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal capability for the desktop shell window (no remote IPC)",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

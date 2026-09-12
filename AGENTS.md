@@ -10,6 +10,7 @@
 - `src/worker/routes/` REST。入口把 `source` 设成 `human` 或 `mcp`。
 - `src/worker/mcp/` MCP JSON-RPC。工具要少，优先 `today_focus`。
 - `src/react-app/` SPA。中文 UI。
+- `src-tauri/` 桌面壳（Tauri 2）：只加载现网，不写业务 / 不设 `source`。见 `docs/desktop.md`。
 
 ## 命令
 

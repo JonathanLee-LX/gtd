@@ -154,7 +154,7 @@ export const MCP_TOOLS = [
 	},
 	{
 		name: "complete_task",
-		description: "将任务标为已完成。",
+		description: "将任务标为已完成。若有未完成子任务，会提升为顶层（状态不变），不会自动完成子任务。",
 		inputSchema: {
 			type: "object",
 			properties: { id: { type: "string" } },

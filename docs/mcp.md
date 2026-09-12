@@ -18,6 +18,7 @@
 | `nudge_waiting` | 对等待任务「要催」（生成下一步，幂等） |
 | `complete_task` | 完成 |
 | `delete_task` | 软删除 |
+| `restore_task` | 从回收站恢复软删任务（默认列表不含软删） |
 
 `dueAt` 使用 `YYYY-MM-DD`。
 

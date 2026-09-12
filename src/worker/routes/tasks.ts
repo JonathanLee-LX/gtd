@@ -15,8 +15,10 @@ import {
 	createTask,
 	deleteTask,
 	getTask,
+	listDeletedTasks,
 	listTasks,
 	nudgeWaiting,
+	restoreTask,
 	todayFocus,
 	updateTask,
 } from "../services/tasks";
@@ -38,6 +40,11 @@ export const taskRoutes = new Hono<{
 				c.get("user").id,
 				c.req.valid("query").tz,
 			),
+		),
+	)
+	.get("/deleted", (c) =>
+		handleRoute(c, async () =>
+			listDeletedTasks(createDb(c.env.DB), c.get("user").id),
 		),
 	)
 	.post("/", zValidator("json", createTaskInput), (c) =>
@@ -87,6 +94,17 @@ export const taskRoutes = new Hono<{
 	.post("/:id/complete", (c) =>
 		handleRoute(c, async () => {
 			const task = await completeTask(
+				createDb(c.env.DB),
+				c.get("user").id,
+				c.req.param("id"),
+				c.get("source"),
+			);
+			return { task };
+		}),
+	)
+	.post("/:id/restore", (c) =>
+		handleRoute(c, async () => {
+			const task = await restoreTask(
 				createDb(c.env.DB),
 				c.get("user").id,
 				c.req.param("id"),

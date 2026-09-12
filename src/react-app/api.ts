@@ -27,6 +27,7 @@ export type Task = {
 	createdAt: string;
 	updatedAt: string;
 	completedAt: string | null;
+	deletedAt: string | null;
 	tags: Tag[];
 };
 
@@ -92,6 +93,9 @@ export const api = {
 		request<{ task: Task }>(`/api/tasks/${id}/nudge`, { method: "POST" }),
 	deleteTask: (id: string) =>
 		request<{ ok: true }>(`/api/tasks/${id}`, { method: "DELETE" }),
+	deletedTasks: () => request<{ items: Task[] }>("/api/tasks/deleted"),
+	restoreTask: (id: string) =>
+		request<{ task: Task }>(`/api/tasks/${id}/restore`, { method: "POST" }),
 	tags: () => request<{ items: Tag[] }>("/api/tags"),
 	createTag: (name: string) =>
 		request<{ tag: Tag }>("/api/tags", {

@@ -1,7 +1,11 @@
-import { and, desc, eq, exists, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
-import { projects, taskTags, tasks } from "../../db/schema";
+import { and, desc, eq, exists, inArray, isNotNull, isNull, like, lt, or, sql } from "drizzle-orm";
+import { activityLog, projects, taskTags, tasks, user } from "../../db/schema";
 import type { AppDatabase } from "../../db/client";
-import { DEFAULT_PAGE_SIZE, DEFAULT_TIME_ZONE } from "../../shared/constants";
+import {
+	DEFAULT_PAGE_SIZE,
+	DEFAULT_TIME_ZONE,
+	SOFT_DELETE_RETENTION_DAYS,
+} from "../../shared/constants";
 import { decodeCursor, encodeCursor } from "../../shared/cursor";
 import type {
 	CreateTaskInput,
@@ -449,4 +453,179 @@ export async function searchTasks(
 		limit: 30,
 		tz: timeZone,
 	});
+}
+
+const DELETED_PAGE_SIZE = 100;
+const PURGE_TASK_BATCH = 100;
+
+export function softDeleteCutoffIso(now = new Date()) {
+	return new Date(
+		now.getTime() - SOFT_DELETE_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+	).toISOString();
+}
+
+async function getTaskRow(
+	db: AppDatabase,
+	userId: string,
+	id: string,
+	opts: { includeDeleted?: boolean } = {},
+) {
+	const filters = [eq(tasks.id, id), eq(tasks.userId, userId)];
+	if (!opts.includeDeleted) filters.push(isNull(tasks.deletedAt));
+	const rows = await db
+		.select()
+		.from(tasks)
+		.where(and(...filters))
+		.limit(1);
+	return rows[0] ?? null;
+}
+
+/** Settings recycle bin: current user's soft-deleted tasks only (no full-table scan). */
+export async function listDeletedTasks(db: AppDatabase, userId: string) {
+	const rows = await db
+		.select()
+		.from(tasks)
+		.where(and(eq(tasks.userId, userId), isNotNull(tasks.deletedAt)))
+		.orderBy(desc(tasks.deletedAt), desc(tasks.id))
+		.limit(DELETED_PAGE_SIZE);
+	return {
+		items: await hydrate(db, userId, rows),
+	};
+}
+
+export async function restoreTask(
+	db: AppDatabase,
+	userId: string,
+	id: string,
+	source: TaskSource,
+) {
+	const current = await getTaskRow(db, userId, id, { includeDeleted: true });
+	if (!current) throw notFound("任务");
+	if (!current.deletedAt) {
+		const [view] = await hydrate(db, userId, [current]);
+		return view;
+	}
+	const now = nowIso();
+	await db
+		.update(tasks)
+		.set({ deletedAt: null, updatedAt: now })
+		.where(and(eq(tasks.id, id), eq(tasks.userId, userId)));
+	await logActivity(db, {
+		userId,
+		source,
+		action: "task.restore",
+		entityType: "task",
+		entityId: id,
+		summary: `恢复任务「${current.title}」`,
+	});
+	return getTask(db, userId, id);
+}
+
+export type PurgeExpiredDeletedResult = {
+	users: number;
+	tasks: number;
+	activities: number;
+	relations: number;
+};
+
+/** Cron only: hard-delete soft-deleted tasks older than 30 days, one user_id at a time. */
+export async function purgeExpiredDeleted(
+	db: AppDatabase,
+	now = new Date(),
+): Promise<PurgeExpiredDeletedResult> {
+	const cutoff = softDeleteCutoffIso(now);
+	const users = await db.select({ id: user.id }).from(user);
+	const summary: PurgeExpiredDeletedResult = {
+		users: 0,
+		tasks: 0,
+		activities: 0,
+		relations: 0,
+	};
+	for (const row of users) {
+		const result = await purgeExpiredDeletedForUser(db, row.id, cutoff);
+		if (result.tasks === 0) continue;
+		summary.users += 1;
+		summary.tasks += result.tasks;
+		summary.activities += result.activities;
+		summary.relations += result.relations;
+	}
+	return summary;
+}
+
+export async function purgeExpiredDeletedForUser(
+	db: AppDatabase,
+	userId: string,
+	cutoff: string,
+) {
+	let tasksDeleted = 0;
+	let activitiesDeleted = 0;
+	let relationsDeleted = 0;
+	for (;;) {
+		const rows = await db
+			.select({ id: tasks.id })
+			.from(tasks)
+			.where(
+				and(
+					eq(tasks.userId, userId),
+					isNotNull(tasks.deletedAt),
+					lt(tasks.deletedAt, cutoff),
+				),
+			)
+			.limit(PURGE_TASK_BATCH);
+		if (rows.length === 0) break;
+		const ids = rows.map((row) => row.id);
+
+		// Tasks first, then leftover relations / activities (never a request-path scan).
+		await db
+			.delete(tasks)
+			.where(and(eq(tasks.userId, userId), inArray(tasks.id, ids)));
+		tasksDeleted += ids.length;
+
+		const tagRows = await db
+			.select({ taskId: taskTags.taskId })
+			.from(taskTags)
+			.where(inArray(taskTags.taskId, ids));
+		if (tagRows.length > 0) {
+			await db.delete(taskTags).where(inArray(taskTags.taskId, ids));
+			relationsDeleted += tagRows.length;
+		}
+
+		const childRows = await db
+			.select({ id: tasks.id })
+			.from(tasks)
+			.where(and(eq(tasks.userId, userId), inArray(tasks.parentId, ids)));
+		if (childRows.length > 0) {
+			await db
+				.update(tasks)
+				.set({ parentId: null })
+				.where(and(eq(tasks.userId, userId), inArray(tasks.parentId, ids)));
+			relationsDeleted += childRows.length;
+		}
+
+		const activityRows = await db
+			.select({ id: activityLog.id })
+			.from(activityLog)
+			.where(
+				and(
+					eq(activityLog.userId, userId),
+					eq(activityLog.entityType, "task"),
+					inArray(activityLog.entityId, ids),
+				),
+			);
+		if (activityRows.length > 0) {
+			await db.delete(activityLog).where(
+				and(
+					eq(activityLog.userId, userId),
+					eq(activityLog.entityType, "task"),
+					inArray(activityLog.entityId, ids),
+				),
+			);
+			activitiesDeleted += activityRows.length;
+		}
+	}
+	return {
+		tasks: tasksDeleted,
+		activities: activitiesDeleted,
+		relations: relationsDeleted,
+	};
 }

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
@@ -8,11 +8,17 @@ import { newId, nowIso } from "../lib/ids";
 import { ensureInbox } from "../services/ensure-inbox";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
-const sql = readFileSync(join(root, "drizzle/0001_init.sql"), "utf8");
+const drizzleDir = join(root, "drizzle");
+const migrations = readdirSync(drizzleDir)
+	.filter((name) => name.endsWith(".sql"))
+	.sort()
+	.map((name) => readFileSync(join(drizzleDir, name), "utf8"));
 
 export function createTestDb() {
 	const sqlite = new Database(":memory:");
-	sqlite.exec(sql);
+	for (const sql of migrations) {
+		sqlite.exec(sql);
+	}
 	const db = drizzle(sqlite, { schema });
 	return { sqlite, db };
 }

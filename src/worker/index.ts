@@ -10,6 +10,7 @@ import { tagRoutes } from "./routes/tags";
 import { taskRoutes } from "./routes/tasks";
 import { tokenRoutes } from "./routes/tokens";
 import { aiRoutes } from "./routes/ai";
+import { purgeExpiredDeleted } from "./services/tasks";
 
 const app = new Hono<{ Bindings: WorkerEnv }>();
 
@@ -44,4 +45,10 @@ app.route("/api/ai", aiRoutes);
 app.all("/mcp", (c) => handleMcp(c.req.raw, c.env));
 app.all("/mcp/*", (c) => handleMcp(c.req.raw, c.env));
 
-export default app;
+export default {
+	fetch: app.fetch.bind(app),
+	async scheduled(_controller: ScheduledController, env: WorkerEnv) {
+		const result = await purgeExpiredDeleted(createDb(env.DB));
+		console.log("recycle-bin purge", result);
+	},
+};

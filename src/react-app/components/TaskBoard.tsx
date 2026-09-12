@@ -32,6 +32,10 @@ import type { TaskDraft } from "../../shared/schemas";
 import { orderTasksWithDepth } from "../../shared/task-tree";
 import { TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
 import { api, type Project, type Task } from "../api";
+import {
+	InboxProcessActions,
+	type InboxProcessAction,
+} from "./InboxProcessActions";
 import { TaskComposer } from "./TaskComposer";
 import { TaskDetail } from "./TaskDetail";
 import { TaskRow } from "./TaskRow";
@@ -49,6 +53,7 @@ export function TaskBoard({
 	onComplete,
 	onDelete,
 	onReload,
+	enableInboxProcess = false,
 }: {
 	title: string;
 	hint?: string;
@@ -62,14 +67,42 @@ export function TaskBoard({
 	onComplete: (id: string) => Promise<void>;
 	onDelete: (id: string) => Promise<void>;
 	onReload?: () => Promise<void>;
+	/** Daily inbox: show one-click next / waiting / someday / discard. */
+	enableInboxProcess?: boolean;
 }) {
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [drafts, setDrafts] = useState<TaskDraft[]>([]);
 	const [parsing, setParsing] = useState(false);
 	const [committing, setCommitting] = useState<string | null>(null);
+	const [processBusy, setProcessBusy] = useState<string | null>(null);
 	const selected = tasks.find((task) => task.id === selectedId) ?? null;
 	const isMobile = useIsMobile();
 	const ordered = orderTasksWithDepth(tasks);
+
+	async function handleInboxProcess(
+		taskId: string,
+		action: InboxProcessAction,
+		waitingOn?: string,
+	) {
+		setProcessBusy(taskId);
+		try {
+			await api.processInbox(taskId, { action, waitingOn });
+			toast.success(
+				action === "discard"
+					? "已丢掉"
+					: action === "next"
+						? "已标为下一步"
+						: action === "waiting"
+							? "已标为等待"
+							: "已标为将来",
+			);
+			await onReload?.();
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : "处理失败");
+		} finally {
+			setProcessBusy(null);
+		}
+	}
 
 	const detail = selected ? (
 		<TaskDetail
@@ -121,14 +154,28 @@ export function TaskBoard({
 				) : (
 					<div className="flex flex-col gap-1">
 						{ordered.map(({ task, depth }) => (
-							<TaskRow
-								key={task.id}
-								task={task}
-								depth={depth}
-								active={task.id === selectedId}
-								onOpen={() => setSelectedId(task.id)}
-								onComplete={() => void onComplete(task.id)}
-							/>
+							<div key={task.id} className="flex flex-col gap-1">
+								<TaskRow
+									task={task}
+									depth={depth}
+									active={task.id === selectedId}
+									onOpen={() => setSelectedId(task.id)}
+									onComplete={() => void onComplete(task.id)}
+								/>
+								{enableInboxProcess && task.status === "inbox" ? (
+									<div
+										className="pb-2"
+										style={{ paddingLeft: `${40 + depth * 20}px` }}
+									>
+										<InboxProcessActions
+											disabled={processBusy === task.id}
+											onProcess={(action, waitingOn) =>
+												handleInboxProcess(task.id, action, waitingOn)
+											}
+										/>
+									</div>
+								) : null}
+							</div>
 						))}
 					</div>
 				)}

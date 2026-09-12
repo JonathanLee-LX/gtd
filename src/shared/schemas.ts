@@ -106,6 +106,12 @@ export const commitAiInput = taskDraftSchema.extend({
 	projectId: z.string().min(1).optional(),
 });
 
+export const processInboxInput = z.object({
+	action: z.enum(["next", "waiting", "someday", "discard"]),
+	waitingOn: z.string().max(200).optional(),
+	projectId: z.string().min(1).optional(),
+});
+
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type TaskPriority = z.infer<typeof taskPrioritySchema>;
 export type TaskSource = z.infer<typeof taskSourceSchema>;
@@ -117,3 +123,4 @@ export type ListTasksQuery = z.infer<typeof listTasksQuery>;
 export type TaskDraft = z.infer<typeof taskDraftSchema>;
 export type ParseAiOutput = z.infer<typeof parseAiOutput>;
 export type CommitAiInput = z.infer<typeof commitAiInput>;
+export type ProcessInboxInput = z.infer<typeof processInboxInput>;

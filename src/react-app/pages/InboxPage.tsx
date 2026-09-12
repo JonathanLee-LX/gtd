@@ -37,7 +37,7 @@ export function InboxPage() {
 	return (
 		<TaskBoard
 			title="收件箱"
-			hint="先捕获，再整理到项目或下一步。"
+			hint="先捕获，再一键整理成下一步 / 等待 / 将来，或丢掉。"
 			placeholder="随便记一条，回车进收件箱"
 			tasks={tasks}
 			projects={projects}
@@ -59,6 +59,7 @@ export function InboxPage() {
 				await load();
 			}}
 			onReload={load}
+			enableInboxProcess
 		/>
 	);
 }

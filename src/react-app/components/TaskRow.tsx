@@ -23,7 +23,8 @@ export function TaskRow({
 	return (
 		<div
 			className={cn(
-				"flex items-start gap-2 rounded-lg border border-transparent px-2 py-2",
+				// Mobile: taller row + larger hit area (≥44px). Desktop keeps compact density.
+				"flex items-center gap-2 rounded-lg border border-transparent px-2 py-3 min-h-12 md:min-h-0 md:items-start md:gap-2 md:py-2",
 				active ? "border-border bg-muted/60" : "hover:bg-muted/40",
 			)}
 			style={{ paddingLeft: `${8 + depth * 20}px` }}
@@ -31,15 +32,19 @@ export function TaskRow({
 			<Button
 				type="button"
 				variant="ghost"
-				size="icon-xs"
+				size="icon"
 				aria-label="完成任务"
-				className="mt-0.5"
+				className="size-11 shrink-0 md:mt-0.5 md:size-6"
 				onClick={onComplete}
 			>
-				<CircleIcon />
+				<CircleIcon className="size-5 md:size-3" />
 			</Button>
 			<div className="min-w-0 flex-1">
-				<button type="button" onClick={onOpen} className="w-full text-left">
+				<button
+					type="button"
+					onClick={onOpen}
+					className="w-full py-0.5 text-left md:py-0"
+				>
 					<div className="flex flex-wrap items-center gap-2">
 						{depth > 0 ? (
 							<span className="text-xs text-muted-foreground" aria-hidden>

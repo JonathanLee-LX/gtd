@@ -4,7 +4,10 @@ import { api, type Project, type Task } from "../api";
 import { TaskBoard } from "../components/TaskBoard";
 
 export function InboxPage() {
-	const { projects } = useOutletContext<{ projects: Project[] }>();
+	const { projects, collectTick } = useOutletContext<{
+		projects: Project[];
+		collectTick?: number;
+	}>();
 	const inbox = projects.find((project) => project.isInbox);
 	const [tasks, setTasks] = useState<Task[]>([]);
 	const [error, setError] = useState<string | null>(null);
@@ -21,7 +24,7 @@ export function InboxPage() {
 
 	useEffect(() => {
 		void load();
-	}, [inbox?.id]);
+	}, [inbox?.id, collectTick]);
 
 	if (!inbox) {
 		return <p className="p-6 text-sm text-muted-foreground">正在准备收件箱…</p>;

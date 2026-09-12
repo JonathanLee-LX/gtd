@@ -61,6 +61,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Me, type Project } from "../api";
+import { MobileBottomNav } from "../components/MobileBottomNav";
 
 export function Shell() {
 	const navigate = useNavigate();
@@ -298,8 +299,10 @@ export function Shell() {
 			</Sidebar>
 			<SidebarInset className="min-h-0 overflow-hidden">
 				<header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-					<SidebarTrigger />
-					<Separator orientation="vertical" className="h-4" />
+					<div className="hidden items-center gap-2 md:flex">
+						<SidebarTrigger />
+						<Separator orientation="vertical" className="h-4" />
+					</div>
 					<form
 						className="ml-auto w-full max-w-sm"
 						onSubmit={(event) => {
@@ -322,10 +325,15 @@ export function Shell() {
 						</InputGroup>
 					</form>
 				</header>
-				<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+				<div className="flex min-h-0 flex-1 flex-col overflow-hidden pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0">
 					<Outlet context={{ projects, reloadProjects: load }} />
 				</div>
 			</SidebarInset>
+			<MobileBottomNav
+				projects={rest}
+				onNewProject={() => setProjectOpen(true)}
+				onSignOut={() => void signOut()}
+			/>
 			<Dialog open={projectOpen} onOpenChange={setProjectOpen}>
 				<DialogContent>
 					<form onSubmit={addProject} className="flex flex-col gap-4">

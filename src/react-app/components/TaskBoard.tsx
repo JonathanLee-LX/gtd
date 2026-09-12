@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,6 +39,7 @@ import { TaskRow } from "./TaskRow";
 export function TaskBoard({
 	title,
 	hint,
+	toolbar,
 	placeholder,
 	tasks,
 	projects,
@@ -51,6 +52,7 @@ export function TaskBoard({
 }: {
 	title: string;
 	hint?: string;
+	toolbar?: ReactNode;
 	placeholder: string;
 	tasks: Task[];
 	projects: Project[];
@@ -91,6 +93,7 @@ export function TaskBoard({
 					<h1 className="font-heading text-2xl tracking-tight">{title}</h1>
 					{hint ? <p className="text-sm text-muted-foreground">{hint}</p> : null}
 				</header>
+				{toolbar}
 				<TaskComposer
 					placeholder={placeholder}
 					onCreate={onCreate}

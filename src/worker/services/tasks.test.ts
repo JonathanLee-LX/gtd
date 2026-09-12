@@ -14,6 +14,7 @@ import {
 	listDeletedTasks,
 	listTasks,
 	nudgeWaiting,
+	processInboxTask,
 	purgeExpiredDeleted,
 	restoreTask,
 	searchTasks,
@@ -605,5 +606,67 @@ describe("task service", () => {
 		const otherBin = await listDeletedTasks(db as never, b.id);
 		expect(otherBin.items.map((item) => item.id)).toEqual([otherFresh.id]);
 	});
+
+	it("processInboxTask clarifies inbox into next/waiting/someday/discard via shared rules", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		const project = await createProject(db as never, me.id, { name: "工作" }, "human");
+
+		const toNext = await createTask(db as never, me.id, { title: "变下一步" }, "human");
+		const nexted = await processInboxTask(
+			db as never,
+			me.id,
+			toNext.id,
+			{ action: "next", projectId: project.id },
+			"human",
+		);
+		expect(nexted.status).toBe("next");
+		expect(nexted.projectId).toBe(project.id);
+		expect(nexted.waitingOn).toBeNull();
+
+		const toWait = await createTask(db as never, me.id, { title: "等人" }, "human");
+		await expect(
+			processInboxTask(db as never, me.id, toWait.id, { action: "waiting" }, "human"),
+		).rejects.toMatchObject({ code: "waiting_on_required" });
+
+		const waited = await processInboxTask(
+			db as never,
+			me.id,
+			toWait.id,
+			{ action: "waiting", waitingOn: " 小李 " },
+			"mcp",
+		);
+		expect(waited.status).toBe("waiting");
+		expect(waited.waitingOn).toBe("小李");
+
+		const toSomeday = await createTask(db as never, me.id, { title: "也许" }, "human");
+		const someday = await processInboxTask(
+			db as never,
+			me.id,
+			toSomeday.id,
+			{ action: "someday" },
+			"human",
+		);
+		expect(someday.status).toBe("someday");
+
+		const toDiscard = await createTask(db as never, me.id, { title: "丢掉" }, "human");
+		const discarded = await processInboxTask(
+			db as never,
+			me.id,
+			toDiscard.id,
+			{ action: "discard" },
+			"human",
+		);
+		expect(discarded.status).toBe("cancelled");
+
+		await expect(
+			processInboxTask(db as never, me.id, nexted.id, { action: "next" }, "human"),
+		).rejects.toMatchObject({ code: "not_inbox" });
+
+		const activities = await db.select().from(activityLog).where(eq(activityLog.userId, me.id));
+		const processLogs = activities.filter((row) => row.action === "task.process_inbox");
+		expect(processLogs.length).toBeGreaterThanOrEqual(4);
+	});
+
 
 });

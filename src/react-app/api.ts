@@ -91,6 +91,14 @@ export const api = {
 		request<{ task: Task }>(`/api/tasks/${id}/complete`, { method: "POST" }),
 	nudgeWaiting: (id: string) =>
 		request<{ task: Task }>(`/api/tasks/${id}/nudge`, { method: "POST" }),
+	processInbox: (
+		id: string,
+		body: { action: "next" | "waiting" | "someday" | "discard"; waitingOn?: string; projectId?: string },
+	) =>
+		request<{ task: Task }>(`/api/tasks/${id}/process-inbox`, {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
 	deleteTask: (id: string) =>
 		request<{ ok: true }>(`/api/tasks/${id}`, { method: "DELETE" }),
 	deletedTasks: () => request<{ items: Task[] }>("/api/tasks/deleted"),

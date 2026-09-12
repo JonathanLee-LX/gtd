@@ -10,6 +10,7 @@ import { decodeCursor, encodeCursor } from "../../shared/cursor";
 import type {
 	CreateTaskInput,
 	ListTasksQuery,
+	ProcessInboxInput,
 	TaskSource,
 	UpdateTaskInput,
 } from "../../shared/schemas";
@@ -333,6 +334,63 @@ export async function listTasks(
 	};
 }
 
+
+/** Clarify an inbox task into next / waiting / someday / discard (cancelled). */
+export async function processInboxTask(
+	db: AppDatabase,
+	userId: string,
+	id: string,
+	input: ProcessInboxInput,
+	source: TaskSource,
+) {
+	const current = await getTask(db, userId, id);
+	if (current.status !== "inbox") {
+		throw badRequest("只能处理收件箱中的任务", "not_inbox");
+	}
+
+	const patch: UpdateTaskInput = {};
+	if (input.projectId !== undefined) {
+		patch.projectId = input.projectId;
+	}
+
+	switch (input.action) {
+		case "next":
+			patch.status = "next";
+			patch.waitingOn = null;
+			break;
+		case "waiting": {
+			const who = input.waitingOn?.trim();
+			if (!who) {
+				throw badRequest("等待中的任务需要填写在等谁", "waiting_on_required");
+			}
+			patch.status = "waiting";
+			patch.waitingOn = who;
+			break;
+		}
+		case "someday":
+			patch.status = "someday";
+			patch.waitingOn = null;
+			break;
+		case "discard":
+			patch.status = "cancelled";
+			break;
+		default: {
+			const _exhaustive: never = input.action;
+			throw badRequest(`未知动作: ${_exhaustive}`, "invalid_action");
+		}
+	}
+
+	const task = await updateTask(db, userId, id, patch, source);
+	await logActivity(db, {
+		userId,
+		source,
+		action: "task.process_inbox",
+		entityType: "task",
+		entityId: id,
+		summary: `处理收件箱「${current.title}」→ ${input.action}`,
+	});
+	return task;
+}
 
 /** Idempotent weekly-review 「要催」: create a next-action follow-up for a waiting task. */
 export async function nudgeWaiting(

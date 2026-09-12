@@ -4,6 +4,7 @@ import { createDb } from "../../db/client";
 import {
 	createTaskInput,
 	listTasksQuery,
+	processInboxInput,
 	todayFocusQuery,
 	updateTaskInput,
 } from "../../shared/schemas";
@@ -18,6 +19,7 @@ import {
 	listDeletedTasks,
 	listTasks,
 	nudgeWaiting,
+	processInboxTask,
 	restoreTask,
 	todayFocus,
 	updateTask,
@@ -71,6 +73,19 @@ export const taskRoutes = new Hono<{
 	.patch("/:id", zValidator("json", updateTaskInput), (c) =>
 		handleRoute(c, async () => {
 			const task = await updateTask(
+				createDb(c.env.DB),
+				c.get("user").id,
+				c.req.param("id"),
+				c.req.valid("json"),
+				c.get("source"),
+			);
+			return { task };
+		}),
+	)
+
+	.post("/:id/process-inbox", zValidator("json", processInboxInput), (c) =>
+		handleRoute(c, async () => {
+			const task = await processInboxTask(
 				createDb(c.env.DB),
 				c.get("user").id,
 				c.req.param("id"),

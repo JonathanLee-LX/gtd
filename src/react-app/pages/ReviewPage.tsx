@@ -28,6 +28,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Project, type Task } from "../api";
+import {
+	InboxProcessActions,
+	type InboxProcessAction,
+} from "../components/InboxProcessActions";
 
 type StepId = "inbox" | "waiting" | "someday" | "projects" | "done";
 
@@ -115,6 +119,26 @@ export function ReviewPage() {
 			await load();
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : "更新失败");
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function processInboxTask(
+		id: string,
+		action: InboxProcessAction,
+		options?: { projectId?: string; waitingOn?: string },
+	) {
+		setBusy(true);
+		try {
+			await api.processInbox(id, {
+				action,
+				projectId: options?.projectId,
+				waitingOn: options?.waitingOn,
+			});
+			await load();
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : "处理失败");
 		} finally {
 			setBusy(false);
 		}
@@ -276,68 +300,29 @@ export function ReviewPage() {
 												</Select>
 											</div>
 										</div>
-										<div className="flex flex-wrap gap-2">
-											<Button
-												size="sm"
-												disabled={busy}
-												onClick={() =>
-													void patchTask(task.id, {
-														status: "next",
-														projectId: selectedProject,
-													})
-												}
-											>
-												下一步
-											</Button>
-											<Button
-												size="sm"
-												variant="secondary"
-												disabled={busy}
-												onClick={() =>
-													void patchTask(task.id, {
-														status: "waiting",
-														projectId: selectedProject,
-													})
-												}
-											>
-												等待
-											</Button>
-											<Button
-												size="sm"
-												variant="secondary"
-												disabled={busy}
-												onClick={() =>
-													void patchTask(task.id, {
-														status: "someday",
-														projectId: selectedProject,
-													})
-												}
-											>
-												将来
-											</Button>
-											<Button
-												size="sm"
-												variant="outline"
-												disabled={busy}
-												onClick={() =>
-													void patchTask(task.id, {
-														projectId: selectedProject,
-													})
-												}
-											>
-												仅归项目
-											</Button>
-											<Button
-												size="sm"
-												variant="ghost"
-												disabled={busy}
-												onClick={() =>
-													void patchTask(task.id, { status: "cancelled" })
-												}
-											>
-												丢掉
-											</Button>
-										</div>
+										<InboxProcessActions
+											disabled={busy}
+											onProcess={(action, waitingOn) =>
+												processInboxTask(task.id, action, {
+													projectId: selectedProject,
+													waitingOn,
+												})
+											}
+											extra={
+												<Button
+													size="sm"
+													variant="outline"
+													disabled={busy}
+													onClick={() =>
+														void patchTask(task.id, {
+															projectId: selectedProject,
+														})
+													}
+												>
+													仅归项目
+												</Button>
+											}
+										/>
 									</li>
 								);
 							})}

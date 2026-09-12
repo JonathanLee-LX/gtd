@@ -26,8 +26,10 @@ import {
 	CloudyIcon,
 	ClockIcon,
 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, type Project, type Task } from "../api";
+import { silentInvalidateTasks } from "../lib/task-cache";
 import {
 	InboxProcessActions,
 	type InboxProcessAction,
@@ -56,6 +58,7 @@ async function fetchAllByStatus(status: string): Promise<Task[]> {
 }
 
 export function ReviewPage() {
+	const queryClient = useQueryClient();
 	const { projects } = useOutletContext<{ projects: Project[] }>();
 	const activeProjects = useMemo(
 		() => projects.filter((p) => !p.isInbox && !p.archivedAt),
@@ -117,6 +120,7 @@ export function ReviewPage() {
 		try {
 			await api.updateTask(id, body);
 			await load();
+			void silentInvalidateTasks(queryClient);
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : "更新失败");
 		} finally {
@@ -137,6 +141,7 @@ export function ReviewPage() {
 				waitingOn: options?.waitingOn,
 			});
 			await load();
+			void silentInvalidateTasks(queryClient);
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : "处理失败");
 		} finally {
@@ -152,6 +157,7 @@ export function ReviewPage() {
 			await api.createTask({ title: title.trim(), projectId, status: "next" });
 			toast.success("已添加下一步");
 			await load();
+			void silentInvalidateTasks(queryClient);
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : "创建失败");
 		} finally {
@@ -166,6 +172,7 @@ export function ReviewPage() {
 			const { task: created } = await api.nudgeWaiting(task.id);
 			toast.success(`已生成下一步「${created.title}」`);
 			await load();
+			void silentInvalidateTasks(queryClient);
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : "催促失败");
 		} finally {

@@ -12,8 +12,10 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { useVisualViewportBottomInset } from "@/hooks/use-visual-viewport-bottom";
 import { PlusIcon } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../api";
+import { silentInvalidateTasks, upsertTaskInCaches } from "../lib/task-cache";
 
 type MobileQuickCollectProps = {
 	/** Called after a task is created so inbox (and similar) can refresh. */
@@ -32,6 +34,7 @@ export function MobileQuickCollect({ onCreated }: MobileQuickCollectProps) {
 	const inputRef = useRef<HTMLInputElement>(null);
 	const titleId = useId();
 	const keyboardInset = useVisualViewportBottomInset();
+	const queryClient = useQueryClient();
 
 	useEffect(() => {
 		if (!open) {
@@ -49,7 +52,9 @@ export function MobileQuickCollect({ onCreated }: MobileQuickCollectProps) {
 		setBusy(true);
 		try {
 			// Same path as InboxPage: web session → source=human; default project is inbox.
-			await api.createTask({ title: value, status: "inbox" });
+			const { task } = await api.createTask({ title: value, status: "inbox" });
+			upsertTaskInCaches(queryClient, task);
+			void silentInvalidateTasks(queryClient);
 			setTitle("");
 			setOpen(false);
 			toast.success("已加入收件箱");

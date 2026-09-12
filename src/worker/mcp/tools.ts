@@ -8,6 +8,7 @@ import {
 	getTask,
 	listTasks,
 	nudgeWaiting,
+	restoreTask,
 	searchTasks,
 	todayFocus,
 	updateTask,
@@ -62,7 +63,7 @@ export const MCP_TOOLS = [
 	{
 		name: "list_tasks",
 		description:
-			"按状态、项目、截止日期或关键词列出任务。默认不含已完成/已取消。",
+			"按状态、项目、截止日期或关键词列出任务。默认不含已完成/已取消/已软删。",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -164,7 +165,18 @@ export const MCP_TOOLS = [
 	},
 	{
 		name: "delete_task",
-		description: "软删除任务。删除后列表/今日焦点不再出现，GET 返回不存在。",
+		description: "软删除任务。删除后列表/搜索/今日焦点不再出现。恢复请用 restore_task。",
+		inputSchema: {
+			type: "object",
+			properties: { id: { type: "string" } },
+			required: ["id"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "restore_task",
+		description:
+			"从回收站恢复软删除的任务。默认 list_tasks / search_tasks 不含已软删，必须显式调用本工具。",
 		inputSchema: {
 			type: "object",
 			properties: { id: { type: "string" } },
@@ -174,7 +186,7 @@ export const MCP_TOOLS = [
 	},
 	{
 		name: "search_tasks",
-		description: "按标题/备注搜索，包含已完成任务。",
+		description: "按标题/备注搜索，包含已完成任务，不含已软删。",
 		inputSchema: {
 			type: "object",
 			properties: { q: { type: "string" }, tz: { type: "string" } },
@@ -238,6 +250,10 @@ export async function callMcpTool(
 		case "delete_task": {
 			const input = z.object({ id: z.string() }).parse(args);
 			return deleteTask(db, userId, input.id, "mcp");
+		}
+		case "restore_task": {
+			const input = z.object({ id: z.string() }).parse(args);
+			return { task: await restoreTask(db, userId, input.id, "mcp") };
 		}
 		case "search_tasks": {
 			const input = z.object({ q: z.string(), tz: z.string().optional() }).parse(args);

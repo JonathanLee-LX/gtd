@@ -146,6 +146,7 @@ export const tasks = sqliteTable(
 		index("tasks_user_status_idx").on(table.userId, table.status),
 		index("tasks_user_due_idx").on(table.userId, table.dueAt),
 		index("tasks_user_project_idx").on(table.userId, table.projectId),
+		index("tasks_user_deleted_idx").on(table.userId, table.deletedAt),
 		uniqueIndex("tasks_user_idempotency_idx")
 			.on(table.userId, table.idempotencyKey)
 			.where(sql`${table.idempotencyKey} IS NOT NULL`),

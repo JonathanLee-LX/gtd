@@ -23,9 +23,18 @@ import {
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { CheckIcon, CircleAlertIcon, CopyIcon, KeyRoundIcon } from "lucide-react";
+import {
+	CheckIcon,
+	CircleAlertIcon,
+	CopyIcon,
+	KeyRoundIcon,
+	RotateCcwIcon,
+	Trash2Icon,
+} from "lucide-react";
 import { toast } from "sonner";
-import { api } from "../api";
+import { SOFT_DELETE_RETENTION_DAYS } from "../../shared/constants";
+import { statusLabel } from "../lib/format";
+import { api, type Task } from "../api";
 
 type TokenRow = {
 	id: string;
@@ -36,12 +45,21 @@ type TokenRow = {
 	lastUsedAt: string | null;
 };
 
+function deletedOn(value: string | null) {
+	if (!value) return "";
+	return value.slice(0, 10);
+}
+
 export function SettingsPage() {
 	const [tokens, setTokens] = useState<TokenRow[]>([]);
+	const [deleted, setDeleted] = useState<Task[]>([]);
 	const [name, setName] = useState("MCP");
 	const [freshToken, setFreshToken] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [recycleError, setRecycleError] = useState<string | null>(null);
 	const [creating, setCreating] = useState(false);
+	const [recycleLoading, setRecycleLoading] = useState(true);
+	const [restoringId, setRestoringId] = useState<string | null>(null);
 	const mcpUrl = `${window.location.origin}/mcp`;
 
 	async function load() {
@@ -49,10 +67,20 @@ export function SettingsPage() {
 		setTokens(data.items);
 	}
 
+	async function loadDeleted() {
+		const data = await api.deletedTasks();
+		setDeleted(data.items);
+	}
+
 	useEffect(() => {
 		void load().catch((err: unknown) => {
 			setError(err instanceof Error ? err.message : "加载失败");
 		});
+		void loadDeleted()
+			.catch((err: unknown) => {
+				setRecycleError(err instanceof Error ? err.message : "回收站加载失败");
+			})
+			.finally(() => setRecycleLoading(false));
 	}, []);
 
 	async function copy(value: string, label: string) {
@@ -72,6 +100,20 @@ export function SettingsPage() {
 			setError(err instanceof Error ? err.message : "创建失败");
 		} finally {
 			setCreating(false);
+		}
+	}
+
+	async function restore(id: string) {
+		setRecycleError(null);
+		setRestoringId(id);
+		try {
+			await api.restoreTask(id);
+			setDeleted((items) => items.filter((item) => item.id !== id));
+			toast.success("已恢复");
+		} catch (err) {
+			setRecycleError(err instanceof Error ? err.message : "恢复失败");
+		} finally {
+			setRestoringId(null);
 		}
 	}
 
@@ -221,6 +263,72 @@ export function SettingsPage() {
 							</div>
 						))}
 					</div>
+				</CardContent>
+			</Card>
+			<Card className="max-w-xl">
+				<CardHeader>
+					<CardTitle>回收站</CardTitle>
+					<CardDescription>
+						软删除的任务会保留 {SOFT_DELETE_RETENTION_DAYS}{" "}
+						天，之后由定时任务按用户物理清除。
+					</CardDescription>
+				</CardHeader>
+				<CardContent className="flex flex-col gap-4">
+					{recycleError ? (
+						<Alert variant="destructive">
+							<CircleAlertIcon />
+							<AlertTitle>出错了</AlertTitle>
+							<AlertDescription>{recycleError}</AlertDescription>
+						</Alert>
+					) : null}
+					{recycleLoading ? (
+						<div className="flex items-center gap-2 text-sm text-muted-foreground">
+							<Spinner />
+							加载回收站…
+						</div>
+					) : deleted.length === 0 ? (
+						<p className="text-sm text-muted-foreground">回收站是空的。</p>
+					) : (
+						<div className="flex flex-col gap-2">
+							{deleted.map((task) => (
+								<div
+									key={task.id}
+									className="flex items-center justify-between gap-3 rounded-lg border px-3 py-3"
+								>
+									<div className="min-w-0">
+										<p className="truncate font-medium">{task.title}</p>
+										<div className="mt-1 flex flex-wrap items-center gap-1.5">
+											<Badge variant="outline">{statusLabel(task.status)}</Badge>
+											{task.projectName ? (
+												<Badge variant="secondary">{task.projectName}</Badge>
+											) : null}
+											{task.deletedAt ? (
+												<Badge variant="outline">删除于 {deletedOn(task.deletedAt)}</Badge>
+											) : null}
+										</div>
+									</div>
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										disabled={restoringId === task.id}
+										onClick={() => void restore(task.id)}
+									>
+										{restoringId === task.id ? (
+											<Spinner data-icon="inline-start" />
+										) : (
+											<RotateCcwIcon data-icon="inline-start" />
+										)}
+										恢复
+									</Button>
+								</div>
+							))}
+						</div>
+					)}
+					<p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+						<Trash2Icon className="size-3.5" />
+						网页与 MCP 走同一套 TaskService；默认列表不含已软删任务。
+					</p>
 				</CardContent>
 			</Card>
 		</section>

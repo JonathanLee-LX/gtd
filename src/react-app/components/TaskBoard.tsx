@@ -32,7 +32,9 @@ import type { TaskDraft } from "../../shared/schemas";
 import { orderTasksWithDepth } from "../../shared/task-tree";
 import { TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
 import { api, type Project, type Task } from "../api";
+import { useIsMutating } from "@tanstack/react-query";
 import { useCommitAiDraft, useProcessInboxTask } from "../hooks/use-task-mutations";
+import { TASK_MUTATION_KEY } from "../lib/task-mutation-lock";
 import {
 	InboxProcessActions,
 	type InboxProcessAction,
@@ -77,6 +79,8 @@ export function TaskBoard({
 	const [processBusy, setProcessBusy] = useState<string | null>(null);
 	const processInbox = useProcessInboxTask();
 	const commitAi = useCommitAiDraft();
+	const taskMutationPending =
+		useIsMutating({ mutationKey: [...TASK_MUTATION_KEY] }) > 0;
 	const selected = tasks.find((task) => task.id === selectedId) ?? null;
 	const isMobile = useIsMobile();
 	const ordered = orderTasksWithDepth(tasks);
@@ -139,6 +143,7 @@ export function TaskBoard({
 		action: InboxProcessAction,
 		waitingOn?: string,
 	) {
+		if (taskMutationPending || processBusy) return;
 		setProcessBusy(taskId);
 		try {
 			await processInbox.mutateAsync({ id: taskId, body: { action, waitingOn } });
@@ -164,6 +169,7 @@ export function TaskBoard({
 			projects={projects}
 			tasks={tasks}
 			layout={isMobile ? "mobile" : "aside"}
+			mutationPending={taskMutationPending}
 			onSave={(patch) => onSave(selected.id, patch)}
 			onComplete={() => onComplete(selected.id)}
 			onDelete={async () => {
@@ -218,7 +224,11 @@ export function TaskBoard({
 									depth={depth}
 									active={task.id === selectedId}
 									onOpen={() => openTask(task.id)}
-									onComplete={() => void onComplete(task.id)}
+									completeDisabled={taskMutationPending}
+									onComplete={() => {
+										if (taskMutationPending) return;
+										void onComplete(task.id);
+									}}
 								/>
 								{enableInboxProcess && task.status === "inbox" ? (
 									<div
@@ -226,7 +236,7 @@ export function TaskBoard({
 										style={{ paddingLeft: `${40 + depth * 20}px` }}
 									>
 										<InboxProcessActions
-											disabled={processBusy === task.id}
+											disabled={taskMutationPending || processBusy === task.id}
 											onProcess={(action, waitingOn) =>
 												handleInboxProcess(task.id, action, waitingOn)
 											}

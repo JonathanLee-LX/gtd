@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import { api, type Task } from "../api";
 import {
@@ -11,14 +12,46 @@ import {
 	stripSourceFromBody,
 	upsertTaskInCaches,
 } from "../lib/task-cache";
+import {
+	releaseTaskMutationLock,
+	TASK_MUTATION_KEY,
+	TASK_MUTATION_SCOPE,
+	tryAcquireTaskMutationLock,
+} from "../lib/task-mutation-lock";
 
 function mutationErrorMessage(err: unknown, fallback: string) {
 	return err instanceof Error ? err.message : fallback;
 }
 
+const optimisticMutationOptions = {
+	mutationKey: TASK_MUTATION_KEY,
+	scope: TASK_MUTATION_SCOPE,
+} as const;
+
+/**
+ * Run mutateAsync only if no other optimistic task mutation is in flight.
+ * Sync lock covers the double-click-before-paint gap that isPending cannot.
+ */
+function useGuardedMutateAsync<TVariables, TData>(
+	mutateAsync: (variables: TVariables) => Promise<TData>,
+): (variables: TVariables) => Promise<TData | undefined> {
+	return useCallback(
+		async (variables: TVariables) => {
+			if (!tryAcquireTaskMutationLock()) return undefined;
+			try {
+				return await mutateAsync(variables);
+			} finally {
+				releaseTaskMutationLock();
+			}
+		},
+		[mutateAsync],
+	);
+}
+
 export function useCompleteTask() {
 	const queryClient = useQueryClient();
-	return useMutation({
+	const mutation = useMutation({
+		...optimisticMutationOptions,
 		mutationFn: (id: string) => api.completeTask(id),
 		onMutate: async (id) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
@@ -36,11 +69,17 @@ export function useCompleteTask() {
 			void silentInvalidateTasks(queryClient);
 		},
 	});
+	const mutateAsync = useGuardedMutateAsync(mutation.mutateAsync);
+	return useMemo(
+		() => ({ ...mutation, mutateAsync, isPending: mutation.isPending }),
+		[mutation, mutateAsync],
+	);
 }
 
 export function useUpdateTask() {
 	const queryClient = useQueryClient();
-	return useMutation({
+	const mutation = useMutation({
+		...optimisticMutationOptions,
 		mutationFn: ({ id, patch }: { id: string; patch: Record<string, unknown> }) =>
 			api.updateTask(id, stripSourceFromBody(patch)),
 		onMutate: async ({ id, patch }) => {
@@ -58,6 +97,11 @@ export function useUpdateTask() {
 			void silentInvalidateTasks(queryClient);
 		},
 	});
+	const mutateAsync = useGuardedMutateAsync(mutation.mutateAsync);
+	return useMemo(
+		() => ({ ...mutation, mutateAsync, isPending: mutation.isPending }),
+		[mutation, mutateAsync],
+	);
 }
 
 export function useCreateTask() {
@@ -76,7 +120,8 @@ export function useCreateTask() {
 
 export function useDeleteTask() {
 	const queryClient = useQueryClient();
-	return useMutation({
+	const mutation = useMutation({
+		...optimisticMutationOptions,
 		mutationFn: (id: string) => api.deleteTask(id),
 		onMutate: async (id) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
@@ -93,11 +138,17 @@ export function useDeleteTask() {
 			void silentInvalidateTasks(queryClient);
 		},
 	});
+	const mutateAsync = useGuardedMutateAsync(mutation.mutateAsync);
+	return useMemo(
+		() => ({ ...mutation, mutateAsync, isPending: mutation.isPending }),
+		[mutation, mutateAsync],
+	);
 }
 
 export function useProcessInboxTask() {
 	const queryClient = useQueryClient();
-	return useMutation({
+	const mutation = useMutation({
+		...optimisticMutationOptions,
 		mutationFn: ({
 			id,
 			body,
@@ -140,6 +191,11 @@ export function useProcessInboxTask() {
 			void silentInvalidateTasks(queryClient);
 		},
 	});
+	const mutateAsync = useGuardedMutateAsync(mutation.mutateAsync);
+	return useMemo(
+		() => ({ ...mutation, mutateAsync, isPending: mutation.isPending }),
+		[mutation, mutateAsync],
+	);
 }
 
 export function useCommitAiDraft() {

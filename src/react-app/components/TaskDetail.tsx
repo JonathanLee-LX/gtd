@@ -26,7 +26,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { CheckIcon, TrashIcon, XIcon } from "lucide-react";
 import { createsParentCycle } from "../../shared/task-tree";
-import { TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
+import { CONTEXT_TAG_EXAMPLES, TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
 import type { TaskPriority, TaskStatus } from "../../shared/schemas";
 import { api, type Project, type Tag, type Task } from "../api";
 
@@ -301,7 +301,7 @@ export function TaskDetail({
 					<Input
 						id="task-detail-tag"
 						value={tagDraft}
-						placeholder="输入后回车，例如 电脑"
+						placeholder="输入后回车，例如 @电脑"
 						onChange={(event) => setTagDraft(event.target.value)}
 						onKeyDown={(event) => {
 							if (event.key !== "Enter") return;
@@ -323,6 +323,9 @@ export function TaskDetail({
 								});
 						}}
 					/>
+					<p className="text-xs text-muted-foreground">
+						情境用 @ 前缀普通标签即可（约定：{CONTEXT_TAG_EXAMPLES.join(" / ")}），点标签可筛选。
+					</p>
 				</Field>
 			</FieldGroup>
 			<Badge variant="outline">来源：{task.source}</Badge>

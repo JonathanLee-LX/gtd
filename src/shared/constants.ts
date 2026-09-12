@@ -18,3 +18,10 @@ export const TASK_PRIORITY_LABELS = {
 export const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 export const INBOX_NAME = "收件箱";
 export const DEFAULT_PAGE_SIZE = 50;
+
+/** GTD 情境约定：用普通标签名，前缀 `@`，不单独建字段。 */
+export const CONTEXT_TAG_EXAMPLES = ["@电脑", "@出门", "@电话"] as const;
+
+export function isContextTagName(name: string): boolean {
+	return name.trim().startsWith("@");
+}

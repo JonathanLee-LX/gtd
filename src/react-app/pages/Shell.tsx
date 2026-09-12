@@ -62,6 +62,7 @@ import {
 import { toast } from "sonner";
 import { api, type Me, type Project } from "../api";
 import { MobileBottomNav } from "../components/MobileBottomNav";
+import { MobileQuickCollect } from "../components/MobileQuickCollect";
 
 export function Shell() {
 	const navigate = useNavigate();
@@ -72,6 +73,7 @@ export function Shell() {
 	const [projectName, setProjectName] = useState("");
 	const [creating, setCreating] = useState(false);
 	const [query, setQuery] = useState("");
+	const [collectTick, setCollectTick] = useState(0);
 
 	async function load() {
 		try {
@@ -326,7 +328,7 @@ export function Shell() {
 					</form>
 				</header>
 				<div className="flex min-h-0 flex-1 flex-col overflow-hidden pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0">
-					<Outlet context={{ projects, reloadProjects: load }} />
+					<Outlet context={{ projects, reloadProjects: load, collectTick }} />
 				</div>
 			</SidebarInset>
 			<MobileBottomNav
@@ -334,6 +336,7 @@ export function Shell() {
 				onNewProject={() => setProjectOpen(true)}
 				onSignOut={() => void signOut()}
 			/>
+			<MobileQuickCollect onCreated={() => setCollectTick((n) => n + 1)} />
 			<Dialog open={projectOpen} onOpenChange={setProjectOpen}>
 				<DialogContent>
 					<form onSubmit={addProject} className="flex flex-col gap-4">

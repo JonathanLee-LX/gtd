@@ -51,6 +51,7 @@ export function TaskDetail({
 	onComplete,
 	onDelete,
 	mutationPending = false,
+	completing = false,
 }: {
 	task: Task;
 	projects: Project[];
@@ -62,6 +63,8 @@ export function TaskDetail({
 	onDelete: () => Promise<void>;
 	/** Disable save / complete / delete while any optimistic task mutation is in flight. */
 	mutationPending?: boolean;
+	/** Complete feedback in progress — show check, block re-entry. */
+	completing?: boolean;
 }) {
 	const [title, setTitle] = useState(task.title);
 	const [notes, setNotes] = useState(task.notes ?? "");
@@ -363,7 +366,7 @@ export function TaskDetail({
 			>
 				<Button
 					type="submit"
-					disabled={busy || deleting || mutationPending}
+					disabled={busy || deleting || mutationPending || completing}
 					className={layout === "mobile" ? "min-h-11 flex-1" : undefined}
 				>
 					{busy ? <Spinner data-icon="inline-start" /> : null}
@@ -372,12 +375,19 @@ export function TaskDetail({
 				<Button
 					type="button"
 					variant="outline"
-					disabled={deleting || mutationPending}
-					className={layout === "mobile" ? "min-h-11 flex-1" : undefined}
-					onClick={() => void onComplete()}
+					disabled={deleting || mutationPending || completing}
+					className={cn(
+						layout === "mobile" ? "min-h-11 flex-1" : undefined,
+						completing && "border-primary bg-primary/10 text-primary",
+					)}
+					aria-pressed={completing || undefined}
+					onClick={() => {
+						if (completing || mutationPending || deleting) return;
+						void onComplete();
+					}}
 				>
 					<CheckIcon data-icon="inline-start" />
-					完成
+					{completing ? "已完成" : "完成"}
 				</Button>
 				<div className={layout === "mobile" ? "min-h-11 flex-1" : undefined}>
 					<AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>

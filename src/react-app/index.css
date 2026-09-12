@@ -135,3 +135,33 @@ body,
     @apply font-sans;
 	}
 }
+
+
+/* #55 complete-task row feedback: check/highlight → slide/fade, then hard-drop */
+.task-row {
+	transition:
+		background-color 160ms ease-out,
+		border-color 160ms ease-out,
+		opacity 180ms ease-in,
+		transform 180ms ease-in;
+}
+
+.task-row--complete-check {
+	border-color: color-mix(in oklab, var(--primary) 35%, transparent);
+	background: color-mix(in oklab, var(--primary) 12%, transparent);
+}
+
+.task-row--complete-exit {
+	opacity: 0;
+	transform: translateX(12px);
+	pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.task-row {
+		transition: none;
+	}
+	.task-row--complete-exit {
+		transform: none;
+	}
+}

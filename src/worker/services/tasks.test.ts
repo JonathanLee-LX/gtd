@@ -359,4 +359,89 @@ describe("task service", () => {
 			updateTask(db as never, me.id, child.id, { parentId: child.id }, "human"),
 		).rejects.toMatchObject({ code: "parent_cycle" });
 	});
+
+	it("completing parent promotes unfinished children to top-level without auto-completing", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		const parent = await createTask(
+			db as never,
+			me.id,
+			{ title: "父", status: "next" },
+			"human",
+		);
+		const openChild = await createTask(
+			db as never,
+			me.id,
+			{ title: "未完成子", status: "waiting", parentId: parent.id, waitingOn: "甲" },
+			"human",
+		);
+		const nextChild = await createTask(
+			db as never,
+			me.id,
+			{ title: "下一步子", status: "next", parentId: parent.id },
+			"mcp",
+		);
+		const doneChild = await createTask(
+			db as never,
+			me.id,
+			{ title: "已完成子", status: "completed", parentId: parent.id },
+			"human",
+		);
+		const grandchild = await createTask(
+			db as never,
+			me.id,
+			{ title: "孙任务", status: "inbox", parentId: openChild.id },
+			"human",
+		);
+
+		const completed = await completeTask(db as never, me.id, parent.id, "human");
+		expect(completed.status).toBe("completed");
+		expect(completed.completedAt).toBeTruthy();
+
+		const promotedWaiting = await getTask(db as never, me.id, openChild.id);
+		expect(promotedWaiting.parentId).toBeNull();
+		expect(promotedWaiting.status).toBe("waiting");
+		expect(promotedWaiting.waitingOn).toBe("甲");
+		expect(promotedWaiting.completedAt).toBeNull();
+
+		const promotedNext = await getTask(db as never, me.id, nextChild.id);
+		expect(promotedNext.parentId).toBeNull();
+		expect(promotedNext.status).toBe("next");
+		expect(promotedNext.completedAt).toBeNull();
+
+		const stillDone = await getTask(db as never, me.id, doneChild.id);
+		expect(stillDone.parentId).toBe(parent.id);
+		expect(stillDone.status).toBe("completed");
+
+		const stillGrand = await getTask(db as never, me.id, grandchild.id);
+		expect(stillGrand.parentId).toBe(openChild.id);
+		expect(stillGrand.status).toBe("inbox");
+	});
+
+	it("MCP complete_task path promotes unfinished children the same way", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		const parent = await createTask(
+			db as never,
+			me.id,
+			{ title: "MCP父", status: "next" },
+			"mcp",
+		);
+		const child = await createTask(
+			db as never,
+			me.id,
+			{ title: "MCP子", status: "someday", parentId: parent.id },
+			"mcp",
+		);
+
+		await completeTask(db as never, me.id, parent.id, "mcp");
+
+		const after = await getTask(db as never, me.id, child.id);
+		expect(after.parentId).toBeNull();
+		expect(after.status).toBe("someday");
+		expect(after.completedAt).toBeNull();
+
+		const parentAfter = await getTask(db as never, me.id, parent.id);
+		expect(parentAfter.status).toBe("completed");
+	});
 });

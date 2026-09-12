@@ -203,6 +203,24 @@ export async function completeTask(
 	id: string,
 	source: TaskSource,
 ) {
+	const current = await getTask(db, userId, id);
+	// Completing a parent must never auto-complete children. Unfinished
+	// children are promoted to top-level (parent_id cleared); completed
+	// children stay under the parent. Web + MCP both call this path.
+	if (current.status !== "completed") {
+		const now = nowIso();
+		await db
+			.update(tasks)
+			.set({ parentId: null, updatedAt: now })
+			.where(
+				and(
+					eq(tasks.userId, userId),
+					eq(tasks.parentId, id),
+					isNull(tasks.deletedAt),
+					sql`${tasks.status} != 'completed'`,
+				),
+			);
+	}
 	return updateTask(db, userId, id, { status: "completed" }, source);
 }
 

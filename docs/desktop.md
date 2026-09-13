@@ -85,7 +85,9 @@ If a future build loads a **custom protocol** or a second origin, re-evaluate co
 
 ### Session rules (what “still logged in” means)
 
-- **In-window reload** (Cmd/Ctrl+R or location refresh): expect session cookie to remain; stay on `/today` (or redirect back after `/api/me`).
+- **In-window reload**: expect session cookie to remain; stay on `/today` (or redirect back after `/api/me`).
+  - **macOS / Windows**: Cmd+R / Ctrl+R (or location refresh) usually works.
+  - **Linux (WebKitGTK)**: Ctrl+R may **not** reload the page; use the WebView **context menu → Reload** (or reopen the window). Known v1 quirk — not a cookie/session failure.
 - **Quit app and reopen** within ~7 days: expect still logged in (OS WebView cookie jar persists).
 - **After explicit sign-out**, or after session expiry / cleared WebView data: expect login page.
 - **Incognito / cleared site data** in DevTools: expect login page (same as browser).
@@ -99,7 +101,7 @@ Prereq: production account that can sign in on the web app; `pnpm desktop:dev` (
 1. [ ] Open desktop shell → production login UI loads (URL bar / network shows `gtd.jonathanleelx.workers.dev`).
 2. [ ] Sign in with the existing account → lands on **今日 / today**.
 3. [ ] Complete **one** task on today (check → success feedback).
-4. [ ] Soft refresh the WebView (reload) → still logged in; completed item stays completed (or reflects server state).
+4. [ ] Soft refresh the WebView (reload) → still logged in; completed item stays completed (or reflects server state). On Linux, prefer context-menu Reload if Ctrl+R does nothing.
 5. [ ] Optional: quit and relaunch the app → still logged in (documents OS cookie persistence).
 6. [ ] Optional DevTools / network: login response `Set-Cookie` includes `Secure` and `SameSite=Lax` (name often `__Secure-better-auth.session_token`); subsequent `/api/*` requests include `Cookie`.
 7. [ ] Confirm client never sends `source` in create/update bodies (server assigns `human` from the session). SPA already strips `source` in `task-cache` request helpers — do not add a desktop-only override.

@@ -58,6 +58,17 @@ pnpm run deploy
 pnpm wrangler secret put BETTER_AUTH_URL
 ```
 
+
+## 桌面壳（Tauri）
+
+原生窗口加载**现网** GTD（同源，无第二 API 基址）。本地 `dev` / 打包见 [`docs/desktop.md`](docs/desktop.md)。
+
+```sh
+pnpm install
+pnpm desktop:dev    # 打开现网窗口
+pnpm desktop:build  # 打包（需本机 Tauri 依赖）
+```
+
 ## 阶段
 
 0. 脚手架（本仓库）

@@ -9,6 +9,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
 	plugins: [react(), tailwindcss(), cloudflare()],
+	server: {
+		watch: {
+			ignored: ["**/src-tauri/**"],
+		},
+	},
 	resolve: {
 		alias: {
 			"@": path.resolve(__dirname, "./src"),

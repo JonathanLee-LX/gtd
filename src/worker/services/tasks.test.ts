@@ -461,6 +461,101 @@ describe("task service", () => {
 		expect(parentAfter.status).toBe("completed");
 	});
 
+	it("today focus only includes leaves when parent has open children", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		const parent = await createTask(
+			db as never,
+			me.id,
+			{ title: "父-下一步", status: "next" },
+			"human",
+		);
+		const child = await createTask(
+			db as never,
+			me.id,
+			{ title: "子-下一步", status: "next", parentId: parent.id },
+			"human",
+		);
+		const sibling = await createTask(
+			db as never,
+			me.id,
+			{ title: "顶层-下一步", status: "next" },
+			"human",
+		);
+
+		const focus = await todayFocus(db as never, me.id, "Asia/Shanghai");
+		const titles = focus.items.map((item) => item.title);
+		expect(titles).toContain("子-下一步");
+		expect(titles).toContain("顶层-下一步");
+		expect(titles).not.toContain("父-下一步");
+		expect(focus.items.find((item) => item.id === child.id)?.parentId).toBe(parent.id);
+		expect(focus.items.find((item) => item.id === sibling.id)?.parentId).toBeNull();
+
+		const viaMcp = await callMcpTool(db as never, me.id, "today_focus", {
+			tz: "Asia/Shanghai",
+		});
+		expect((viaMcp as { items: { title: string }[] }).items.map((item) => item.title)).toEqual(
+			titles,
+		);
+	});
+
+	it("today focus shows parent again when children are completed, cancelled, or soft-deleted", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		const parent = await createTask(
+			db as never,
+			me.id,
+			{ title: "父-仍可做", status: "next" },
+			"human",
+		);
+		await createTask(
+			db as never,
+			me.id,
+			{ title: "已完成子", status: "completed", parentId: parent.id },
+			"human",
+		);
+		await createTask(
+			db as never,
+			me.id,
+			{ title: "已取消子", status: "cancelled", parentId: parent.id },
+			"human",
+		);
+		const deletedChild = await createTask(
+			db as never,
+			me.id,
+			{ title: "软删子", status: "next", parentId: parent.id },
+			"human",
+		);
+		await deleteTask(db as never, me.id, deletedChild.id, "human");
+
+		const focus = await todayFocus(db as never, me.id, "Asia/Shanghai");
+		expect(focus.items.map((item) => item.title)).toContain("父-仍可做");
+		expect(focus.items.map((item) => item.title)).not.toContain("软删子");
+	});
+
+	it("today focus hides parent even if open children are not themselves focus", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		await createTask(
+			db as never,
+			me.id,
+			{ title: "父-P1", priority: "p1" },
+			"human",
+		).then(async (parent) => {
+			await createTask(
+				db as never,
+				me.id,
+				{ title: "子-inbox", status: "inbox", parentId: parent.id },
+				"human",
+			);
+		});
+
+		const focus = await todayFocus(db as never, me.id, "Asia/Shanghai");
+		const titles = focus.items.map((item) => item.title);
+		expect(titles).not.toContain("父-P1");
+		expect(titles).not.toContain("子-inbox");
+	});
+
 	it("lists and restores soft-deleted tasks without leaking them into defaults", async () => {
 		const { db } = createTestDb();
 		const me = await seedUser(db);

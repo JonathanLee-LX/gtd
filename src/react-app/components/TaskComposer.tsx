@@ -45,6 +45,8 @@ export function TaskComposer({
 			setError(err instanceof Error ? err.message : "创建失败");
 		} finally {
 			setBusy(false);
+			// 提交结束（无论成功失败），“请稍候”提示已过期，直接清除
+			setNotice(null);
 		}
 	}
 

@@ -10,7 +10,7 @@
 
 | 工具 | 用途 |
 |---|---|
-| `today_focus` | 逾期 + 今天 + 下一步 + P1 |
+| `today_focus` | 逾期 + 今天 + 下一步 + P1，只出可执行叶子 |
 | `list_projects` / `create_project` / `update_project` | 项目（`list_projects` 默认不含已归档） |
 | `list_tasks` / `get_task` / `search_tasks` | 查询 |
 | `create_task` | 创建（建议 `idempotencyKey`；可选 `parentId` 挂子任务） |
@@ -35,6 +35,11 @@
 - 服务端会拒绝自引用与成环（例如 A 父是 B、B 父是 A）。
 - 硬删除父任务时，子任务的 `parent_id` 由数据库 `ON DELETE SET NULL` 清成顶层。
 - 完成父任务（网页 / `complete_task`）时：未完成子任务提升为顶层（`parent_id` 清空，状态不变）；已完成子任务保持挂在父任务下；**不会**自动完成子任务。
+
+### 今日焦点叶子
+
+- `today_focus` 与网页今日同一条规则：有未完成（非 completed/cancelled、未软删）子任务的父任务不出现，只出可执行叶子。
+- 下一步 / 项目列表仍会缩进展示父子，不受此规则影响。
 
 ## 客户端配置示例
 

@@ -226,7 +226,7 @@ export const MCP_TOOLS = [
 	},
 	{
 		name: "today_focus",
-		description: "今日焦点：逾期 + 今天到期 + 下一步 + P1。优先用这个了解今天该做什么。",
+		description: "今日焦点：逾期 + 今天到期 + 下一步 + P1，只出可执行叶子（有未完成子任务的父任务不出）。优先用这个了解今天该做什么。",
 		inputSchema: {
 			type: "object",
 			properties: { tz: { type: "string" } },

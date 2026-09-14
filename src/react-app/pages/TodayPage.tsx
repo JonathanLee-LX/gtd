@@ -47,7 +47,7 @@ export function TodayPage() {
 	return (
 		<TaskBoard
 			title="今日焦点"
-			hint={today ? `${today} · 逾期、今天到期、下一步和 P1` : "逾期、今天到期、下一步和 P1"}
+			hint={today ? `${today} · 逾期、今天到期、下一步和 P1（只出可执行叶子）` : "逾期、今天到期、下一步和 P1（只出可执行叶子）"}
 			placeholder="直接记下今天要推进的事，回车创建"
 			tasks={tasks}
 			projects={projects}

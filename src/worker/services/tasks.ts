@@ -488,6 +488,14 @@ export async function todayFocus(
 				isNull(tasks.deletedAt),
 				sql`${tasks.status} not in ('completed', 'cancelled')`,
 				focusPredicate,
+				// 只出叶子：有未完成子任务的父任务不进今日（#66）。
+				sql`not exists (
+					select 1 from tasks as child
+					where child.parent_id = ${tasks.id}
+						and child.user_id = ${userId}
+						and child.deleted_at is null
+						and child.status not in ('completed', 'cancelled')
+				)`,
 			),
 		)
 		.orderBy(priorityRank, focusRank, desc(tasks.dueAt), desc(tasks.createdAt))

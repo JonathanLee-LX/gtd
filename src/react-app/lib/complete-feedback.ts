@@ -48,7 +48,7 @@ export function pulseCompleteHaptic(): void {
 	}
 }
 
-/** Short non-blocking success toast (shipped on by default). */
+/** Short non-blocking success toast — call only after complete mutation succeeds. */
 export function toastTaskCompleted(): void {
 	toast.success("已完成");
 }

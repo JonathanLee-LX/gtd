@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import { toast } from "sonner";
+import { toastTaskCompleted } from "../lib/complete-feedback";
 import { api, type Task } from "../api";
 import {
 	applyOptimisticTaskPatch,
@@ -67,6 +68,7 @@ export function useCompleteTask() {
 			// Keep completed out of active lists; patch any leftover shards.
 			removeTaskFromCaches(queryClient, task.id);
 			void silentInvalidateTasks(queryClient);
+			toastTaskCompleted();
 		},
 	});
 	const mutateAsync = useGuardedMutateAsync(mutation.mutateAsync);

@@ -20,7 +20,9 @@ export const projectRoutes = new Hono<{
 	.use("*", requireUser)
 	.get("/", (c) =>
 		handleRoute(c, async () => {
-			const items = await listProjects(createDb(c.env.DB), c.get("user").id);
+			const items = await listProjects(createDb(c.env.DB), c.get("user").id, {
+				includeArchived: true,
+			});
 			return { items };
 		}),
 	)

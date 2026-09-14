@@ -1,4 +1,4 @@
-import type { TaskDraft, TaskPriority, TaskStatus } from "../shared/schemas";
+import type { TaskDraft, TaskPriority, TaskStatus, UpdateProjectInput } from "../shared/schemas";
 
 export type Tag = { id: string; name: string };
 
@@ -69,6 +69,11 @@ export const api = {
 		request<{ project: Project }>("/api/projects", {
 			method: "POST",
 			body: JSON.stringify({ name }),
+		}),
+	updateProject: (id: string, body: UpdateProjectInput) =>
+		request<{ project: Project }>(`/api/projects/${id}`, {
+			method: "PATCH",
+			body: JSON.stringify(body),
 		}),
 	deleteProject: (id: string) =>
 		request(`/api/projects/${id}`, { method: "DELETE" }),

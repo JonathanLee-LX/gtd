@@ -62,7 +62,8 @@ export const api = {
 			method: "POST",
 			body: JSON.stringify({ name, email, password }),
 		}),
-	signOut: () => request("/api/auth/sign-out", { method: "POST" }),
+	// Better Auth requires a JSON request body for sign-out; an empty POST gets 415.
+	signOut: () => request("/api/auth/sign-out", { method: "POST", body: JSON.stringify({}) }),
 	projects: () => request<{ items: Project[] }>("/api/projects"),
 	createProject: (name: string) =>
 		request<{ project: Project }>("/api/projects", {

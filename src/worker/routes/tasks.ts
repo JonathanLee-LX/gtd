@@ -11,6 +11,7 @@ import {
 import type { WorkerEnv } from "../lib/auth";
 import { handleRoute } from "../lib/route-utils";
 import { requireUser, type AppVariables } from "../middleware/require-user";
+import { listTaskActivity } from "../services/activity";
 import {
 	completeTask,
 	createTask,
@@ -62,6 +63,11 @@ export const taskRoutes = new Hono<{
 				return { task };
 			},
 			201,
+		),
+	)
+	.get("/:id/activity", (c) =>
+		handleRoute(c, async () =>
+			listTaskActivity(createDb(c.env.DB), c.get("user").id, c.req.param("id")),
 		),
 	)
 	.get("/:id", (c) =>

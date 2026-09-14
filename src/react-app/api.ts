@@ -31,6 +31,14 @@ export type Task = {
 	tags: Tag[];
 };
 
+export type Activity = {
+	id: string;
+	actorType: string;
+	action: string;
+	summary: string;
+	createdAt: string;
+};
+
 export type Me = { user: { id: string; email: string; name: string }; source: string };
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -86,6 +94,8 @@ export const api = {
 		return request<{ items: Task[]; nextCursor: string | null }>(`/api/tasks${suffix}`);
 	},
 	focus: () => request<{ today: string; items: Task[] }>("/api/tasks/focus"),
+	taskActivity: (id: string) =>
+		request<{ items: Activity[] }>(`/api/tasks/${id}/activity`),
 	createTask: (body: Record<string, unknown>) =>
 		request<{ task: Task }>("/api/tasks", { method: "POST", body: JSON.stringify(body) }),
 	updateTask: (id: string, body: Record<string, unknown>) =>

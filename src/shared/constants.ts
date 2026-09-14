@@ -15,6 +15,12 @@ export const TASK_PRIORITY_LABELS = {
 	p3: "P3 普通",
 } as const;
 
+export const TASK_SOURCE_LABELS = {
+	human: "人",
+	mcp: "助手",
+	ai: "AI",
+} as const;
+
 export const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 export const INBOX_NAME = "收件箱";
 export const DEFAULT_PAGE_SIZE = 50;

@@ -29,7 +29,8 @@ import { CheckIcon, TrashIcon, XIcon } from "lucide-react";
 import { createsParentCycle } from "../../shared/task-tree";
 import { CONTEXT_TAG_EXAMPLES, TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
 import type { TaskPriority, TaskStatus } from "../../shared/schemas";
-import { api, type Project, type Tag, type Task } from "../api";
+import { api, type Activity, type Project, type Tag, type Task } from "../api";
+import { activityTimeLabel, sourceLabel } from "../lib/format";
 
 const NONE_PARENT = "__none__";
 
@@ -353,7 +354,8 @@ export function TaskDetail({
 					</p>
 				</Field>
 			</FieldGroup>
-			<Badge variant="outline">来源：{task.source}</Badge>
+			<Badge variant="outline">来源：{sourceLabel(task.source)}</Badge>
+			<TaskActivityList taskId={task.id} updatedAt={task.updatedAt} />
 			{error ? <FieldError>{error}</FieldError> : null}
 			</div>
 			<div
@@ -430,5 +432,60 @@ export function TaskDetail({
 				</div>
 			</div>
 		</form>
+	);
+}
+
+function TaskActivityList({ taskId, updatedAt }: { taskId: string; updatedAt: string }) {
+	const [items, setItems] = useState<Activity[] | null>(null);
+	const [error, setError] = useState<string | null>(null);
+
+	useEffect(() => {
+		let cancelled = false;
+		setItems(null);
+		setError(null);
+		void api
+			.taskActivity(taskId)
+			.then((data) => {
+				if (!cancelled) setItems(data.items);
+			})
+			.catch((err: unknown) => {
+				if (!cancelled) {
+					setError(err instanceof Error ? err.message : "加载活动失败");
+				}
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [taskId, updatedAt]);
+
+	return (
+		<div className="flex flex-col gap-2">
+			<p className="text-sm font-medium">活动</p>
+			{error ? <p className="text-xs text-destructive">{error}</p> : null}
+			{items === null && !error ? (
+				<p className="text-xs text-muted-foreground">加载活动…</p>
+			) : null}
+			{items && items.length === 0 ? (
+				<p className="text-xs text-muted-foreground">还没有活动记录。</p>
+			) : null}
+			{items && items.length > 0 ? (
+				<ul className="flex flex-col gap-1.5">
+					{items.map((item) => (
+						<li
+							key={item.id}
+							className="flex flex-col gap-0.5 rounded-lg border px-3 py-2"
+						>
+							<div className="flex flex-wrap items-center gap-1.5">
+								<span className="text-xs text-muted-foreground">
+									{activityTimeLabel(item.createdAt)}
+								</span>
+								<Badge variant="outline">{sourceLabel(item.actorType)}</Badge>
+							</div>
+							<p className="text-sm">{item.summary}</p>
+						</li>
+					))}
+				</ul>
+			) : null}
+		</div>
 	);
 }

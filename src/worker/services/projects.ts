@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { projects } from "../../db/schema";
 import type { AppDatabase } from "../../db/client";
 import type { CreateProjectInput, TaskSource, UpdateProjectInput } from "../../shared/schemas";
@@ -9,12 +9,25 @@ import { ensureInbox } from "./ensure-inbox";
 
 export type ProjectRow = typeof projects.$inferSelect;
 
-export async function listProjects(db: AppDatabase, userId: string) {
+export type ListProjectsOptions = {
+	/** 默认不含已归档。网页设置页传 true 才能列出并取消归档。 */
+	includeArchived?: boolean;
+};
+
+export async function listProjects(
+	db: AppDatabase,
+	userId: string,
+	options: ListProjectsOptions = {},
+) {
 	await ensureInbox(db, userId);
+	const filters = [eq(projects.userId, userId)];
+	if (!options.includeArchived) {
+		filters.push(isNull(projects.archivedAt));
+	}
 	return db
 		.select()
 		.from(projects)
-		.where(eq(projects.userId, userId))
+		.where(and(...filters))
 		.orderBy(asc(projects.sortOrder), asc(projects.createdAt));
 }
 
@@ -59,6 +72,12 @@ export async function createProject(
 	return row;
 }
 
+function projectUpdateSummary(project: ProjectRow, input: UpdateProjectInput) {
+	if (input.archived === true) return `归档项目「${project.name}」`;
+	if (input.archived === false) return `取消归档项目「${input.name ?? project.name}」`;
+	return `更新项目「${input.name ?? project.name}」`;
+}
+
 export async function updateProject(
 	db: AppDatabase,
 	userId: string,
@@ -90,7 +109,7 @@ export async function updateProject(
 		action: "project.update",
 		entityType: "project",
 		entityId: id,
-		summary: `更新项目「${input.name ?? project.name}」`,
+		summary: projectUpdateSummary(project, input),
 	});
 	return getProject(db, userId, id);
 }

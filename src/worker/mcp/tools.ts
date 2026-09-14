@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createTagInput, createTaskInput, updateTaskInput } from "../../shared/schemas";
+import { createTagInput, createTaskInput, updateProjectInput, updateTaskInput } from "../../shared/schemas";
 import type { AppDatabase } from "../../db/client";
 import {
 	completeTask,
@@ -13,7 +13,7 @@ import {
 	todayFocus,
 	updateTask,
 } from "../services/tasks";
-import { createProject, listProjects } from "../services/projects";
+import { createProject, listProjects, updateProject } from "../services/projects";
 import { createTag, listTags } from "../services/tags";
 
 const listTasksToolInput = z.object({
@@ -29,8 +29,18 @@ const listTasksToolInput = z.object({
 export const MCP_TOOLS = [
 	{
 		name: "list_projects",
-		description: "列出当前用户的所有项目，含不可删除的收件箱。",
-		inputSchema: { type: "object", properties: {}, additionalProperties: false },
+		description:
+			"列出当前用户的项目，含不可删除的收件箱。默认不含已归档；传 includeArchived=true 可查看并配合 update_project 取消归档。",
+		inputSchema: {
+			type: "object",
+			properties: {
+				includeArchived: {
+					type: "boolean",
+					description: "默认 false。true 时包含已归档项目。",
+				},
+			},
+			additionalProperties: false,
+		},
 	},
 	{
 		name: "create_project",
@@ -42,6 +52,26 @@ export const MCP_TOOLS = [
 				color: { type: "string" },
 			},
 			required: ["name"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "update_project",
+		description:
+			"部分更新项目。archived true 归档、false 取消归档。收件箱不能归档或改名。归档不删项目下的任务。",
+		inputSchema: {
+			type: "object",
+			properties: {
+				id: { type: "string" },
+				name: { type: "string" },
+				color: { type: ["string", "null"] },
+				archived: {
+					type: "boolean",
+					description: "true 归档，false 取消归档。",
+				},
+				sortOrder: { type: "integer" },
+			},
+			required: ["id"],
 			additionalProperties: false,
 		},
 	},
@@ -212,11 +242,21 @@ export async function callMcpTool(
 	args: Record<string, unknown>,
 ) {
 	switch (name) {
-		case "list_projects":
-			return { items: await listProjects(db, userId) };
+		case "list_projects": {
+			const input = z.object({ includeArchived: z.boolean().optional() }).parse(args);
+			return {
+				items: await listProjects(db, userId, {
+					includeArchived: input.includeArchived === true,
+				}),
+			};
+		}
 		case "create_project": {
 			const input = z.object({ name: z.string(), color: z.string().optional() }).parse(args);
 			return { project: await createProject(db, userId, input, "mcp") };
+		}
+		case "update_project": {
+			const { id, ...rest } = z.object({ id: z.string() }).and(updateProjectInput).parse(args);
+			return { project: await updateProject(db, userId, id, rest, "mcp") };
 		}
 		case "list_tags":
 			return { items: await listTags(db, userId) };

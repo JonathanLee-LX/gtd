@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link, useOutletContext } from "react-router-dom";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -24,9 +25,11 @@ import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
+	ArchiveRestoreIcon,
 	CheckIcon,
 	CircleAlertIcon,
 	CopyIcon,
+	FolderArchiveIcon,
 	KeyRoundIcon,
 	RotateCcwIcon,
 	Trash2Icon,
@@ -34,7 +37,7 @@ import {
 import { toast } from "sonner";
 import { SOFT_DELETE_RETENTION_DAYS } from "../../shared/constants";
 import { statusLabel } from "../lib/format";
-import { api, type Task } from "../api";
+import { api, type Project, type Task } from "../api";
 
 type TokenRow = {
 	id: string;
@@ -51,6 +54,10 @@ function deletedOn(value: string | null) {
 }
 
 export function SettingsPage() {
+	const { projects, reloadProjects } = useOutletContext<{
+		projects: Project[];
+		reloadProjects: () => Promise<void>;
+	}>();
 	const [tokens, setTokens] = useState<TokenRow[]>([]);
 	const [deleted, setDeleted] = useState<Task[]>([]);
 	const [name, setName] = useState("MCP");
@@ -60,7 +67,9 @@ export function SettingsPage() {
 	const [creating, setCreating] = useState(false);
 	const [recycleLoading, setRecycleLoading] = useState(true);
 	const [restoringId, setRestoringId] = useState<string | null>(null);
+	const [unarchivingId, setUnarchivingId] = useState<string | null>(null);
 	const mcpUrl = `${window.location.origin}/mcp`;
+	const archivedProjects = projects.filter((project) => !project.isInbox && project.archivedAt);
 
 	async function load() {
 		const data = await api.tokens();
@@ -114,6 +123,19 @@ export function SettingsPage() {
 			setRecycleError(err instanceof Error ? err.message : "恢复失败");
 		} finally {
 			setRestoringId(null);
+		}
+	}
+
+	async function unarchive(id: string) {
+		setUnarchivingId(id);
+		try {
+			await api.updateProject(id, { archived: false });
+			await reloadProjects();
+			toast.success("已取消归档");
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : "取消归档失败");
+		} finally {
+			setUnarchivingId(null);
 		}
 	}
 
@@ -263,6 +285,62 @@ export function SettingsPage() {
 							</div>
 						))}
 					</div>
+				</CardContent>
+			</Card>
+			<Card className="max-w-xl">
+				<CardHeader>
+					<CardTitle>已归档项目</CardTitle>
+					<CardDescription>
+						归档后侧栏和周回顾不再出现，任务不会被删除。取消归档后会回到侧栏。
+					</CardDescription>
+				</CardHeader>
+				<CardContent className="flex flex-col gap-4">
+					{archivedProjects.length === 0 ? (
+						<p className="text-sm text-muted-foreground">没有已归档的项目。</p>
+					) : (
+						<div className="flex flex-col gap-2">
+							{archivedProjects.map((project) => (
+								<div
+									key={project.id}
+									className="flex items-center justify-between gap-3 rounded-lg border px-3 py-3"
+								>
+									<div className="min-w-0">
+										<Link
+											to={`/projects/${project.id}`}
+											className="block truncate font-medium hover:underline"
+										>
+											{project.name}
+										</Link>
+										{project.archivedAt ? (
+											<div className="mt-1">
+												<Badge variant="outline">
+													归档于 {project.archivedAt.slice(0, 10)}
+												</Badge>
+											</div>
+										) : null}
+									</div>
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										disabled={unarchivingId === project.id}
+										onClick={() => void unarchive(project.id)}
+									>
+										{unarchivingId === project.id ? (
+											<Spinner data-icon="inline-start" />
+										) : (
+											<ArchiveRestoreIcon data-icon="inline-start" />
+										)}
+										取消归档
+									</Button>
+								</div>
+							))}
+						</div>
+					)}
+					<p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+						<FolderArchiveIcon className="size-3.5" />
+						网页与 MCP 走同一套 ProjectService；收件箱不能归档。
+					</p>
 				</CardContent>
 			</Card>
 			<Card className="max-w-xl">

@@ -11,7 +11,7 @@
 | 工具 | 用途 |
 |---|---|
 | `today_focus` | 逾期 + 今天 + 下一步 + P1 |
-| `list_projects` / `create_project` | 项目 |
+| `list_projects` / `create_project` / `update_project` | 项目（`list_projects` 默认不含已归档） |
 | `list_tasks` / `get_task` / `search_tasks` | 查询 |
 | `create_task` | 创建（建议 `idempotencyKey`；可选 `parentId` 挂子任务） |
 | `update_task` | 部分更新（可改 `parentId`，`null` 取消父子） |
@@ -21,6 +21,12 @@
 | `restore_task` | 从回收站恢复软删任务（默认列表不含软删） |
 
 `dueAt` 使用 `YYYY-MM-DD`。
+
+### 项目归档
+
+- `update_project` 传 `archived: true` 归档、`false` 取消归档。收件箱不能归档。
+- 归档不删项目行，也不删、不改项目下的任务。
+- `list_projects` 默认不含已归档；需要时传 `includeArchived: true`。
 
 ### `parentId` 子任务
 

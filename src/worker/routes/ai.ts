@@ -26,7 +26,7 @@ export const aiRoutes = new Hono<{
 			}
 			const input = c.req.valid("json");
 			const tasks = await parseNaturalLanguage(
-				c.env.XAI_API_KEY,
+				c.env.AI,
 				input.text,
 				input.tz,
 			);

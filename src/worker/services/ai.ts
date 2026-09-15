@@ -61,8 +61,12 @@ const DRAFT_JSON_SCHEMA = {
 	},
 } as const;
 
-/** Workers AI 文本生成模型。换模型只改这里。 */
-const AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8";
+/**
+ * Workers AI 文本生成模型。换模型只改这里。
+ * 注意：只有 Cloudflare JSON Mode 支持列表里的模型才能用 response_format，
+ * 见 https://developers.cloudflare.com/workers-ai/features/json-mode/
+ */
+const AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 export async function parseNaturalLanguage(
 	ai: Ai | undefined,
@@ -73,9 +77,9 @@ export async function parseNaturalLanguage(
 		throw serviceUnavailable("AI 服务尚未启用，普通创建任务不受影响。");
 	}
 	const today = ymdInZone(new Date(), timeZone);
-	let result: { response?: string };
+	let content: string | undefined;
 	try {
-		result = await ai.run(AI_MODEL, {
+		const result = await ai.run(AI_MODEL, {
 			messages: [
 				{
 					role: "system",
@@ -88,17 +92,21 @@ export async function parseNaturalLanguage(
 			],
 			response_format: {
 				type: "json_schema",
-				json_schema: {
-					name: "gtd_task_drafts",
-					schema: DRAFT_JSON_SCHEMA,
-				},
+				json_schema: DRAFT_JSON_SCHEMA,
 			},
+			max_tokens: 1024,
 		});
+		// 输出可能是 { response } 对象、裸字符串，或异步任务回执
+		content =
+			typeof result === "string"
+				? result
+				: "response" in result
+					? result.response
+					: undefined;
 	} catch (err) {
 		console.error("Workers AI parse failed", err);
 		throw serviceUnavailable("AI 解析暂时不可用，请直接添加任务。");
 	}
-	const content = result.response;
 	if (!content) throw serviceUnavailable("AI 没有返回草稿。");
 	let parsed: unknown;
 	try {

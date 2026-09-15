@@ -62,22 +62,14 @@ const DRAFT_JSON_SCHEMA = {
 } as const;
 
 export async function parseNaturalLanguage(
-	apiKey: string | undefined,
+	ai: Ai,
 	text: string,
 	timeZone = DEFAULT_TIME_ZONE,
 ): Promise<TaskDraft[]> {
-	if (!apiKey) {
-		throw serviceUnavailable("还没配置 XAI_API_KEY，普通创建任务不受影响。");
-	}
 	const today = ymdInZone(new Date(), timeZone);
-	const response = await fetch("https://api.x.ai/v1/chat/completions", {
-		method: "POST",
-		headers: {
-			Authorization: `Bearer ${apiKey}`,
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify({
-			model: "grok-4.5",
+	let result: { response?: string };
+	try {
+		result = (await ai.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
 			messages: [
 				{
 					role: "system",
@@ -90,23 +82,14 @@ export async function parseNaturalLanguage(
 			],
 			response_format: {
 				type: "json_schema",
-				json_schema: {
-					name: "gtd_task_drafts",
-					schema: DRAFT_JSON_SCHEMA,
-					strict: true,
-				},
+				json_schema: DRAFT_JSON_SCHEMA,
 			},
-		}),
-	});
-	if (!response.ok) {
-		const detail = await response.text().catch(() => "");
-		console.error("xAI parse failed", response.status, detail);
+		})) as { response?: string };
+	} catch (error) {
+		console.error("Workers AI parse failed", error);
 		throw serviceUnavailable("AI 解析暂时不可用，请直接添加任务。");
 	}
-	const payload = (await response.json()) as {
-		choices?: { message?: { content?: string } }[];
-	};
-	const content = payload.choices?.[0]?.message?.content;
+	const content = result.response;
 	if (!content) throw serviceUnavailable("AI 没有返回草稿。");
 	let parsed: unknown;
 	try {

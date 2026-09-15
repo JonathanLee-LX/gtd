@@ -37,7 +37,7 @@ pnpm run deploy
 
 线上地址：https://gtd.jonathanleelx.workers.dev
 
-产品内 AI 需要 Worker secret `XAI_API_KEY`（https://console.x.ai）。没配时普通创建任务仍可用。
+产品内 AI 使用 Cloudflare Workers AI，不需要额外的 xAI API Key。部署配置中的 `ai.binding = "AI"` 会将 Workers AI 绑定到 `env.AI`；首次部署前请确认 Cloudflare 账号已启用 Workers AI。AI 解析仍受应用内每分钟 / 每日限流保护，没配好绑定时普通创建任务仍可用。
 
 ### GitHub 自动部署
 
@@ -76,4 +76,4 @@ pnpm desktop:build  # 打包（需本机 Tauri 依赖）
 2. GTD Web
 3. MCP Token
 4. Cloudflare 部署
-5. 产品内 AI（xAI：自然语言 → 草稿 → 确认写入）
+5. 产品内 AI（Workers AI：自然语言 → 草稿 → 确认写入）

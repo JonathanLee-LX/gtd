@@ -37,7 +37,7 @@ pnpm run deploy
 
 线上地址：https://gtd.jonathanleelx.workers.dev
 
-产品内 AI 需要 Worker secret `XAI_API_KEY`（https://console.x.ai）。没配时普通创建任务仍可用。
+产品内 AI 走 Cloudflare Workers AI（`wrangler.json` 里已绑定 `AI`），不需要外部 API key。模型在 `src/worker/services/ai.ts` 的 `AI_MODEL` 常量里可换。
 
 ### GitHub 自动部署
 

@@ -6,11 +6,11 @@ import { ensureInbox } from "../services/ensure-inbox";
 
 export type WorkerEnv = {
 	DB: D1Database;
+	AI: Ai;
 	BETTER_AUTH_SECRET: string;
 	BETTER_AUTH_URL?: string;
 	/** Explicitly enable email/password signup. Default off (secure for public workers.dev). */
 	ALLOW_SIGNUP?: string;
-	XAI_API_KEY?: string;
 };
 
 /** Signup is off unless ALLOW_SIGNUP is explicitly "true" or "1". */

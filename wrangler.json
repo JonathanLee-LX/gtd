@@ -26,5 +26,8 @@
 			"database_id": "a388bb85-e41f-4d94-a087-f1a86d528212",
 			"migrations_dir": "drizzle"
 		}
-	]
+	],
+	"ai": {
+		"binding": "AI"
+	}
 }

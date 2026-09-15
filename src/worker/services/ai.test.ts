@@ -65,4 +65,30 @@ describe("parseNaturalLanguage (Workers AI)", () => {
 		expect((err as AppError).status).toBe(400);
 		expect((err as AppError).code).toBe("ai_invalid_draft");
 	});
+
+	it("strips markdown code fences around the JSON", async () => {
+		const ai = fakeAi("```json\n" + JSON.stringify(DRAFT_PAYLOAD) + "\n```");
+		const tasks = await parseNaturalLanguage(ai, "买牛奶", "Asia/Shanghai");
+		expect(tasks).toHaveLength(1);
+		expect(tasks[0]?.title).toBe("买牛奶");
+	});
+
+	it("extracts the JSON object when wrapped in prose", async () => {
+		const ai = fakeAi(
+			"好的，这是解析结果：\n" + JSON.stringify(DRAFT_PAYLOAD) + "\n请确认。",
+		);
+		const tasks = await parseNaturalLanguage(ai, "买牛奶", "Asia/Shanghai");
+		expect(tasks).toHaveLength(1);
+		expect(tasks[0]?.title).toBe("买牛奶");
+	});
+
+	it("400s with ai_invalid_json when no JSON can be extracted", async () => {
+		const ai = fakeAi("抱歉，我没理解你的意思");
+		const err = await parseNaturalLanguage(ai, "买牛奶").catch(
+			(e: unknown) => e,
+		);
+		expect(err).toBeInstanceOf(AppError);
+		expect((err as AppError).status).toBe(400);
+		expect((err as AppError).code).toBe("ai_invalid_json");
+	});
 });

@@ -68,6 +68,31 @@ const DRAFT_JSON_SCHEMA = {
  */
 const AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
+/**
+ * 从 AI 返回文本中提取 JSON。
+ * Workers AI 的 JSON Mode 不保证输出是干净 JSON，模型可能包 markdown 围栏或前后加说明文字，
+ * 这里做宽容提取：去围栏 -> 直接解析 -> 截取首个 { ... } 片段。
+ */
+function extractJson(content: string): unknown {
+	const fenced = content.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+	const body = (fenced ? fenced[1] : content).trim();
+	try {
+		return JSON.parse(body);
+	} catch {
+		// 忽略，走下面的片段提取
+	}
+	const start = body.indexOf("{");
+	const end = body.lastIndexOf("}");
+	if (start >= 0 && end > start) {
+		try {
+			return JSON.parse(body.slice(start, end + 1));
+		} catch {
+			// 忽略，统一抛业务错误
+		}
+	}
+	throw badRequest("AI 返回的不是 JSON", "ai_invalid_json");
+}
+
 export async function parseNaturalLanguage(
 	ai: Ai | undefined,
 	text: string,
@@ -108,12 +133,7 @@ export async function parseNaturalLanguage(
 		throw serviceUnavailable("AI 解析暂时不可用，请直接添加任务。");
 	}
 	if (!content) throw serviceUnavailable("AI 没有返回草稿。");
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(content);
-	} catch {
-		throw badRequest("AI 返回的不是 JSON", "ai_invalid_json");
-	}
+	const parsed = extractJson(content);
 	const drafts = parseAiOutput.safeParse(parsed);
 	if (!drafts.success) {
 		throw badRequest("AI 草稿不符合任务契约", "ai_invalid_draft");

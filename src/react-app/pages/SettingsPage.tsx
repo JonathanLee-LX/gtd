@@ -190,7 +190,7 @@ export function SettingsPage() {
 					<CardTitle>API Token</CardTitle>
 					<CardDescription>明文只显示一次，之后只能看到前缀。</CardDescription>
 				</CardHeader>
-				<CardContent className="flex flex-col gap-4">
+				<CardContent className="flex flex-col gap-4 pb-(--card-spacing)">
 					<FieldGroup>
 						<Field orientation="horizontal">
 							<FieldLabel htmlFor="token-name" className="sr-only">

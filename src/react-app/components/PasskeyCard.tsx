@@ -154,6 +154,8 @@ export function PasskeyCard() {
 					query={listQuery}
 					loadKey={settingsKeys.passkeys()}
 					maxCount={10}
+					// #99：没记录时只画 1 行（第一次进设置页，5 行骨架会让下面的卡片大幅跳动）。
+					fallbackCount={1}
 					skeletonClassName="flex flex-col gap-2"
 					skeletonLabel="正在加载通行密钥"
 					skeleton={(index) => (

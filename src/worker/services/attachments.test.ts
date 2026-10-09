@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_TASK } from "../../shared/limits";
 import { createTestDb, seedUser } from "../test/db";
 import { FakeR2, PDF_BYTES, PNG_BYTES, streamOf } from "../test/fake-r2";
@@ -17,7 +17,7 @@ import {
 import { runDailyCleanup } from "./cleanup";
 import { createProject, deleteProject } from "./projects";
 import { createTask, deleteTask, listDeletedTasks, restoreTask } from "./tasks";
-import { recordPendingDeletions } from "./attachments";
+import { MAX_PENDING_DELETION_ATTEMPTS, recordPendingDeletions } from "./attachments";
 
 type TestDb = ReturnType<typeof createTestDb>["db"];
 const DAY = 24 * 60 * 60 * 1000;
@@ -265,7 +265,7 @@ describe("attachment service", () => {
 		const key = buildR2Key(a.id, task.id, req.uploadId);
 		expect(r2.objects.has(key)).toBe(true);
 
-		const first = await purgeAttachments(db as never, bucket, { now: new Date(Date.now() + 16 * 60 * 1000) });
+		const first = await purgeAttachments(db as never, bucket, { now: new Date(Date.now() + 21 * 60 * 1000) });
 		expect(first.staleUploads).toBe(1);
 		expect(r2.objects.has(key)).toBe(false);
 		expect(sqlite.prepare("select status from attachment_uploads where id = ?").get(req.uploadId)).toEqual({ status: "expired" });
@@ -357,7 +357,7 @@ describe("attachment service", () => {
 		const req = await requestUpload(db as never, a.id, task.id, { fileName: "a.png", size: PNG_BYTES.byteLength, mime: "image/png" });
 		await putUploadObject(db as never, bucket, a.id, req.uploadId, streamOf(PNG_BYTES));
 		await expect(
-			confirmUpload(db as never, bucket, a.id, task.id, req.uploadId, "human", { now: new Date(Date.now() + 16 * 60 * 1000) }),
+			confirmUpload(db as never, bucket, a.id, task.id, req.uploadId, "human", { now: new Date(Date.now() + 21 * 60 * 1000) }),
 		).rejects.toMatchObject({ status: 409, code: "upload_expired" });
 		expect(r2.objects.size).toBe(0);
 		expect(sqlite.prepare("select status from attachment_uploads where id = ?").get(req.uploadId)).toEqual({ status: "expired" });
@@ -399,5 +399,88 @@ describe("attachment service", () => {
 		).rejects.toMatchObject({ status: 409, code: "task_attachment_limit" });
 		expect(r2.objects.has(buildR2Key(a.id, task.id, req.uploadId))).toBe(false);
 		expect(sqlite.prepare("select count(*) as n from attachments where task_id = ?").get(task.id)).toEqual({ n: MAX_ATTACHMENTS_PER_TASK });
+	});
+
+	it("confirm has a 5-minute grace after upload expiry (slow mobile uploads), cron respects it", async () => {
+		const { db, r2, a, task, bucket } = await setup();
+		const req = await requestUpload(db as never, a.id, task.id, { fileName: "a.png", size: PNG_BYTES.byteLength, mime: "image/png" });
+		await putUploadObject(db as never, bucket, a.id, req.uploadId, streamOf(PNG_BYTES));
+		const at18 = new Date(Date.now() + 18 * 60 * 1000);
+		const cron = await purgeAttachments(db as never, bucket, { now: at18 });
+		expect(cron.staleUploads).toBe(0);
+		expect(r2.objects.has(buildR2Key(a.id, task.id, req.uploadId))).toBe(true);
+		const att = await confirmUpload(db as never, bucket, a.id, task.id, req.uploadId, "human", { now: at18 });
+		expect(att.r2Key).toBe(buildR2Key(a.id, task.id, req.uploadId));
+	});
+
+	it("expired confirm + R2 failure: key is retried by cron, never orphaned by the expired upload row", async () => {
+		const { db, sqlite, r2, a, task, bucket } = await setup();
+		const req = await requestUpload(db as never, a.id, task.id, { fileName: "a.png", size: PNG_BYTES.byteLength, mime: "image/png" });
+		await putUploadObject(db as never, bucket, a.id, req.uploadId, streamOf(PNG_BYTES));
+		const key = buildR2Key(a.id, task.id, req.uploadId);
+		r2.failDelete = true;
+		await expect(
+			confirmUpload(db as never, bucket, a.id, task.id, req.uploadId, "human", { now: new Date(Date.now() + 21 * 60 * 1000) }),
+		).rejects.toMatchObject({ code: "upload_expired" });
+		expect(sqlite.prepare("select status from attachment_uploads where id = ?").get(req.uploadId)).toEqual({ status: "expired" });
+		expect(sqlite.prepare("select count(*) as n from r2_pending_deletions where r2_key = ?").get(key)).toEqual({ n: 1 });
+
+		// 上传行（expired）还在，但不算引用：cron 必须真的删 R2，而不是把 key 移出清单。
+		r2.failDelete = false;
+		const result = await runDailyCleanup(db as never, bucket, new Date(Date.now() + 30 * 60 * 1000));
+		expect(result.attachments).toMatchObject({ pendingDeleted: 1 });
+		expect(r2.objects.has(key)).toBe(false);
+		expect(sqlite.prepare("select count(*) as n from r2_pending_deletions").get()).toEqual({ n: 0 });
+	});
+
+	it("failed project delete rolls back atomically: attachments stay, cron never deletes their files", async () => {
+		const { db, sqlite, r2, a, bucket } = await setup();
+		const project = await createProject(db as never, a.id, { name: "保留" }, "human");
+		const t1 = await createTask(db as never, a.id, { title: "任务", projectId: project.id }, "human");
+		const att = await upload(db, r2, a.id, t1.id, { name: "a.png", bytes: PNG_BYTES, mime: "image/png" });
+		const pending = await requestUpload(db as never, a.id, t1.id, { fileName: "b.png", size: PNG_BYTES.byteLength, mime: "image/png" });
+		await putUploadObject(db as never, bucket, a.id, pending.uploadId, streamOf(PNG_BYTES));
+
+		// 模拟删项目那条语句失败（例如 D1 报错）。
+		sqlite.exec("create trigger fail_project_delete before delete on projects begin select raise(abort, 'boom'); end;");
+		await expect(deleteProject(db as never, a.id, project.id, "human", bucket)).rejects.toThrow();
+
+		expect(sqlite.prepare("select count(*) as n from projects where id = ?").get(project.id)).toEqual({ n: 1 });
+		expect(sqlite.prepare("select count(*) as n from tasks where id = ?").get(t1.id)).toEqual({ n: 1 });
+		expect(sqlite.prepare("select count(*) as n from attachments where task_id = ?").get(t1.id)).toEqual({ n: 1 });
+		expect(sqlite.prepare("select count(*) as n from attachment_uploads where id = ?").get(pending.uploadId)).toEqual({ n: 1 });
+		expect(sqlite.prepare("select count(*) as n from r2_pending_deletions").get()).toEqual({ n: 0 });
+
+		await runDailyCleanup(db as never, bucket, new Date(Date.now() + 10 * 60 * 1000));
+		expect(r2.objects.has(att.r2Key!)).toBe(true);
+		expect((await listTaskAttachments(db as never, a.id, t1.id)).map((r) => r.id)).toEqual([att.id]);
+
+		// 故障消除后再删，一切照常清干净。
+		sqlite.exec("drop trigger fail_project_delete;");
+		await deleteProject(db as never, a.id, project.id, "human", bucket);
+		expect(r2.objects.size).toBe(0);
+		expect(sqlite.prepare("select count(*) as n from r2_pending_deletions").get()).toEqual({ n: 0 });
+	});
+
+	it("pending deletions stop retrying after the max attempts and log an error", async () => {
+		const { db, sqlite, r2, a, bucket } = await setup();
+		r2.objects.set("attachments/x/y/z", { bytes: PNG_BYTES, contentType: "image/png" });
+		await recordPendingDeletions(db as never, a.id, ["attachments/x/y/z"], "project_delete");
+		sqlite.prepare("update r2_pending_deletions set attempts = ?").run(MAX_PENDING_DELETION_ATTEMPTS - 1);
+		r2.failDelete = true;
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const later = new Date(Date.now() + 10 * 60 * 1000);
+		const first = await runDailyCleanup(db as never, bucket, later);
+		expect(first.attachments).toMatchObject({ pendingFailed: 1 });
+		expect(errorSpy.mock.calls.some((call) => String(call[0]).includes("gave up"))).toBe(true);
+		expect(sqlite.prepare("select attempts from r2_pending_deletions").get()).toEqual({ attempts: MAX_PENDING_DELETION_ATTEMPTS });
+
+		// 之后不再重试，但行保留供人工处理。
+		r2.failDelete = false;
+		const second = await runDailyCleanup(db as never, bucket, later);
+		expect(second.attachments).toMatchObject({ pendingDeleted: 0, pendingFailed: 0 });
+		expect(r2.objects.has("attachments/x/y/z")).toBe(true);
+		expect(sqlite.prepare("select count(*) as n from r2_pending_deletions").get()).toEqual({ n: 1 });
+		errorSpy.mockRestore();
 	});
 });

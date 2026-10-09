@@ -13,8 +13,8 @@
  * 失败才留 deleted_at 给 cron 兜底）、去掉 gc_runs 记账表（结果写日志）。
  */
 
-import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
-import { attachments, attachmentUploads, r2PendingDeletions, tasks } from "../../db/schema";
+import { and, asc, eq, gt, gte, inArray, isNotNull, isNull, lt, sql, type SQL } from "drizzle-orm";
+import { attachments, attachmentUploads, projects, r2PendingDeletions, tasks } from "../../db/schema";
 import type { AppDatabase } from "../../db/client";
 import {
 	ATTACHMENT_PURGE_GRACE_MS,
@@ -45,6 +45,18 @@ export type AttachmentUploadRow = typeof attachmentUploads.$inferSelect;
 export type AttachmentBucket = Pick<R2Bucket, "put" | "get" | "head" | "delete">;
 
 const R2_KEY_PREFIX = "attachments";
+
+/**
+ * confirm 在上传占位过期（UPLOAD_URL_TTL_SECONDS）之后还能再等的宽限：5 分钟。
+ * cron 作废 pending 占位时也按「过期 + 宽限」算，不会把宽限期里正在 confirm 的对象删掉。
+ */
+export const CONFIRM_GRACE_MS = 5 * 60 * 1000;
+
+export function uploadConfirmDeadline(expiresAt: string): string {
+	const t = Date.parse(expiresAt);
+	// 时间戳坏了按已过期处理（宁拒不放）。
+	return Number.isFinite(t) ? new Date(t + CONFIRM_GRACE_MS).toISOString() : "";
+}
 
 /** 终态 upload 行（expired/failed/confirmed）的保留期：7 天，之后 cron 删行。 */
 export const UPLOAD_RECORD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -442,7 +454,8 @@ export async function confirmUpload(
 		throw conflict("该上传已失效，请重新上传", "upload_expired");
 	}
 	// 过期的上传占位不能再 confirm：作废、清掉可能已写入的对象。
-	if (upload.expiresAt <= (options.now ?? new Date()).toISOString()) {
+	// 给 confirm 留 CONFIRM_GRACE_MS 宽限：手机慢网传 10MB，PUT 在 15 分钟内开始、结束时可能已过点。
+	if (uploadConfirmDeadline(upload.expiresAt) <= (options.now ?? new Date()).toISOString()) {
 		await markUpload(db, upload.id, "expired");
 		try {
 			await bucket.delete(upload.r2Key);
@@ -673,7 +686,6 @@ export async function purgeAttachments(
 		throw new AppError(500, "storage_unavailable", "附件存储未配置：env.UPLOADS 绑定缺失");
 	}
 	const now = options.now ?? new Date();
-	const nowIsoStr = now.toISOString();
 	const result: PurgeAttachmentsResult = {
 		staleUploads: 0,
 		deletedAttachments: 0,
@@ -707,7 +719,13 @@ export async function purgeAttachments(
 	const staleUploads = await db
 		.select({ id: attachmentUploads.id, r2Key: attachmentUploads.r2Key })
 		.from(attachmentUploads)
-		.where(and(eq(attachmentUploads.status, "pending"), lt(attachmentUploads.expiresAt, nowIsoStr)));
+		.where(
+			and(
+				eq(attachmentUploads.status, "pending"),
+				// 过期 + confirm 宽限都过了才作废。
+				lt(attachmentUploads.expiresAt, new Date(now.getTime() - CONFIRM_GRACE_MS).toISOString()),
+			),
+		);
 	if (await deleteKeys(staleUploads.map((row) => row.r2Key))) {
 		for (const ids of chunk(staleUploads.map((row) => row.id), ID_BATCH)) {
 			await db
@@ -800,6 +818,13 @@ export async function purgeAttachments(
 /** 新记进清单的 key 在这段时间内 cron 不碰，避免和正在进行的「记清单 → 删库」撞车。 */
 export const PENDING_DELETION_GRACE_MS = 5 * 60 * 1000;
 const PENDING_DELETION_BATCH = 500;
+/**
+ * 每个 key 最多自动重试这么多次（每日 cron 一次 ≈ 两周）。超过后**保留行、不再重试**，
+ * 并 console.error 告警（Workers 日志可检索 `r2 pending deletion gave up`）。
+ * 人工处理：查 `select * from r2_pending_deletions where attempts >= 14`，修好 R2 后
+ * `update r2_pending_deletions set attempts = 0 where ...` 即会被下一轮 cron 重新处理。
+ */
+export const MAX_PENDING_DELETION_ATTEMPTS = 14;
 
 export async function recordPendingDeletions(
 	db: AppDatabase,
@@ -817,7 +842,13 @@ export async function recordPendingDeletions(
 	}
 }
 
-/** 仍被活着的附件 / 上传行引用的 key：不能删 R2（说明对应的硬删没真正发生）。 */
+/**
+ * 仍「活着」引用这个 key 的行：不能删 R2（说明对应的硬删没真正发生）。
+ * 只算 attachments 行（含 deleted_at 非空的，由 cron 第 2 段自己删）和 **pending** 的上传行。
+ * expired / failed / confirmed 的上传行只是排查用的历史记录：expired/failed 的对象本来就该删，
+ * confirmed 的对象由 attachments 行代表；把它们算作引用会让 key 被移出清单、7 天后上传行
+ * 被清掉，对象就永远成了孤儿。
+ */
 async function referencedKeys(db: AppDatabase, keys: string[]): Promise<Set<string>> {
 	const referenced = new Set<string>();
 	for (const part of chunk(keys, ID_BATCH)) {
@@ -828,7 +859,7 @@ async function referencedKeys(db: AppDatabase, keys: string[]): Promise<Set<stri
 		const u = await db
 			.select({ key: attachmentUploads.r2Key })
 			.from(attachmentUploads)
-			.where(inArray(attachmentUploads.r2Key, part));
+			.where(and(inArray(attachmentUploads.r2Key, part), eq(attachmentUploads.status, "pending")));
 		for (const row of [...a, ...u]) if (row.key) referenced.add(row.key);
 	}
 	return referenced;
@@ -871,6 +902,22 @@ export async function flushPendingDeletions(
 					updatedAt: nowIso(),
 				})
 				.where(inArray(r2PendingDeletions.r2Key, part));
+			const exhausted = await db
+				.select({ key: r2PendingDeletions.r2Key, attempts: r2PendingDeletions.attempts })
+				.from(r2PendingDeletions)
+				.where(
+					and(
+						inArray(r2PendingDeletions.r2Key, part),
+						gte(r2PendingDeletions.attempts, MAX_PENDING_DELETION_ATTEMPTS),
+					),
+				);
+			if (exhausted.length > 0) {
+				console.error(
+					`r2 pending deletion gave up after ${MAX_PENDING_DELETION_ATTEMPTS} attempts; manual cleanup needed`,
+					exhausted.map((row) => row.key),
+					error,
+				);
+			}
 		}
 	}
 	return { deleted, failed, skipped: skipped.length };
@@ -887,7 +934,12 @@ export async function drainPendingDeletions(
 	const rows = await db
 		.select({ key: r2PendingDeletions.r2Key })
 		.from(r2PendingDeletions)
-		.where(lt(r2PendingDeletions.createdAt, cutoff))
+		.where(
+			and(
+				lt(r2PendingDeletions.createdAt, cutoff),
+				lt(r2PendingDeletions.attempts, MAX_PENDING_DELETION_ATTEMPTS),
+			),
+		)
 		.orderBy(asc(r2PendingDeletions.createdAt))
 		.limit(PENDING_DELETION_BATCH);
 	return flushPendingDeletions(
@@ -898,43 +950,89 @@ export async function drainPendingDeletions(
 }
 
 /**
- * 删除项目前的第一步：找出该项目下（含回收站里）所有任务的附件 / 上传对象，
- * 记进待删清单，再显式删掉附件 / 上传行（不只依赖 FK cascade）。返回要删的 R2 key。
- * 调用方删完项目后再调 flushPendingDeletions。
+ * 多条写语句原子执行。D1：`db.batch` 是一个事务（任一条失败整批回滚）。
+ * 测试用的 better-sqlite3 没有 batch，退化成 BEGIN / COMMIT / ROLLBACK。
+ * 只能放 drizzle 查询构造器（惰性执行）；不要放 `db.run(sql)`：drizzle 的 D1 batch
+ * 不支持带参数的 raw 语句（SQLiteRaw 没有预编译 stmt）。
  */
-export async function detachProjectAttachments(
+type BatchStatement = PromiseLike<unknown>;
+
+async function runAtomically(db: AppDatabase, statements: BatchStatement[]) {
+	const batchable = db as unknown as { batch?: (items: BatchStatement[]) => Promise<unknown> };
+	if (typeof batchable.batch === "function") {
+		await batchable.batch(statements);
+		return;
+	}
+	await db.run(sql`begin`);
+	try {
+		for (const statement of statements) await statement;
+		await db.run(sql`commit`);
+	} catch (error) {
+		await db.run(sql`rollback`);
+		throw error;
+	}
+}
+
+/**
+ * 硬删项目（连同其下所有任务、附件、上传占位），并清 R2，不留孤儿、也不误删：
+ *  1) 读出要删的 R2 key（只用于第 3 步的即时删除）；
+ *  2) **一个 D1 batch（事务）**里：把这些 key 记进 r2_pending_deletions（INSERT … SELECT，
+ *     以事务内的实时数据为准）→ 显式删上传行 / 附件行 → 删项目（FK cascade 删任务；
+ *     D1 默认强制外键，显式删除只是双保险）。任一步失败整批回滚：项目和附件都原样保留，
+ *     清单里也不会有它们的 key，cron 不会误删文件；
+ *  3) 事务提交后再删 R2，成功的移出清单，失败的留给每日 cron 重试。
+ */
+export async function hardDeleteProjectWithAttachments(
 	db: AppDatabase,
+	bucket: AttachmentBucket | undefined | null,
 	userId: string,
 	projectId: string,
-): Promise<string[]> {
-	const taskRows = await db
-		.select({ id: tasks.id })
-		.from(tasks)
-		.where(and(eq(tasks.userId, userId), eq(tasks.projectId, projectId)));
-	const taskIds = taskRows.map((row) => row.id);
-	const keys: string[] = [];
-	for (const ids of chunk(taskIds, ID_BATCH)) {
-		const a = await db
-			.select({ key: attachments.r2Key })
-			.from(attachments)
-			.where(and(eq(attachments.userId, userId), inArray(attachments.taskId, ids)));
-		const u = await db
-			.select({ key: attachmentUploads.r2Key })
-			.from(attachmentUploads)
-			.where(and(eq(attachmentUploads.userId, userId), inArray(attachmentUploads.taskId, ids)));
-		for (const row of [...a, ...u]) if (row.key) keys.push(row.key);
-	}
-	const unique = [...new Set(keys)];
-	if (unique.length === 0) return [];
-	// 先记清单（持久意图），再删行：中途失败也不会丢 key。
-	await recordPendingDeletions(db, userId, unique, "project_delete");
-	for (const ids of chunk(taskIds, ID_BATCH)) {
-		await db
-			.delete(attachmentUploads)
-			.where(and(eq(attachmentUploads.userId, userId), inArray(attachmentUploads.taskId, ids)));
-		await db
-			.delete(attachments)
-			.where(and(eq(attachments.userId, userId), inArray(attachments.taskId, ids)));
-	}
-	return unique;
+): Promise<{ r2Keys: number; deleted: number; failed: number }> {
+	const projectTaskIds = () =>
+		db
+			.select({ id: tasks.id })
+			.from(tasks)
+			.where(and(eq(tasks.userId, userId), eq(tasks.projectId, projectId)));
+	const attachmentScope = and(
+		eq(attachments.userId, userId),
+		isNotNull(attachments.r2Key),
+		inArray(attachments.taskId, projectTaskIds()),
+	);
+	const uploadScope = and(
+		eq(attachmentUploads.userId, userId),
+		inArray(attachmentUploads.taskId, projectTaskIds()),
+	);
+	const attachmentKeys = await db.select({ key: attachments.r2Key }).from(attachments).where(attachmentScope);
+	const uploadKeys = await db.select({ key: attachmentUploads.r2Key }).from(attachmentUploads).where(uploadScope);
+	const keys = [
+		...new Set(
+			[...attachmentKeys, ...uploadKeys].map((row) => row.key).filter((key): key is string => !!key),
+		),
+	];
+	const now = nowIso();
+	const pendingFields = (r2Key: SQL) => ({
+		r2Key: sql<string>`${r2Key}`.as("r2_key"),
+		userId: sql<string>`${userId}`.as("user_id"),
+		reason: sql<string>`'project_delete'`.as("reason"),
+		attempts: sql<number>`0`.as("attempts"),
+		lastError: sql<string | null>`null`.as("last_error"),
+		createdAt: sql<string>`${now}`.as("created_at"),
+		updatedAt: sql<string>`${now}`.as("updated_at"),
+	});
+	await runAtomically(db, [
+		db
+			.insert(r2PendingDeletions)
+			.select(db.select(pendingFields(sql`${attachments.r2Key}`)).from(attachments).where(attachmentScope))
+			.onConflictDoNothing(),
+		db
+			.insert(r2PendingDeletions)
+			.select(db.select(pendingFields(sql`${attachmentUploads.r2Key}`)).from(attachmentUploads).where(uploadScope))
+			.onConflictDoNothing(),
+		db.delete(attachmentUploads).where(uploadScope),
+		db.delete(attachments).where(and(eq(attachments.userId, userId), inArray(attachments.taskId, projectTaskIds()))),
+		db.delete(projects).where(and(eq(projects.id, projectId), eq(projects.userId, userId))),
+	]);
+	if (keys.length === 0) return { r2Keys: 0, deleted: 0, failed: 0 };
+	const result = await flushPendingDeletions(db, bucket, keys);
+	return { r2Keys: keys.length, deleted: result.deleted, failed: result.failed };
 }

@@ -165,3 +165,47 @@ body,
 		transform: none;
 	}
 }
+
+/*
+ * #99 骨架屏：真实组件的 `skeleton` 变体把文字 / 按钮画成灰块（尺寸由真实结构决定，圆角沿用各自组件或 rounded-* 工具类）。
+ * 浅色主题没有定义 --muted（bg-muted 是透明的），所以用前景色混出一个灰。
+ * 闪光动画只在没开「减少动态效果」时加（.skeleton-shimmer 由 JS 按 matchMedia 加，CSS 再兜一层）。
+ */
+.skeleton-fill,
+.skeleton-fill * {
+	color: transparent !important;
+	border-color: transparent !important;
+}
+
+.skeleton-fill {
+	background-color: color-mix(in oklab, var(--foreground) 9%, transparent) !important;
+	user-select: none;
+}
+
+.skeleton-shimmer .skeleton-fill {
+	background-image: linear-gradient(
+		90deg,
+		transparent 0%,
+		color-mix(in oklab, var(--background) 55%, transparent) 50%,
+		transparent 100%
+	);
+	background-size: 200% 100%;
+	background-repeat: no-repeat;
+	animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+	from {
+		background-position: 150% 0;
+	}
+	to {
+		background-position: -50% 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.skeleton-shimmer .skeleton-fill {
+		animation: none;
+		background-image: none;
+	}
+}

@@ -26,7 +26,6 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
-import { shouldShowTasksEmpty } from "../lib/task-list-ui";
 
 export function ProjectPage() {
 	const { id } = useParams();
@@ -36,7 +35,7 @@ export function ProjectPage() {
 	}>();
 	const project = projects.find((item) => item.id === id);
 	const queryClient = useQueryClient();
-	const { data, error, isPending } = useTaskList(
+	const query = useTaskList(
 		{ projectId: id },
 		{ enabled: Boolean(id) },
 	);
@@ -46,26 +45,8 @@ export function ProjectPage() {
 	const deleteTask = useDeleteTask();
 	const [archiveBusy, setArchiveBusy] = useState(false);
 
-	const tasks = data?.items ?? [];
-
 	if (!project) {
 		return <p className="p-6 text-sm text-muted-foreground">找不到这个项目。</p>;
-	}
-	if (error) {
-		return (
-			<p className="p-6 text-sm text-destructive" role="alert">
-				{error instanceof Error ? error.message : "加载失败"}
-			</p>
-		);
-	}
-	// Spinner only for cold load. Empty gated by showEmptyState (S1).
-	if (isPending && !data) {
-		return (
-			<div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
-				<Spinner />
-				加载项目…
-			</div>
-		);
 	}
 
 	async function setArchived(archived: boolean) {
@@ -137,10 +118,11 @@ export function ProjectPage() {
 			hint={project.archivedAt ? "已归档" : undefined}
 			toolbar={toolbar}
 			placeholder={`添加到「${project.name}」`}
-			tasks={tasks}
+			// #99：加载 / 空 / 错误统一由 TaskBoard 里的 QueryView 决定。
+			query={query}
+			loadKey={query.queryKey}
 			projects={projects}
 			emptyText="这个项目还没有未完成任务。"
-			showEmptyState={shouldShowTasksEmpty(data)}
 			onCreate={async (title) => {
 				await createTask.mutateAsync({ title, projectId: project.id, status: "next" });
 			}}

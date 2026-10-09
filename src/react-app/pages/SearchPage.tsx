@@ -3,7 +3,6 @@ import { useMemo } from "react";
 import { NavLink, useOutletContext, useSearchParams } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
 import {
 	CONTEXT_TAG_EXAMPLES,
 	isContextTagName,
@@ -18,7 +17,6 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
-import { shouldShowTasksEmpty } from "../lib/task-list-ui";
 
 export function SearchPage() {
 	const { projects } = useOutletContext<{ projects: Project[] }>();
@@ -27,7 +25,7 @@ export function SearchPage() {
 	const tagId = params.get("tagId")?.trim() ?? "";
 	const queryClient = useQueryClient();
 	const enabled = Boolean(q || tagId);
-	const { data, error, isPending } = useTaskList(
+	const query = useTaskList(
 		{
 			q: q || undefined,
 			tagId: tagId || undefined,
@@ -44,7 +42,6 @@ export function SearchPage() {
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
 
-	const tasks = enabled ? (data?.items ?? []) : [];
 	const tags: Tag[] = tagsQuery.data?.items ?? [];
 
 	const sortedTags = useMemo(() => {
@@ -55,14 +52,6 @@ export function SearchPage() {
 			return a.name.localeCompare(b.name, "zh");
 		});
 	}, [tags]);
-
-	if (error) {
-		return (
-			<p className="p-6 text-sm text-destructive" role="alert">
-				{error instanceof Error ? error.message : "搜索失败"}
-			</p>
-		);
-	}
 
 	const tagName = tags.find((tag) => tag.id === tagId)?.name;
 	const title = tagName ? `#${tagName}` : q ? `搜索「${q}」` : "搜索";
@@ -115,28 +104,18 @@ export function SearchPage() {
 		</div>
 	);
 
-	if (enabled && isPending && !data) {
-		return (
-			<div className="flex flex-1 flex-col gap-5 overflow-auto p-6">
-				{toolbar}
-				<div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-					<Spinner />
-					搜索中…
-				</div>
-			</div>
-		);
-	}
-
 	return (
 		<TaskBoard
 			title={title}
 			hint="按标题、备注搜索；也可用下方标签筛选（含 @ 情境标签）。过长关键词会自动截断以适配数据库限制。"
 			toolbar={toolbar}
 			placeholder="新建一条下一步任务"
-			tasks={tasks}
+			// #99：加载 / 空 / 错误统一由 TaskBoard 里的 QueryView 决定；没关键词时 enabled=false → 空状态提示。
+			query={query}
+			loadKey={query.queryKey}
+			enabled={enabled}
 			projects={projects}
 			emptyText={emptyText}
-			showEmptyState={!enabled || shouldShowTasksEmpty(data)}
 			onCreate={async (titleText) => {
 				await createTask.mutateAsync({ title: titleText, status: "next" });
 			}}

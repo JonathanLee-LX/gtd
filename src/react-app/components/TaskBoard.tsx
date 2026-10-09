@@ -56,17 +56,33 @@ import { ResizableSidePanel } from "./ResizableSidePanel";
 import { TaskComposer } from "./TaskComposer";
 import { TaskDetail } from "./TaskDetail";
 import { TaskRow } from "./TaskRow";
+import { QueryView } from "./QueryView";
 import { useTaskDetailLayout } from "../hooks/use-task-detail-layout";
+import { TASK_ROW_ESTIMATE, rowsThatFit } from "../lib/skeleton";
+import type { LoadableQuery } from "../lib/load-state";
+
+const NO_TASKS: Task[] = [];
+
+/** #99：一屏最多放几行骨架（按当前视口和行高估计）。 */
+function taskSkeletonMax(withInboxActions: boolean): number {
+	if (typeof window === "undefined") return 10;
+	const mobile = window.innerWidth < 768;
+	const row =
+		(mobile ? TASK_ROW_ESTIMATE.mobile : TASK_ROW_ESTIMATE.desktop) +
+		(withInboxActions ? TASK_ROW_ESTIMATE.inboxExtra : 0);
+	return rowsThatFit(window.innerHeight, row);
+}
 
 export function TaskBoard({
 	title,
 	hint,
 	toolbar,
 	placeholder,
-	tasks,
+	query,
+	loadKey,
+	enabled = true,
 	projects,
 	emptyText,
-	showEmptyState = true,
 	onCreate,
 	onSave,
 	onComplete,
@@ -77,14 +93,18 @@ export function TaskBoard({
 	hint?: string;
 	toolbar?: ReactNode;
 	placeholder: string;
-	tasks: Task[];
+	/**
+	 * #99：列表查询。加载 / 空 / 错误由 QueryView（useLoadState）统一决定：
+	 * 冷加载 150ms 后显示骨架，缓存命中直接渲染，空状态只在拿到空数据后出现（#54）。
+	 * 标题、提示、输入框始终渲染，不随加载位移。
+	 */
+	query: LoadableQuery<{ items: Task[] }>;
+	/** 查询 key（骨架行数按它记）。 */
+	loadKey: readonly unknown[];
+	/** 查询未启用（如搜索没关键词）：列表区直接显示空状态。 */
+	enabled?: boolean;
 	projects: Project[];
 	emptyText: string;
-	/**
-	 * S1: only true when query `data` is defined and items is empty.
-	 * Never true while data is undefined (cache miss / remount) — avoids「没有任务」flash.
-	 */
-	showEmptyState?: boolean;
 	onCreate: (title: string) => Promise<void>;
 	onSave: (id: string, patch: Record<string, unknown>) => Promise<void>;
 	onComplete: (id: string) => Promise<void>;
@@ -93,6 +113,7 @@ export function TaskBoard({
 	/** Daily inbox: show one-click next / waiting / someday / discard. */
 	enableInboxProcess?: boolean;
 }) {
+	const tasks = (enabled ? query.data?.items : undefined) ?? NO_TASKS;
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [drafts, setDrafts] = useState<TaskDraft[]>([]);
 	const [parsing, setParsing] = useState(false);
@@ -104,7 +125,7 @@ export function TaskBoard({
 	const commitAi = useCommitAiDraft();
 	// #90：只禁用正在提交的那条任务；其它任务照常可点。
 	const pendingTaskIds = usePendingTaskIds();
-	const isPending = useCallback(
+	const isTaskMutating = useCallback(
 		(id: string) => isTaskIdPending(pendingTaskIds, id),
 		[pendingTaskIds],
 	);
@@ -236,7 +257,7 @@ export function TaskBoard({
 	 */
 	const beginComplete = useCallback(
 		(id: string) => {
-			if (isPending(id) || exiting.has(id) || cancelFeedbackRef.current.has(id)) return;
+			if (isTaskMutating(id) || exiting.has(id) || cancelFeedbackRef.current.has(id)) return;
 			const orderedIndex = ordered.findIndex((row) => row.task.id === id);
 			const live = ordered[orderedIndex]?.task ?? tasks.find((task) => task.id === id);
 			if (!live) return;
@@ -296,7 +317,7 @@ export function TaskBoard({
 				}
 			})();
 		},
-		[isPending, exiting, ordered, tasks, onComplete, clearExiting, closeDetail],
+		[isTaskMutating, exiting, ordered, tasks, onComplete, clearExiting, closeDetail],
 	);
 
 	async function handleInboxProcess(
@@ -304,7 +325,7 @@ export function TaskBoard({
 		action: InboxProcessAction,
 		waitingOn?: string,
 	) {
-		if (isPending(taskId) || processBusy === taskId) return;
+		if (isTaskMutating(taskId) || processBusy === taskId) return;
 		// 临时任务的操作只是排队（已乐观生效），不把按钮锁到新建返回为止（#90）。
 		if (!isAwaitingRealId(taskId)) setProcessBusy(taskId);
 		try {
@@ -331,7 +352,7 @@ export function TaskBoard({
 			projects={projects}
 			tasks={tasks}
 			layout={isMobile ? "mobile" : "aside"}
-			mutationPending={isPending(selected.id)}
+			mutationPending={isTaskMutating(selected.id)}
 			completing={selectedCompleting}
 			onSave={(patch) => onSave(selected.id, patch)}
 			onComplete={async () => {
@@ -345,7 +366,6 @@ export function TaskBoard({
 		/>
 	) : null;
 
-	const listEmpty = tasks.length === 0 && exiting.size === 0;
 
 	return (
 		<div className="flex min-h-0 flex-1">
@@ -372,8 +392,26 @@ export function TaskBoard({
 						}
 					}}
 				/>
-				{listEmpty ? (
-					showEmptyState ? (
+				<QueryView
+					query={query}
+					loadKey={loadKey}
+					enabled={enabled}
+					// 正在播完成动画的行还在 DOM 里，不算空（#55）。
+					isEmpty={(data) => data.items.length === 0 && exiting.size === 0}
+					maxCount={taskSkeletonMax(enableInboxProcess)}
+					skeletonClassName="flex flex-col gap-1"
+					skeletonLabel="正在加载任务"
+					skeleton={(index) => (
+						<div key={index} className="flex flex-col gap-1">
+							<TaskRow.Skeleton index={index} />
+							{enableInboxProcess ? (
+								<div className="pb-2" style={{ paddingLeft: "40px" }}>
+									<InboxProcessActions.Skeleton />
+								</div>
+							) : null}
+						</div>
+					)}
+					empty={
 						<Empty className="border">
 							<EmptyHeader>
 								<EmptyMedia variant="icon">
@@ -383,41 +421,43 @@ export function TaskBoard({
 								<EmptyDescription>{emptyText}</EmptyDescription>
 							</EmptyHeader>
 						</Empty>
-					) : null
-				) : (
-					<div className="flex flex-col gap-1">
-						{displayRows.map(({ task, depth, exiting: exitEntry }) => (
-							<div key={task.id} className="flex flex-col gap-1">
-								<TaskRow
-									task={task}
-									depth={depth}
-									active={task.id === selectedId}
-									completing={Boolean(exitEntry)}
-									completePhase={exitEntry?.phase ?? null}
-									onOpen={() => openTask(task.id)}
-									completeDisabled={isPending(task.id) || Boolean(exitEntry)}
-									onComplete={() => {
-										if (isPending(task.id) || exitEntry) return;
-										beginComplete(task.id);
-									}}
-								/>
-								{enableInboxProcess && task.status === "inbox" && !exitEntry ? (
-									<div
-										className="pb-2"
-										style={{ paddingLeft: `${40 + depth * 20}px` }}
-									>
-										<InboxProcessActions
-											disabled={isPending(task.id) || processBusy === task.id}
-											onProcess={(action, waitingOn) =>
-												handleInboxProcess(task.id, action, waitingOn)
-											}
-										/>
-									</div>
-								) : null}
-							</div>
-						))}
-					</div>
-				)}
+					}
+				>
+					{() => (
+						<div className="flex flex-col gap-1">
+							{displayRows.map(({ task, depth, exiting: exitEntry }) => (
+								<div key={task.id} className="flex flex-col gap-1">
+									<TaskRow
+										task={task}
+										depth={depth}
+										active={task.id === selectedId}
+										completing={Boolean(exitEntry)}
+										completePhase={exitEntry?.phase ?? null}
+										onOpen={() => openTask(task.id)}
+										completeDisabled={isTaskMutating(task.id) || Boolean(exitEntry)}
+										onComplete={() => {
+											if (isTaskMutating(task.id) || exitEntry) return;
+											beginComplete(task.id);
+										}}
+									/>
+									{enableInboxProcess && task.status === "inbox" && !exitEntry ? (
+										<div
+											className="pb-2"
+											style={{ paddingLeft: `${40 + depth * 20}px` }}
+										>
+											<InboxProcessActions
+												disabled={isTaskMutating(task.id) || processBusy === task.id}
+												onProcess={(action, waitingOn) =>
+													handleInboxProcess(task.id, action, waitingOn)
+												}
+											/>
+										</div>
+									) : null}
+								</div>
+							))}
+						</div>
+					)}
+				</QueryView>
 			</div>
 			{isMobile ? (
 				<Sheet

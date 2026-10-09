@@ -1,6 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useOutletContext } from "react-router-dom";
-import { Spinner } from "@/components/ui/spinner";
 import { TASK_STATUS_LABELS } from "../../shared/constants";
 import type { TaskStatus } from "../../shared/schemas";
 import type { Project } from "../api";
@@ -13,7 +12,6 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
-import { shouldShowTasksEmpty } from "../lib/task-list-ui";
 
 const LIST_COPY: Record<
 	"next" | "waiting" | "scheduled" | "someday",
@@ -46,41 +44,22 @@ export function StatusListPage({ status }: { status: "next" | "waiting" | "sched
 	const queryClient = useQueryClient();
 	const copy = LIST_COPY[status];
 	const title = TASK_STATUS_LABELS[status as TaskStatus];
-	const { data, error, isPending } = useTaskList({ status });
+	const query = useTaskList({ status });
 	const createTask = useCreateTask(projects);
 	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
-
-	const tasks = data?.items ?? [];
-
-	if (error) {
-		return (
-			<p className="p-6 text-sm text-destructive" role="alert">
-				{error instanceof Error ? error.message : "加载失败"}
-			</p>
-		);
-	}
-
-	// Spinner only for cold load. Empty gated by showEmptyState (S1).
-	if (isPending && !data) {
-		return (
-			<div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
-				<Spinner />
-				加载{title}…
-			</div>
-		);
-	}
 
 	return (
 		<TaskBoard
 			title={title}
 			hint={copy.hint}
 			placeholder={copy.placeholder}
-			tasks={tasks}
+			// #99：加载 / 空 / 错误统一由 TaskBoard 里的 QueryView 决定。
+			query={query}
+			loadKey={query.queryKey}
 			projects={projects}
 			emptyText={copy.emptyText}
-			showEmptyState={shouldShowTasksEmpty(data)}
 			onCreate={async (titleText) => {
 				await createTask.mutateAsync({ title: titleText, status });
 			}}

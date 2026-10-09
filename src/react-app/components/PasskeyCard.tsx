@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -33,6 +34,10 @@ import {
 	passkeyLabel,
 	passkeyRegisterErrorMessage,
 } from "../lib/passkey";
+import { settingsKeys } from "../lib/settings-keys";
+import { loadErrorMessage } from "../lib/load-state";
+import { QueryView } from "./QueryView";
+import { SettingsListItem } from "./SettingsListItem";
 
 function addedOn(value: UserPasskey["createdAt"]) {
 	if (!value) return "";
@@ -40,23 +45,41 @@ function addedOn(value: UserPasskey["createdAt"]) {
 	return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("zh-CN");
 }
 
+function ErrorAlert({ message }: { message: string }) {
+	return (
+		<Alert variant="destructive">
+			<CircleAlertIcon />
+			<AlertTitle>出错了</AlertTitle>
+			<AlertDescription>{message}</AlertDescription>
+		</Alert>
+	);
+}
+
 /** #81 设置页：添加 / 查看 / 删除通行密钥。需已登录。 */
 export function PasskeyCard() {
 	const [rpID, setRpID] = useState(DEFAULT_PASSKEY_RP_ID);
-	const [items, setItems] = useState<UserPasskey[]>([]);
-	const [loading, setLoading] = useState(true);
+	const queryClient = useQueryClient();
 	const [adding, setAdding] = useState(false);
 	const [deletingId, setDeletingId] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const available = browserSupportsPasskey() && isPasskeyHost(window.location.hostname, rpID);
 
+	// #99：列表走查询缓存 —— 再次进入设置页直接显示（后台刷新），只有冷加载才出骨架。
+	const listQuery = useQuery({
+		queryKey: settingsKeys.passkeys(),
+		queryFn: async () => {
+			const result = await authClient.$fetch<UserPasskey[]>("/passkey/list-user-passkeys", {
+				method: "GET",
+			});
+			if (result.error) throw new Error(result.error.message || "通行密钥列表加载失败");
+			return result.data ?? [];
+		},
+		refetchOnMount: "always",
+	});
+
 	const load = useCallback(async () => {
-		const result = await authClient.$fetch<UserPasskey[]>("/passkey/list-user-passkeys", {
-			method: "GET",
-		});
-		if (result.error) throw new Error(result.error.message || "通行密钥列表加载失败");
-		setItems(result.data ?? []);
-	}, []);
+		await queryClient.invalidateQueries({ queryKey: settingsKeys.passkeys() });
+	}, [queryClient]);
 
 	useEffect(() => {
 		void api
@@ -65,12 +88,7 @@ export function PasskeyCard() {
 				if (health.passkeyRpId) setRpID(health.passkeyRpId);
 			})
 			.catch(() => undefined);
-		void load()
-			.catch((err: unknown) => {
-				setError(err instanceof Error ? err.message : "通行密钥列表加载失败");
-			})
-			.finally(() => setLoading(false));
-	}, [load]);
+	}, []);
 
 	async function add() {
 		setError(null);
@@ -99,7 +117,9 @@ export function PasskeyCard() {
 				body: { id },
 			});
 			if (result.error) throw new Error(result.error.message || "删除失败");
-			setItems((current) => current.filter((item) => item.id !== id));
+			queryClient.setQueryData<UserPasskey[]>(settingsKeys.passkeys(), (current) =>
+				current ? current.filter((item) => item.id !== id) : current,
+			);
 			toast.success("已删除，这个通行密钥不能再登录");
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "删除失败");
@@ -129,67 +149,67 @@ export function PasskeyCard() {
 						{PASSKEY_SETTINGS_HOST_HINT}
 					</p>
 				)}
-				{error ? (
-					<Alert variant="destructive">
-						<CircleAlertIcon />
-						<AlertTitle>出错了</AlertTitle>
-						<AlertDescription>{error}</AlertDescription>
-					</Alert>
-				) : null}
-				{loading ? (
-					<div className="flex items-center gap-2 text-sm text-muted-foreground">
-						<Spinner />
-						加载通行密钥…
-					</div>
-				) : items.length === 0 ? (
-					<p className="text-sm text-muted-foreground">还没有绑定通行密钥。</p>
-				) : (
-					<div className="flex flex-col gap-2">
-						{items.map((item) => (
-							<div
-								key={item.id}
-								className="flex items-center justify-between gap-3 rounded-lg border px-3 py-3"
-							>
-								<div className="flex min-w-0 items-center gap-2">
-									<FingerprintPatternIcon className="size-4 shrink-0 text-muted-foreground" />
-									<div className="min-w-0">
-										<p className="truncate font-medium">{passkeyLabel(item.name)}</p>
-										<div className="mt-1 flex flex-wrap items-center gap-1.5">
+				{error ? <ErrorAlert message={error} /> : null}
+				<QueryView
+					query={listQuery}
+					loadKey={settingsKeys.passkeys()}
+					maxCount={10}
+					skeletonClassName="flex flex-col gap-2"
+					skeletonLabel="正在加载通行密钥"
+					skeleton={(index) => (
+						<SettingsListItem.Skeleton key={index} index={index} leading actionLabel="删除" />
+					)}
+					empty={<p className="text-sm text-muted-foreground">还没有绑定通行密钥。</p>}
+					error={(err) => <ErrorAlert message={loadErrorMessage(err, "通行密钥列表加载失败")} />}
+				>
+					{(items) => (
+						<div className="flex flex-col gap-2">
+							{items.map((item) => (
+								<SettingsListItem
+									key={item.id}
+									leading={
+										<FingerprintPatternIcon className="size-4 shrink-0 text-muted-foreground" />
+									}
+									title={passkeyLabel(item.name)}
+									meta={
+										<>
 											{addedOn(item.createdAt) ? (
 												<Badge variant="outline">添加于 {addedOn(item.createdAt)}</Badge>
 											) : null}
 											{item.backedUp ? <Badge variant="secondary">已同步</Badge> : null}
-										</div>
-									</div>
-								</div>
-								<AlertDialog>
-									<AlertDialogTrigger
-										render={
-											<Button variant="destructive" size="sm" disabled={deletingId === item.id} />
-										}
-									>
-										{deletingId === item.id ? <Spinner data-icon="inline-start" /> : null}
-										删除
-									</AlertDialogTrigger>
-									<AlertDialogContent>
-										<AlertDialogHeader>
-											<AlertDialogTitle>删除这个通行密钥？</AlertDialogTitle>
-											<AlertDialogDescription>
-												删除后它不能再登录本站。设备里的密钥条目可在系统密码管理中自行清理。
-											</AlertDialogDescription>
-										</AlertDialogHeader>
-										<AlertDialogFooter>
-											<AlertDialogCancel>取消</AlertDialogCancel>
-											<AlertDialogAction variant="destructive" onClick={() => void remove(item.id)}>
+										</>
+									}
+									action={
+										<AlertDialog>
+											<AlertDialogTrigger
+												render={
+													<Button variant="destructive" size="sm" disabled={deletingId === item.id} />
+												}
+											>
+												{deletingId === item.id ? <Spinner data-icon="inline-start" /> : null}
 												删除
-											</AlertDialogAction>
-										</AlertDialogFooter>
-									</AlertDialogContent>
-								</AlertDialog>
-							</div>
-						))}
-					</div>
-				)}
+											</AlertDialogTrigger>
+											<AlertDialogContent>
+												<AlertDialogHeader>
+													<AlertDialogTitle>删除这个通行密钥？</AlertDialogTitle>
+													<AlertDialogDescription>
+														删除后它不能再登录本站。设备里的密钥条目可在系统密码管理中自行清理。
+													</AlertDialogDescription>
+												</AlertDialogHeader>
+												<AlertDialogFooter>
+													<AlertDialogCancel>取消</AlertDialogCancel>
+													<AlertDialogAction variant="destructive" onClick={() => void remove(item.id)}>
+														删除
+													</AlertDialogAction>
+												</AlertDialogFooter>
+											</AlertDialogContent>
+										</AlertDialog>
+									}
+								/>
+							))}
+						</div>
+					)}
+				</QueryView>
 			</CardContent>
 		</Card>
 	);

@@ -33,6 +33,9 @@ import {
 } from "../../shared/limits";
 import type { Attachment } from "../api";
 import { attachmentKeys, attachmentService } from "../lib/attachment-service";
+import { loadErrorMessage } from "../lib/load-state";
+import { Skeleton } from "@/components/ui/skeleton";
+import { QueryView } from "./QueryView";
 // TEMP #89 diagnostics — remove after root cause found
 import { startPickerWatch, watchInterceptedClicks, type PickerWatch } from "../lib/picker-diagnostics";
 
@@ -55,6 +58,143 @@ function typeLabel(item: Attachment) {
 	if (sub === "jpeg") return "JPG";
 	return sub ? sub.toUpperCase().slice(0, 4) : "文件";
 }
+
+/**
+ * 附件列表的一行。#99：`skeleton` 变体复用同一个 li / 缩略图 / 名称 / 大小 / 操作按钮结构，
+ * 尺寸和真实行一致，只是画成灰块、不可交互。
+ */
+/** 真实行和骨架行共用的尺寸类，改一处两边一起变。 */
+const ROW_CLASS = "flex min-w-0 items-center gap-3 rounded-lg border p-2";
+const TILE_CLASS = "size-14 shrink-0 rounded-md border";
+const NAME_CLASS = "truncate text-sm";
+const META_CLASS = "flex items-center gap-1 text-xs";
+const ACTION_CLASS = buttonVariants({ variant: "ghost", size: "icon" });
+
+function AttachmentRowBase(
+	props:
+		| {
+				skeleton?: false;
+				item: Attachment;
+				thumbBroken: boolean;
+				onPreview: () => void;
+				onDelete: () => void;
+				onThumbError: () => void;
+		  }
+		| { skeleton: true },
+) {
+	if (props.skeleton) {
+		return (
+			<li aria-hidden className={ROW_CLASS} data-skeleton="">
+				<Skeleton className={TILE_CLASS} />
+				<div className="flex min-w-0 flex-1 flex-col gap-0.5">
+					<Skeleton className={cn(NAME_CLASS, "w-fit max-w-full rounded-sm")}>附件文件名称.jpg</Skeleton>
+					<Skeleton className={cn(META_CLASS, "w-fit rounded-sm")}>
+						<ImageIcon className="size-3" />
+						1.2 MB
+					</Skeleton>
+				</div>
+				<div className="flex shrink-0 items-center gap-0.5">
+					<Skeleton className={ACTION_CLASS} />
+					<Skeleton className={ACTION_CLASS} />
+				</div>
+			</li>
+		);
+	}
+	const { item, thumbBroken, onPreview, onDelete, onThumbError } = props;
+	const name = attachmentName(item);
+	const isImage = item.kind === "image" && isInlineImageMime(item.mime);
+	const TileIcon = isImage ? ImageIcon : FileTextIcon;
+	return (
+		<li className={ROW_CLASS}>
+			{isImage ? (
+				<button
+					type="button"
+					className={cn(TILE_CLASS, "overflow-hidden bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none")}
+					onClick={onPreview}
+					aria-label={`预览 ${name}`}
+				>
+					{thumbBroken ? (
+						<span className="flex size-full flex-col items-center justify-center gap-0.5 text-muted-foreground">
+							<ImageIcon className="size-6" />
+							<span className="text-[10px] font-medium">{typeLabel(item)}</span>
+						</span>
+					) : (
+						<img
+							src={item.contentUrl}
+							alt={name}
+							loading="lazy"
+							className="size-full object-cover"
+							onError={onThumbError}
+						/>
+					)}
+				</button>
+			) : (
+				<a
+					href={item.contentUrl}
+					target="_blank"
+					rel="noopener"
+					className={cn(TILE_CLASS, "flex flex-col items-center justify-center gap-0.5 bg-muted text-muted-foreground hover:text-foreground")}
+					aria-label={`打开 ${name}`}
+				>
+					<TileIcon className="size-6" />
+					<span className="text-[10px] font-medium">{typeLabel(item)}</span>
+				</a>
+			)}
+			<div className="flex min-w-0 flex-1 flex-col gap-0.5">
+				{isImage ? (
+					<button
+						type="button"
+						className={cn(NAME_CLASS, "text-left hover:underline")}
+						onClick={onPreview}
+					>
+						{name}
+					</button>
+				) : (
+					<a
+						href={item.contentUrl}
+						target="_blank"
+						rel="noopener"
+						className={cn(NAME_CLASS, "hover:underline")}
+					>
+						{name}
+					</a>
+				)}
+				<span className={cn(META_CLASS, "text-muted-foreground")}>
+					{isImage ? <ImageIcon className="size-3" /> : <FileTextIcon className="size-3" />}
+					{formatFileSize(item.size)}
+				</span>
+			</div>
+			<div className="flex shrink-0 items-center gap-0.5">
+				<a
+					href={attachmentService.downloadUrl(item)}
+					download={name}
+					className={ACTION_CLASS}
+					aria-label={`下载 ${name}`}
+					title="下载"
+				>
+					<DownloadIcon />
+				</a>
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon"
+					aria-label={`删除 ${name}`}
+					title="删除"
+					onClick={onDelete}
+				>
+					<TrashIcon />
+				</Button>
+			</div>
+		</li>
+	);
+}
+
+/** #99：附件行骨架（同样的外框 / 缩略图 / 名称 / 操作按钮尺寸）。 */
+function AttachmentRowSkeleton() {
+	return <AttachmentRowBase skeleton />;
+}
+
+const AttachmentRow = Object.assign(AttachmentRowBase, { Skeleton: AttachmentRowSkeleton });
 
 /**
  * 任务详情里的附件区（#68）：上传（手机可拍照 / 相册 / 文件）、列表、图片缩略图 + 大图预览、
@@ -281,109 +421,41 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 				</ul>
 			) : null}
 
-			{query.isPending ? <p className="text-xs text-muted-foreground">加载附件…</p> : null}
-			{query.isError ? (
-				<p className="text-xs text-destructive">
-					{query.error instanceof Error ? query.error.message : "加载附件失败"}
-				</p>
-			) : null}
-			{query.isSuccess && items.length === 0 && uploads.length === 0 ? (
-				<p className="text-xs text-muted-foreground">还没有附件。</p>
-			) : null}
-
-			{items.length > 0 ? (
-				<ul className="flex flex-col gap-1.5" data-testid="attachment-list">
-					{items.map((item) => {
-						const name = attachmentName(item);
-						const isImage = item.kind === "image" && isInlineImageMime(item.mime);
-						const thumbBroken = brokenImages.has(item.id);
-						const TileIcon = isImage ? ImageIcon : FileTextIcon;
-						return (
-							<li key={item.id} className="flex min-w-0 items-center gap-3 rounded-lg border p-2">
-								{isImage ? (
-									<button
-										type="button"
-										className="size-14 shrink-0 overflow-hidden rounded-md border bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-										onClick={() => setPreview(item)}
-										aria-label={`预览 ${name}`}
-									>
-										{thumbBroken ? (
-											<span className="flex size-full flex-col items-center justify-center gap-0.5 text-muted-foreground">
-												<ImageIcon className="size-6" />
-												<span className="text-[10px] font-medium">{typeLabel(item)}</span>
-											</span>
-										) : (
-											<img
-												src={item.contentUrl}
-												alt={name}
-												loading="lazy"
-												className="size-full object-cover"
-												onError={() => markBroken(item.id)}
-											/>
-										)}
-									</button>
-								) : (
-									<a
-										href={item.contentUrl}
-										target="_blank"
-										rel="noopener"
-										className="flex size-14 shrink-0 flex-col items-center justify-center gap-0.5 rounded-md border bg-muted text-muted-foreground hover:text-foreground"
-										aria-label={`打开 ${name}`}
-									>
-										<TileIcon className="size-6" />
-										<span className="text-[10px] font-medium">{typeLabel(item)}</span>
-									</a>
-								)}
-								<div className="flex min-w-0 flex-1 flex-col gap-0.5">
-									{isImage ? (
-										<button
-											type="button"
-											className="truncate text-left text-sm hover:underline"
-											onClick={() => setPreview(item)}
-										>
-											{name}
-										</button>
-									) : (
-										<a
-											href={item.contentUrl}
-											target="_blank"
-											rel="noopener"
-											className="truncate text-sm hover:underline"
-										>
-											{name}
-										</a>
-									)}
-									<span className="flex items-center gap-1 text-xs text-muted-foreground">
-										{isImage ? <ImageIcon className="size-3" /> : <FileTextIcon className="size-3" />}
-										{formatFileSize(item.size)}
-									</span>
-								</div>
-								<div className="flex shrink-0 items-center gap-0.5">
-									<a
-										href={attachmentService.downloadUrl(item)}
-										download={name}
-										className={buttonVariants({ variant: "ghost", size: "icon" })}
-										aria-label={`下载 ${name}`}
-										title="下载"
-									>
-										<DownloadIcon />
-									</a>
-									<Button
-										type="button"
-										variant="ghost"
-										size="icon"
-										aria-label={`删除 ${name}`}
-										title="删除"
-										onClick={() => setPendingDelete(item)}
-									>
-										<TrashIcon />
-									</Button>
-								</div>
-							</li>
-						);
-					})}
-				</ul>
-			) : null}
+			{/*
+			  #99：加载 / 空 / 错误统一交给 QueryView。附件按任务记条数；没记录时默认 1 行
+			  （多数任务没有附件，5 行灰块会比「还没有附件。」高出一大截）。
+			*/}
+			<QueryView
+				query={query}
+				loadKey={attachmentKeys.task(taskId)}
+				skeleton={(index) => <AttachmentRow.Skeleton key={index} />}
+				skeletonAs="ul"
+				skeletonClassName="flex flex-col gap-1.5"
+				skeletonLabel="正在加载附件"
+				maxCount={MAX_ATTACHMENTS_PER_TASK}
+				fallbackCount={1}
+				empty={
+					uploads.length === 0 ? <p className="text-xs text-muted-foreground">还没有附件。</p> : null
+				}
+				error={(err) => (
+					<p className="text-xs text-destructive">{loadErrorMessage(err, "加载附件失败")}</p>
+				)}
+			>
+				{(data) => (
+					<ul className="flex flex-col gap-1.5" data-testid="attachment-list">
+						{data.items.map((item) => (
+							<AttachmentRow
+								key={item.id}
+								item={item}
+								thumbBroken={brokenImages.has(item.id)}
+								onPreview={() => setPreview(item)}
+								onDelete={() => setPendingDelete(item)}
+								onThumbError={() => markBroken(item.id)}
+							/>
+						))}
+					</ul>
+				)}
+			</QueryView>
 
 			<Dialog open={preview !== null} onOpenChange={(open) => !open && setPreview(null)}>
 				<DialogContent className="max-h-[90dvh] sm:max-w-3xl">

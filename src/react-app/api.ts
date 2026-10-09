@@ -1,4 +1,7 @@
 import type { TaskDraft, TaskPriority, TaskStatus, UpdateProjectInput } from "../shared/schemas";
+import { ApiError } from "./lib/session";
+
+export { ApiError } from "./lib/session";
 
 export type Tag = { id: string; name: string };
 
@@ -52,7 +55,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 		error?: string;
 	};
 	if (!response.ok) {
-		throw new Error(data.message || data.error || `请求失败 (${response.status})`);
+		throw new ApiError(
+			data.message || data.error || `请求失败 (${response.status})`,
+			response.status,
+			data.error,
+		);
 	}
 	return data;
 }

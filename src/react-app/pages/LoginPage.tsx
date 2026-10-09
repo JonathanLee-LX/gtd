@@ -25,7 +25,7 @@ import {
 	passkeySignInErrorMessage,
 } from "../lib/passkey";
 import { createPasskeyAutofillController, type PasskeyAutofillController } from "../lib/passkey-autofill";
-import { clearInboxHint } from "../lib/inbox-hint";
+import { clearClientSession } from "../lib/client-session";
 import { hasActiveSession } from "../lib/session";
 import { shellKeys } from "../lib/shell-keys";
 
@@ -51,8 +51,7 @@ export function LoginPage() {
 		let cancelled = false;
 		// #101：外壳数据（me / projects / 任务列表）进了查询缓存，回到登录页（401、退出、换账号）时清掉，
 		// 下一个登录的人不会先看到上一个人的缓存。收件箱 id 提示同理。
-		queryClient.clear();
-		clearInboxHint();
+		clearClientSession(queryClient);
 		void hasActiveSession(async () => {
 			const me = await api.me();
 			// 已登录 → 直接进工作台；顺手把 me 放进缓存，外壳不用再请求一次。

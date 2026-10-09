@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { api } from "../api";
 import { useShellContext } from "../hooks/use-shell-data";
+import { readInboxHint, writeInboxHint } from "../lib/inbox-hint";
 import { createAppQueryClient } from "../query-client";
 import { Shell } from "./Shell";
 
@@ -227,8 +228,51 @@ describe("Shell cold start (#101)", () => {
 		expect(screen.getByText("登录页")).toBeTruthy();
 		expect(loginMounts).toBe(1);
 		expect(locations.filter((p) => p === "/login")).toHaveLength(1);
-		// 401 不重试：一共只发了这三个请求
+		// 401 不重试：一共只发了这三个请求（清缓存也没有引发重新请求）
 		expect(fetchCalls.sort()).toEqual(["/api/me", "/api/projects", "/api/tasks/focus"]);
+	});
+
+	it("401 clears the client session (query cache + inbox id hint) via clearClientSession", async () => {
+		writeInboxHint("inbox");
+		const client = makeClient();
+		client.setQueryData(["tasks", "list", { projectId: "inbox" }], { items: [], nextCursor: null });
+		renderShell(client);
+		await act(flush);
+		await respond(() => true, { status: 401, body: { error: "unauthorized" } });
+		await act(flush);
+		expect(loginMounts).toBe(1);
+		expect(readInboxHint()).toBeNull();
+		expect(client.getQueryData(["tasks", "list", { projectId: "inbox" }])).toBeUndefined();
+		expect(client.getQueryData(["me"])).toBeUndefined();
+	});
+
+	it("sign-out clears the client session (query cache + inbox id hint)", async () => {
+		writeInboxHint("inbox");
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path) => {
+			if (path === "/api/auth/sign-out") return { status: 200, body: { success: true } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client);
+		await act(flush);
+		expect(readInboxHint()).toBe("inbox");
+		await act(async () => {
+			fireEvent.click(screen.getByText("jon@example.com"));
+			await flush();
+		});
+		await act(async () => {
+			fireEvent.click(await screen.findByRole("menuitem", { name: "退出" }));
+			await flush();
+		});
+		await act(flush);
+		expect(fetchCalls).toContain("/api/auth/sign-out");
+		expect(screen.getByText("登录页")).toBeTruthy();
+		expect(readInboxHint()).toBeNull();
+		expect(client.getQueryData(["me"])).toBeUndefined();
+		expect(client.getQueryData(["projects"])).toBeUndefined();
 	});
 
 	it("redirects once when the 401s arrive one after another", async () => {

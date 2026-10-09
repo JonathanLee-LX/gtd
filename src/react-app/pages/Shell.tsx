@@ -61,6 +61,7 @@ import {
 	useReloadProjects,
 	type ShellOutletContext,
 } from "../hooks/use-shell-data";
+import { clearClientSession } from "../lib/client-session";
 import { createLoginRedirectOnce, loadErrorMessage, shellLoadOutcome } from "../lib/session";
 import { MobileBottomNav } from "../components/MobileBottomNav";
 import { MobileQuickCollect } from "../components/MobileQuickCollect";
@@ -88,7 +89,11 @@ export function Shell() {
 	const navigateRef = useRef(navigate);
 	navigateRef.current = navigate;
 	const [onQueryError] = useState(() =>
-		createLoginRedirectOnce(() => navigateRef.current("/login", { replace: true })),
+		createLoginRedirectOnce(() => {
+			navigateRef.current("/login", { replace: true });
+			// 先跳再清：清缓存不会让还挂着的查询重新请求（Shell 随这次跳转卸载）。
+			clearClientSession(queryClient);
+		}),
 	);
 	useEffect(
 		() =>
@@ -153,6 +158,7 @@ export function Shell() {
 			return;
 		}
 		navigate("/login", { replace: true });
+		clearClientSession(queryClient);
 	}
 
 	const inbox = projects.find((project) => project.isInbox);

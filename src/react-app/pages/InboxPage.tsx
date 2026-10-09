@@ -1,5 +1,4 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
 import { TaskBoard } from "../components/TaskBoard";
 import {
 	useCompleteTask,
@@ -8,22 +7,15 @@ import {
 	useUpdateTask,
 } from "../hooks/use-task-mutations";
 import { useShellContext } from "../hooks/use-shell-data";
-import { useTaskList } from "../hooks/use-task-queries";
-import { readInboxHint } from "../lib/inbox-hint";
+import { useInboxList } from "../hooks/use-inbox-list";
 import { silentInvalidateTasks } from "../lib/task-cache";
 
 export function InboxPage() {
-	const { projects, projectsReady, projectsError } = useShellContext();
-	const inbox = projects.find((project) => project.isInbox);
-	// #101：冷启动时项目列表还没回来，用上次记住的收件箱 id 先发列表请求（和 /api/me、/api/projects 并行）；
-	// 列表回来后以真实 id 为准。
-	const [hintId] = useState(() => readInboxHint());
-	const inboxId = inbox?.id ?? (projectsReady ? undefined : (hintId ?? undefined));
+	const shell = useShellContext();
+	const { projects, projectsReady } = shell;
+	// #101：冷启动用记住的收件箱 id 并行请求列表；只显示经项目列表确认过的结果（见 useInboxList）。
+	const { inbox, display, loadKey } = useInboxList(shell);
 	const queryClient = useQueryClient();
-	const query = useTaskList(
-		{ projectId: inboxId },
-		{ enabled: Boolean(inboxId) },
-	);
 	const createTask = useCreateTask(projects);
 	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
@@ -39,9 +31,9 @@ export function InboxPage() {
 			hint="先捕获，再一键整理成下一步 / 等待 / 将来，或丢掉。"
 			placeholder="随便记一条，回车进收件箱"
 			// #99：加载 / 空 / 错误统一由 TaskBoard 里的 QueryView 决定。
-			// #101：还不知道收件箱 id（第一次冷启动）时列表区显示骨架，不显示空状态。
-			query={inboxId ? query : { data: undefined, error: projectsError }}
-			loadKey={query.queryKey}
+			// #101：收件箱 id 未确认前列表区是骨架，不显示空状态、也不显示用旧 id 拿到的列表。
+			query={display}
+			loadKey={loadKey}
 			projects={projects}
 			emptyText="收件箱是空的。这是一件好事。"
 			onCreate={async (title) => {

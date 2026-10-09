@@ -3,6 +3,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createDb } from "../db/client";
 import { AppError } from "./lib/errors";
 import { createAuth, isSignupEnabled, type WorkerEnv } from "./lib/auth";
+import { resolvePasskeyConfig } from "./lib/passkey";
 import { handleMcp } from "./mcp/handler";
 import { meRoutes } from "./routes/me";
 import { projectRoutes } from "./routes/projects";
@@ -26,7 +27,12 @@ app.onError((error, c) => {
 });
 
 app.get("/api/health", (c) =>
-	c.json({ ok: true, name: "gtd", signupEnabled: isSignupEnabled(c.env) }),
+	c.json({
+		ok: true,
+		name: "gtd",
+		signupEnabled: isSignupEnabled(c.env),
+		passkeyRpId: resolvePasskeyConfig(c.env).rpID,
+	}),
 );
 
 app.on(["GET", "POST"], "/api/auth/*", (c) => {

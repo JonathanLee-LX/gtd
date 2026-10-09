@@ -152,3 +152,33 @@ describe("TaskBoard detail presentation (#94)", () => {
 		expect(screen.getByLabelText("标题")).toHaveProperty("value", "没保存的标题");
 	});
 });
+
+describe("TaskBoard resizable detail panel (#96)", () => {
+	const handle = () => screen.queryByRole("separator", { name: "调整详情宽度" });
+
+	it("≥ 1024px: the side panel has a drag handle; dragging keeps the same detail and its unsaved input", () => {
+		localStorage.clear();
+		width = 1280;
+		vi.stubGlobal("innerWidth", 1280);
+		mountBoard();
+		openTask();
+		fireEvent.change(screen.getByLabelText("标题"), { target: { value: "没保存的标题" } });
+		const h = handle()!;
+		expect(h).not.toBeNull();
+		fireEvent.pointerDown(h, { pointerId: 1, pointerType: "mouse", button: 0, clientX: 800 });
+		fireEvent.pointerMove(h, { pointerId: 1, pointerType: "mouse", clientX: 700 });
+		fireEvent.pointerUp(h, { pointerId: 1, pointerType: "mouse", clientX: 700 });
+		expect(aside()!.style.width).toBe("548px");
+		expect(screen.getAllByLabelText("标题")).toHaveLength(1);
+		expect(screen.getByLabelText("标题")).toHaveProperty("value", "没保存的标题");
+		localStorage.clear();
+	});
+
+	it("< 1024px: fullscreen detail has no drag handle", async () => {
+		width = 1023;
+		mountBoard();
+		openTask();
+		await screen.findByRole("dialog", { name: "任务详情" });
+		expect(handle()).toBeNull();
+	});
+});

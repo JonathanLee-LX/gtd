@@ -3,7 +3,7 @@
  * #101（PR #104 评审）：/api/projects 还没回来时也能新建任务（不禁用）。
  * - 收件箱 / 今日焦点：请求体不带 projectId，服务端默认放进收件箱（getInbox），最终落在正确的列表；
  * - 项目页：projectId 取自路由参数（不依赖 projects），任务落在该项目列表、不进收件箱；
- * - 记住了收件箱 id：临时行本地用这个 id（请求体仍不带），最终以服务端返回为准。
+ * - 记住了收件箱 id 也不用于临时行（projectId 为 ''），请求体不带，最终以服务端返回为准。
  */
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -222,30 +222,27 @@ describe("creating tasks while /api/projects is pending (#101)", () => {
 		expect(titlesIn(client, taskKeys.list({ projectId: "inbox" }))).toEqual([]);
 	});
 
-	it("with a stored inbox hint: temp row is in the inbox list immediately (local projectId = hint), POST has no projectId, final projectId from the server", async () => {
+	it("with a stored inbox id: the temp row still has no projectId (hint not used for writes); POST has no projectId; final projectId from the server", async () => {
 		writeInboxHint("inbox");
 		let openGate!: () => void;
 		postGate = new Promise<void>((resolve) => {
 			openGate = resolve;
 		});
-		const client = renderAt("/inbox");
+		const client = renderAt("/today");
 		await settle();
-		await submitTask("随便记一条，回车进收件箱", "有提示的任务");
-		const temp = client.getQueryData<{ items: Task[] }>(taskKeys.list({ projectId: "inbox" }))!.items;
-		expect(temp.map((t) => [t.id.startsWith("tmp-"), t.projectId])).toEqual([[true, "inbox"]]);
+		await submitTask("直接记下今天要推进的事，回车创建", "有记录的任务");
+		const temp = client.getQueryData<{ items: Task[] }>(taskKeys.focus())!.items;
+		expect(temp.map((t) => [t.id.startsWith("tmp-"), t.projectId, t.projectName])).toEqual([[true, "", "收件箱"]]);
+		// 临时行没有写进按记录 id 缓存的收件箱列表
+		expect(titlesIn(client, taskKeys.list({ projectId: "inbox" }))).toEqual([]);
 		await waitFor(() => expect(posts).toHaveLength(1));
 		expect(posts[0]).not.toHaveProperty("projectId");
-
-		// 项目列表确认了收件箱 id（请求还没回来）：临时行显示在收件箱列表里
-		await act(async () => releaseProjects!());
-		await waitFor(() => expect(screen.getByText("有提示的任务")).toBeTruthy());
 
 		await act(async () => openGate());
 		await waitFor(() =>
 			expect(
-				client.getQueryData<{ items: Task[] }>(taskKeys.list({ projectId: "inbox" }))!.items.map((t) => [t.id, t.projectId]),
+				client.getQueryData<{ items: Task[] }>(taskKeys.focus())!.items.map((t) => [t.id, t.projectId]),
 			).toEqual([["srv-1", "inbox"]]),
 		);
-		expect(screen.getByText("有提示的任务")).toBeTruthy();
 	});
 });

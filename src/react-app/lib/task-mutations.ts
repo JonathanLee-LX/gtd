@@ -36,7 +36,6 @@ import {
 	type TaskSnapshot,
 } from "./task-cache";
 import { TASK_MUTATION_KEY } from "./task-mutation-lock";
-import { readInboxHint } from "./inbox-hint";
 import { INBOX_NAME } from "../../shared/constants";
 
 export function mutationErrorMessage(err: unknown, fallback: string) {
@@ -108,12 +107,10 @@ export function buildOptimisticTask(
 	body: CreateTaskVariables,
 	projects: readonly Project[] = [],
 	tempId = newTempTaskId(),
-	/** #101：项目列表还没回来时，用记住的收件箱 id 放临时行（只影响本地；请求体不带 projectId，以服务端为准）。 */
-	inboxHint: string | null = null,
 ): Task {
 	const inbox = projects.find((project) => project.isInbox);
 	const projectId =
-		typeof body.projectId === "string" && body.projectId ? body.projectId : (inbox?.id ?? inboxHint ?? "");
+		typeof body.projectId === "string" && body.projectId ? body.projectId : (inbox?.id ?? "");
 	const project = projects.find((item) => item.id === projectId);
 	const now = new Date().toISOString();
 	const str = (value: unknown) => (typeof value === "string" && value ? value : null);
@@ -148,14 +145,8 @@ export function createTaskMutationOptions(
 		mutationFn: (body) => api.createTask(stripSourceFromBody(body)),
 		// 同步插入：不 await cancelQueries，点下去当帧就能看到。进行中的刷新由 withPendingCreates 补齐。
 		onMutate: (body) => {
-			const projects = getProjects();
-			// 请求体（mutationFn 的 body）不变：没带 projectId 就不带，服务端默认收件箱。
-			const task = buildOptimisticTask(
-				body,
-				projects,
-				undefined,
-				projects.some((project) => project.isInbox) ? null : readInboxHint(),
-			);
+			// #101：项目列表没回来时临时行 projectId 为 ''（不用记住的收件箱 id）；请求体不带 projectId，以服务端为准。
+			const task = buildOptimisticTask(body, getProjects());
 			registerPendingCreate(task);
 			upsertTaskInCaches(queryClient, task);
 			return { tempId: task.id };

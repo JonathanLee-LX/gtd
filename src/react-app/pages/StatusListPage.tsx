@@ -12,7 +12,6 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
-import { shouldShowTasksEmpty } from "../lib/task-list-ui";
 
 const LIST_COPY: Record<
 	"next" | "waiting" | "scheduled" | "someday",
@@ -45,34 +44,22 @@ export function StatusListPage({ status }: { status: "next" | "waiting" | "sched
 	const queryClient = useQueryClient();
 	const copy = LIST_COPY[status];
 	const title = TASK_STATUS_LABELS[status as TaskStatus];
-	const { data, error, queryKey } = useTaskList({ status });
+	const query = useTaskList({ status });
 	const createTask = useCreateTask(projects);
 	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
-
-	const tasks = data?.items ?? [];
-
-	if (error) {
-		return (
-			<p className="p-6 text-sm text-destructive" role="alert">
-				{error instanceof Error ? error.message : "加载失败"}
-			</p>
-		);
-	}
 
 	return (
 		<TaskBoard
 			title={title}
 			hint={copy.hint}
 			placeholder={copy.placeholder}
-			tasks={tasks}
+			// #99：加载 / 空 / 错误统一由 TaskBoard 里的 QueryView 决定。
+			query={query}
+			loadKey={query.queryKey}
 			projects={projects}
 			emptyText={copy.emptyText}
-			showEmptyState={shouldShowTasksEmpty(data)}
-			// #99：冷加载（还没 data）显示骨架；缓存命中 data 已有，直接渲染。
-			loading={!data}
-			skeletonKey={queryKey}
 			onCreate={async (titleText) => {
 				await createTask.mutateAsync({ title: titleText, status });
 			}}

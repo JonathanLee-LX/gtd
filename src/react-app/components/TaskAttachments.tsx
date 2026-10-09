@@ -33,8 +33,9 @@ import {
 } from "../../shared/limits";
 import type { Attachment } from "../api";
 import { attachmentKeys, attachmentService } from "../lib/attachment-service";
-import { useSkeletonCount } from "../hooks/use-skeleton";
-import { SkeletonList } from "./SkeletonList";
+import { loadErrorMessage } from "../lib/load-state";
+import { Skeleton } from "@/components/ui/skeleton";
+import { QueryView } from "./QueryView";
 // TEMP #89 diagnostics — remove after root cause found
 import { startPickerWatch, watchInterceptedClicks, type PickerWatch } from "../lib/picker-diagnostics";
 
@@ -69,7 +70,7 @@ const NAME_CLASS = "truncate text-sm";
 const META_CLASS = "flex items-center gap-1 text-xs";
 const ACTION_CLASS = buttonVariants({ variant: "ghost", size: "icon" });
 
-function AttachmentRow(
+function AttachmentRowBase(
 	props:
 		| {
 				skeleton?: false;
@@ -84,17 +85,17 @@ function AttachmentRow(
 	if (props.skeleton) {
 		return (
 			<li aria-hidden className={ROW_CLASS} data-skeleton="">
-				<span className={cn(TILE_CLASS, "skeleton-fill")} />
+				<Skeleton className={TILE_CLASS} />
 				<div className="flex min-w-0 flex-1 flex-col gap-0.5">
-					<span className={cn(NAME_CLASS, "skeleton-fill w-fit max-w-full rounded-sm")}>附件文件名称.jpg</span>
-					<span className={cn(META_CLASS, "skeleton-fill w-fit rounded-sm")}>
+					<Skeleton className={cn(NAME_CLASS, "w-fit max-w-full rounded-sm")}>附件文件名称.jpg</Skeleton>
+					<Skeleton className={cn(META_CLASS, "w-fit rounded-sm")}>
 						<ImageIcon className="size-3" />
 						1.2 MB
-					</span>
+					</Skeleton>
 				</div>
 				<div className="flex shrink-0 items-center gap-0.5">
-					<span className={cn(ACTION_CLASS, "skeleton-fill")} />
-					<span className={cn(ACTION_CLASS, "skeleton-fill")} />
+					<Skeleton className={ACTION_CLASS} />
+					<Skeleton className={ACTION_CLASS} />
 				</div>
 			</li>
 		);
@@ -188,6 +189,13 @@ function AttachmentRow(
 	);
 }
 
+/** #99：附件行骨架（同样的外框 / 缩略图 / 名称 / 操作按钮尺寸）。 */
+function AttachmentRowSkeleton() {
+	return <AttachmentRowBase skeleton />;
+}
+
+const AttachmentRow = Object.assign(AttachmentRowBase, { Skeleton: AttachmentRowSkeleton });
+
 /**
  * 任务详情里的附件区（#68）：上传（手机可拍照 / 相册 / 文件）、列表、图片缩略图 + 大图预览、
  * PDF 新标签打开、下载、确认后删除。读写都走 attachmentService，后端按 user_id 隔离。
@@ -229,14 +237,6 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 		queryFn: () => attachmentService.list(taskId),
 	});
 	const items = query.data?.items ?? [];
-	// #99：附件按任务记条数。没记录时默认 1 行（多数任务没有附件，5 行灰块会比「还没有附件。」高出一大截）。
-	const skeletonCount = useSkeletonCount({
-		storageKey: attachmentKeys.task(taskId),
-		loading: query.isPending,
-		loadedCount: items.length,
-		max: MAX_ATTACHMENTS_PER_TASK,
-		fallback: 1,
-	});
 	const uploading = uploads.some((item) => !item.error);
 	const pickerDisabled = uploading || items.length >= MAX_ATTACHMENTS_PER_TASK;
 
@@ -421,38 +421,41 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 				</ul>
 			) : null}
 
-			{/* #99：冷加载骨架（150ms 后才出现），行数按任务记，缓存命中不出现。 */}
-			<SkeletonList
-				as="ul"
-				loading={query.isPending}
-				count={skeletonCount}
-				label="正在加载附件"
-				className="flex flex-col gap-1.5"
-				renderItem={(index) => <AttachmentRow key={index} skeleton />}
-			/>
-			{query.isError ? (
-				<p className="text-xs text-destructive">
-					{query.error instanceof Error ? query.error.message : "加载附件失败"}
-				</p>
-			) : null}
-			{query.isSuccess && items.length === 0 && uploads.length === 0 ? (
-				<p className="text-xs text-muted-foreground">还没有附件。</p>
-			) : null}
-
-			{items.length > 0 ? (
-				<ul className="flex flex-col gap-1.5" data-testid="attachment-list">
-					{items.map((item) => (
-						<AttachmentRow
-							key={item.id}
-							item={item}
-							thumbBroken={brokenImages.has(item.id)}
-							onPreview={() => setPreview(item)}
-							onDelete={() => setPendingDelete(item)}
-							onThumbError={() => markBroken(item.id)}
-						/>
-					))}
-				</ul>
-			) : null}
+			{/*
+			  #99：加载 / 空 / 错误统一交给 QueryView。附件按任务记条数；没记录时默认 1 行
+			  （多数任务没有附件，5 行灰块会比「还没有附件。」高出一大截）。
+			*/}
+			<QueryView
+				query={query}
+				loadKey={attachmentKeys.task(taskId)}
+				skeleton={(index) => <AttachmentRow.Skeleton key={index} />}
+				skeletonAs="ul"
+				skeletonClassName="flex flex-col gap-1.5"
+				skeletonLabel="正在加载附件"
+				maxCount={MAX_ATTACHMENTS_PER_TASK}
+				fallbackCount={1}
+				empty={
+					uploads.length === 0 ? <p className="text-xs text-muted-foreground">还没有附件。</p> : null
+				}
+				error={(err) => (
+					<p className="text-xs text-destructive">{loadErrorMessage(err, "加载附件失败")}</p>
+				)}
+			>
+				{(data) => (
+					<ul className="flex flex-col gap-1.5" data-testid="attachment-list">
+						{data.items.map((item) => (
+							<AttachmentRow
+								key={item.id}
+								item={item}
+								thumbBroken={brokenImages.has(item.id)}
+								onPreview={() => setPreview(item)}
+								onDelete={() => setPendingDelete(item)}
+								onThumbError={() => markBroken(item.id)}
+							/>
+						))}
+					</ul>
+				)}
+			</QueryView>
 
 			<Dialog open={preview !== null} onOpenChange={(open) => !open && setPreview(null)}>
 				<DialogContent className="max-h-[90dvh] sm:max-w-3xl">

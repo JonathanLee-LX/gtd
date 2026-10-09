@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { skeletonClassName } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import type { ProcessInboxInput } from "../../shared/schemas";
 import { api } from "../api";
@@ -34,9 +36,9 @@ export async function runInboxProcess(
  * Shared one-click inbox clarify actions (weekly review + daily inbox).
  * Waiting always prompts for who; discard → cancelled via TaskService.
  */
-const skel = (on: boolean) => (on ? "skeleton-fill border-transparent disabled:opacity-100" : undefined);
+const skel = (on: boolean) => (on ? cn(skeletonClassName, "border-transparent disabled:opacity-100") : undefined);
 
-export function InboxProcessActions({
+function InboxProcessActionsBase({
 	disabled,
 	extra,
 	onProcess,
@@ -104,3 +106,12 @@ export function InboxProcessActions({
 		</div>
 	);
 }
+
+/** #99：整理按钮行骨架（同样的按钮与尺寸）。 */
+function InboxProcessActionsSkeleton() {
+	return <InboxProcessActionsBase skeleton onProcess={() => {}} />;
+}
+
+export const InboxProcessActions = Object.assign(InboxProcessActionsBase, {
+	Skeleton: InboxProcessActionsSkeleton,
+});

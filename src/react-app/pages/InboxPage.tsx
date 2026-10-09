@@ -10,7 +10,6 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
-import { shouldShowTasksEmpty } from "../lib/task-list-ui";
 
 export function InboxPage() {
 	const { projects } = useOutletContext<{
@@ -18,7 +17,7 @@ export function InboxPage() {
 	}>();
 	const inbox = projects.find((project) => project.isInbox);
 	const queryClient = useQueryClient();
-	const { data, error, queryKey } = useTaskList(
+	const query = useTaskList(
 		{ projectId: inbox?.id },
 		{ enabled: Boolean(inbox?.id) },
 	);
@@ -27,17 +26,8 @@ export function InboxPage() {
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
 
-	const tasks = data?.items ?? [];
-
 	if (!inbox) {
 		return <p className="p-6 text-sm text-muted-foreground">正在准备收件箱…</p>;
-	}
-	if (error) {
-		return (
-			<p className="p-6 text-sm text-destructive" role="alert">
-				{error instanceof Error ? error.message : "加载失败"}
-			</p>
-		);
 	}
 
 	return (
@@ -45,13 +35,11 @@ export function InboxPage() {
 			title="收件箱"
 			hint="先捕获，再一键整理成下一步 / 等待 / 将来，或丢掉。"
 			placeholder="随便记一条，回车进收件箱"
-			tasks={tasks}
+			// #99：加载 / 空 / 错误统一由 TaskBoard 里的 QueryView 决定。
+			query={query}
+			loadKey={query.queryKey}
 			projects={projects}
 			emptyText="收件箱是空的。这是一件好事。"
-			showEmptyState={shouldShowTasksEmpty(data)}
-			// #99：冷加载（还没 data）显示骨架；缓存命中 data 已有，直接渲染。
-			loading={!data}
-			skeletonKey={queryKey}
 			onCreate={async (title) => {
 				await createTask.mutateAsync({ title, projectId: inbox.id, status: "inbox" });
 			}}

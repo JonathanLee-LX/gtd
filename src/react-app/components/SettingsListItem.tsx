@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton, skeletonClassName } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 /** 设置页卡片里的列表行骨架用到的占位文字（透明，只撑尺寸）。 */
@@ -10,7 +11,7 @@ const SKELETON_TITLES = ["MacBook 上的 Claude", "Grok", "整理旧任务"];
  * 设置页卡片里的一行（通行密钥 / API Token / 回收站）。
  * #99：`skeleton` 变体走同一份外框、标题、徽标行和右侧按钮结构，尺寸和真实行一致。
  */
-export function SettingsListItem(
+function SettingsListItemBase(
 	props:
 		| {
 				skeleton?: false;
@@ -35,14 +36,14 @@ export function SettingsListItem(
 	let action: ReactNode = null;
 	if (props.skeleton) {
 		const index = props.index ?? 0;
-		leading = props.leading ? <span className="skeleton-fill size-4 shrink-0 rounded-sm" /> : null;
+		leading = props.leading ? <Skeleton className="size-4 shrink-0 rounded-sm" /> : null;
 		title = SKELETON_TITLES[index % SKELETON_TITLES.length];
 		meta = (
 			<>
-				<Badge variant="outline" className="skeleton-fill">
+				<Badge variant="outline" className={skeletonClassName}>
 					gtd_abcd…
 				</Badge>
-				<Badge variant="outline" className="skeleton-fill">
+				<Badge variant="outline" className={skeletonClassName}>
 					有效
 				</Badge>
 			</>
@@ -54,7 +55,7 @@ export function SettingsListItem(
 				size="sm"
 				disabled
 				tabIndex={-1}
-				className="skeleton-fill disabled:opacity-100"
+				className={cn(skeletonClassName, "disabled:opacity-100")}
 			>
 				{props.actionLabel}
 			</Button>
@@ -74,7 +75,7 @@ export function SettingsListItem(
 			<div className="flex min-w-0 items-center gap-2">
 				{leading}
 				<div className="min-w-0">
-					<div className={cn("truncate font-medium", skeleton && "skeleton-fill w-fit max-w-full rounded-sm")}>
+					<div className={cn("truncate font-medium", skeleton && cn(skeletonClassName, "w-fit max-w-full rounded-sm"))}>
 						{title}
 					</div>
 					{/* 和改造前一样始终保留徽标行（即使为空也有 mt-1），行高不变。 */}
@@ -85,3 +86,10 @@ export function SettingsListItem(
 		</div>
 	);
 }
+
+/** #99：设置卡片列表行骨架。 */
+function SettingsListItemSkeleton(props: { index?: number; leading?: boolean; actionLabel?: string }) {
+	return <SettingsListItemBase skeleton {...props} />;
+}
+
+export const SettingsListItem = Object.assign(SettingsListItemBase, { Skeleton: SettingsListItemSkeleton });

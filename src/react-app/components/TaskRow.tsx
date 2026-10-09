@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton, skeletonClassName } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { CheckIcon, CircleIcon } from "lucide-react";
 import type { Task } from "../api";
@@ -29,7 +30,7 @@ type TaskRowProps = {
  * 所以行高、内边距、徽标和日期的位置自动一致；只是文字透明、用 `skeleton-fill` 画成灰块，
  * 不可交互、对读屏隐藏。
  */
-export function TaskRow(
+function TaskRowBase(
 	props: (TaskRowProps & { skeleton?: false }) | { skeleton: true; index?: number },
 ) {
 	const skeleton = props.skeleton === true;
@@ -71,7 +72,7 @@ export function TaskRow(
 				onClick={real?.onComplete}
 			>
 				{skeleton ? (
-					<span className="skeleton-fill size-5 rounded-full md:size-3" />
+					<Skeleton className="size-5 rounded-full md:size-3" />
 				) : completing ? (
 					<CheckIcon className="size-5 md:size-3" aria-hidden />
 				) : (
@@ -92,15 +93,20 @@ export function TaskRow(
 								└
 							</span>
 						) : null}
-						<span
-							className={cn(
-								"font-medium",
-								completing && "text-muted-foreground line-through decoration-muted-foreground/60",
-								skeleton && "skeleton-fill rounded-sm",
-							)}
-						>
-							{task ? task.title : SKELETON_TITLES[index % SKELETON_TITLES.length]}
-						</span>
+						{task ? (
+							<span
+								className={cn(
+									"font-medium",
+									completing && "text-muted-foreground line-through decoration-muted-foreground/60",
+								)}
+							>
+								{task.title}
+							</span>
+						) : (
+							<Skeleton className="font-medium rounded-sm">
+								{SKELETON_TITLES[index % SKELETON_TITLES.length]}
+							</Skeleton>
+						)}
 						{task && task.priority !== "none" ? (
 							<Badge variant={task.priority === "p1" ? "destructive" : "secondary"}>
 								{priorityLabel(task.priority)}
@@ -121,11 +127,11 @@ export function TaskRow(
 							</>
 						) : (
 							<>
-								<Badge variant="outline" className="skeleton-fill border-transparent">
+								<Badge variant="outline" className={cn(skeletonClassName, "border-transparent")}>
 									{SKELETON_STATUS[index % SKELETON_STATUS.length]}
 								</Badge>
 								{index % 2 === 0 ? (
-									<Badge variant="outline" className="skeleton-fill border-transparent">
+									<Badge variant="outline" className={cn(skeletonClassName, "border-transparent")}>
 										10月9日
 									</Badge>
 								) : null}
@@ -150,3 +156,10 @@ export function TaskRow(
 		</div>
 	);
 }
+
+/** #99：任务行骨架（和真实行同一份结构，尺寸自动一致）。 */
+function TaskRowSkeleton({ index = 0 }: { index?: number }) {
+	return <TaskRowBase skeleton index={index} />;
+}
+
+export const TaskRow = Object.assign(TaskRowBase, { Skeleton: TaskRowSkeleton });

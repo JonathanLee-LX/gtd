@@ -90,7 +90,8 @@ function mountBoard() {
 			<TaskBoard
 				title="收件箱"
 				placeholder="加一条"
-				tasks={tasks}
+				query={{ data: { items: tasks }, error: null }}
+				loadKey={["tasks", "list", {}]}
 				projects={projects}
 				emptyText="空"
 				onCreate={async () => {}}

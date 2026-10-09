@@ -1,0 +1,44 @@
+name: Skeleton parity
+
+# #99：骨架 vs 真实组件的尺寸对比，必须在真浏览器里量（happy-dom 没有布局）。
+# 只在 PR 上、且改到前端相关文件时跑；不阻塞 deploy（deploy 只依赖 deploy.yml 里的 check）。
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/react-app/**"
+      - "src/components/**"
+      - "vitest.browser.config.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/skeleton-parity.yml"
+
+concurrency:
+  group: skeleton-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  skeleton-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-chromium
+      # 只装 Chromium；缓存命中时跳过下载，只补系统依赖。
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:browser

@@ -71,12 +71,10 @@ async function measureBoard(opts: { loading: boolean; tasks: Task[]; inbox: bool
 				<TaskBoard
 					title="收件箱"
 					placeholder="随便记一条"
-					tasks={opts.tasks}
+					query={{ data: opts.loading ? undefined : { items: opts.tasks }, error: null }}
+					loadKey={opts.key}
 					projects={projects}
 					emptyText="空"
-					showEmptyState={!opts.loading && opts.tasks.length === 0}
-					loading={opts.loading}
-					skeletonKey={opts.key}
 					enableInboxProcess={opts.inbox}
 					onCreate={async () => {}}
 					onSave={async () => {}}
@@ -129,7 +127,7 @@ for (const vp of [
 							<TaskRow task={makeTask(0)} active={false} onOpen={() => {}} onComplete={() => {}} />
 						</div>
 						<div data-skel>
-							<TaskRow skeleton index={0} />
+							<TaskRow.Skeleton index={0} />
 						</div>
 					</div>
 				</Providers>,
@@ -233,7 +231,7 @@ for (const vp of [
 							/>
 						</div>
 						<div data-skel>
-							<SettingsListItem skeleton actionLabel="撤销" />
+							<SettingsListItem.Skeleton actionLabel="撤销" />
 						</div>
 					</div>
 				</Providers>,

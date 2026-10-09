@@ -38,8 +38,8 @@ import {
 import { toast } from "sonner";
 import { PasskeyCard } from "../components/PasskeyCard";
 import { SettingsListItem } from "../components/SettingsListItem";
-import { SkeletonList } from "../components/SkeletonList";
-import { useSkeletonCount } from "../hooks/use-skeleton";
+import { QueryView } from "../components/QueryView";
+import { loadErrorMessage } from "../lib/load-state";
 import { settingsKeys } from "../lib/settings-keys";
 import { SOFT_DELETE_RETENTION_DAYS } from "../../shared/constants";
 import { statusLabel } from "../lib/format";
@@ -53,6 +53,17 @@ type TokenRow = {
 	revokedAt: string | null;
 	lastUsedAt: string | null;
 };
+
+/** 设置卡片里的红色提示（加载失败 / 操作失败）。 */
+function LoadAlert({ message }: { message: string }) {
+	return (
+		<Alert variant="destructive">
+			<CircleAlertIcon />
+			<AlertTitle>出错了</AlertTitle>
+			<AlertDescription>{message}</AlertDescription>
+		</Alert>
+	);
+}
 
 function deletedOn(value: string | null) {
 	if (!value) return "";
@@ -76,22 +87,6 @@ export function SettingsPage() {
 		queryFn: () => api.deletedTasks(),
 		refetchOnMount: "always",
 	});
-	const tokens = tokensQuery.data?.items ?? [];
-	const deleted: Task[] = deletedQuery.data?.items ?? [];
-	const tokensLoading = !tokensQuery.data && !tokensQuery.error;
-	const recycleLoading = !deletedQuery.data && !deletedQuery.error;
-	const tokenSkeletonCount = useSkeletonCount({
-		storageKey: settingsKeys.tokens(),
-		loading: tokensLoading,
-		loadedCount: tokens.length,
-		max: 10,
-	});
-	const recycleSkeletonCount = useSkeletonCount({
-		storageKey: settingsKeys.deletedTasks(),
-		loading: recycleLoading,
-		loadedCount: deleted.length,
-		max: 10,
-	});
 	const [name, setName] = useState("MCP");
 	const [freshToken, setFreshToken] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -101,17 +96,6 @@ export function SettingsPage() {
 	const [unarchivingId, setUnarchivingId] = useState<string | null>(null);
 	const mcpUrl = `${window.location.origin}/mcp`;
 	const archivedProjects = projects.filter((project) => !project.isInbox && project.archivedAt);
-
-	const tokensLoadError = tokensQuery.error
-		? tokensQuery.error instanceof Error
-			? tokensQuery.error.message
-			: "加载失败"
-		: null;
-	const recycleLoadError = deletedQuery.error
-		? deletedQuery.error instanceof Error
-			? deletedQuery.error.message
-			: "回收站加载失败"
-		: null;
 
 	async function load() {
 		await queryClient.invalidateQueries({ queryKey: settingsKeys.tokens() });
@@ -259,69 +243,67 @@ export function SettingsPage() {
 							</AlertDescription>
 						</Alert>
 					) : null}
-					{error || tokensLoadError ? (
-						<Alert variant="destructive">
-							<CircleAlertIcon />
-							<AlertTitle>出错了</AlertTitle>
-							<AlertDescription>{error ?? tokensLoadError}</AlertDescription>
-						</Alert>
-					) : null}
-					{tokensLoading ? (
-						<SkeletonList
-							loading
-							count={tokenSkeletonCount}
-							label="正在加载 Token"
-							className="flex flex-col gap-2"
-							renderItem={(index) => (
-								<SettingsListItem key={index} skeleton index={index} actionLabel="撤销" />
-							)}
-						/>
-					) : null}
-					<div className="flex flex-col gap-2">
-						{tokens.map((token) => (
-							<SettingsListItem
-								key={token.id}
-								title={token.name}
-								meta={
-									<>
-										<Badge variant="outline">{token.prefix}…</Badge>
-										<Badge variant={token.revokedAt ? "secondary" : "default"}>
-											{token.revokedAt ? "已撤销" : "有效"}
-										</Badge>
-									</>
-								}
-								action={token.revokedAt ? null : (
-									<AlertDialog>
-										<AlertDialogTrigger render={<Button variant="destructive" size="sm" />}>
-											撤销
-										</AlertDialogTrigger>
-										<AlertDialogContent>
-											<AlertDialogHeader>
-												<AlertDialogTitle>撤销这个 Token？</AlertDialogTitle>
-												<AlertDialogDescription>
-													助手立刻无法再调用 MCP。需要的话再新建一个。
-												</AlertDialogDescription>
-											</AlertDialogHeader>
-											<AlertDialogFooter>
-												<AlertDialogCancel>取消</AlertDialogCancel>
-												<AlertDialogAction
-													variant="destructive"
-													onClick={() =>
-														void api
-															.revokeToken(token.id)
-															.then(load)
-															.then(() => toast.success("已撤销"))
-													}
-												>
-													撤销
-												</AlertDialogAction>
-											</AlertDialogFooter>
-										</AlertDialogContent>
-									</AlertDialog>
-								)}
-							/>
-						))}
-					</div>
+					{error ? <LoadAlert message={error} /> : null}
+					<QueryView
+						query={tokensQuery}
+						loadKey={settingsKeys.tokens()}
+						maxCount={10}
+						skeletonClassName="flex flex-col gap-2"
+						skeletonLabel="正在加载 Token"
+						skeleton={(index) => (
+							<SettingsListItem.Skeleton key={index} index={index} actionLabel="撤销" />
+						)}
+						empty={null}
+						error={(err) => <LoadAlert message={loadErrorMessage(err)} />}
+					>
+						{(data) => (
+						<div className="flex flex-col gap-2">
+							{data.items.map((token) => (
+								<SettingsListItem
+									key={token.id}
+									title={token.name}
+									meta={
+										<>
+											<Badge variant="outline">{token.prefix}…</Badge>
+											<Badge variant={token.revokedAt ? "secondary" : "default"}>
+												{token.revokedAt ? "已撤销" : "有效"}
+											</Badge>
+										</>
+									}
+									action={token.revokedAt ? null : (
+										<AlertDialog>
+											<AlertDialogTrigger render={<Button variant="destructive" size="sm" />}>
+												撤销
+											</AlertDialogTrigger>
+											<AlertDialogContent>
+												<AlertDialogHeader>
+													<AlertDialogTitle>撤销这个 Token？</AlertDialogTitle>
+													<AlertDialogDescription>
+														助手立刻无法再调用 MCP。需要的话再新建一个。
+													</AlertDialogDescription>
+												</AlertDialogHeader>
+												<AlertDialogFooter>
+													<AlertDialogCancel>取消</AlertDialogCancel>
+													<AlertDialogAction
+														variant="destructive"
+														onClick={() =>
+															void api
+																.revokeToken(token.id)
+																.then(load)
+																.then(() => toast.success("已撤销"))
+														}
+													>
+														撤销
+													</AlertDialogAction>
+												</AlertDialogFooter>
+											</AlertDialogContent>
+										</AlertDialog>
+									)}
+								/>
+							))}
+						</div>
+						)}
+					</QueryView>
 				</CardContent>
 			</Card>
 			<Card className="max-w-xl">
@@ -389,62 +371,57 @@ export function SettingsPage() {
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="flex flex-col gap-4">
-					{recycleError || recycleLoadError ? (
-						<Alert variant="destructive">
-							<CircleAlertIcon />
-							<AlertTitle>出错了</AlertTitle>
-							<AlertDescription>{recycleError ?? recycleLoadError}</AlertDescription>
-						</Alert>
-					) : null}
-					{recycleLoading ? (
-						<SkeletonList
-							loading
-							count={recycleSkeletonCount}
-							label="正在加载回收站"
-							className="flex flex-col gap-2"
-							renderItem={(index) => (
-								<SettingsListItem key={index} skeleton index={index} actionLabel="恢复" />
-							)}
-						/>
-					) : !deletedQuery.data ? null : deleted.length === 0 ? (
-						<p className="text-sm text-muted-foreground">回收站是空的。</p>
-					) : (
-						<div className="flex flex-col gap-2">
-							{deleted.map((task) => (
-								<SettingsListItem
-									key={task.id}
-									title={task.title}
-									meta={
-										<>
-											<Badge variant="outline">{statusLabel(task.status)}</Badge>
-											{task.projectName ? (
-												<Badge variant="secondary">{task.projectName}</Badge>
-											) : null}
-											{task.deletedAt ? (
-												<Badge variant="outline">删除于 {deletedOn(task.deletedAt)}</Badge>
-											) : null}
-										</>
-									}
-									action={
-										<Button
-											type="button"
-											variant="outline"
-											size="sm"
-											disabled={restoringId === task.id}
-											onClick={() => void restore(task.id)}
-										>
-											{restoringId === task.id ? (
-												<Spinner data-icon="inline-start" />
-											) : (
-												<RotateCcwIcon data-icon="inline-start" />
-											)}
-											恢复
-										</Button>
-									}
-								/>
-							))}
-						</div>
-					)}
+					{recycleError ? <LoadAlert message={recycleError} /> : null}
+					<QueryView
+						query={deletedQuery}
+						loadKey={settingsKeys.deletedTasks()}
+						maxCount={10}
+						skeletonClassName="flex flex-col gap-2"
+						skeletonLabel="正在加载回收站"
+						skeleton={(index) => (
+							<SettingsListItem.Skeleton key={index} index={index} actionLabel="恢复" />
+						)}
+						empty={<p className="text-sm text-muted-foreground">回收站是空的。</p>}
+						error={(err) => <LoadAlert message={loadErrorMessage(err, "回收站加载失败")} />}
+					>
+						{(data) => (
+							<div className="flex flex-col gap-2">
+								{data.items.map((task: Task) => (
+									<SettingsListItem
+										key={task.id}
+										title={task.title}
+										meta={
+											<>
+												<Badge variant="outline">{statusLabel(task.status)}</Badge>
+												{task.projectName ? (
+													<Badge variant="secondary">{task.projectName}</Badge>
+												) : null}
+												{task.deletedAt ? (
+													<Badge variant="outline">删除于 {deletedOn(task.deletedAt)}</Badge>
+												) : null}
+											</>
+										}
+										action={
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												disabled={restoringId === task.id}
+												onClick={() => void restore(task.id)}
+											>
+												{restoringId === task.id ? (
+													<Spinner data-icon="inline-start" />
+												) : (
+													<RotateCcwIcon data-icon="inline-start" />
+												)}
+												恢复
+											</Button>
+										}
+									/>
+								))}
+							</div>
+						)}
+					</QueryView>
 					<p className="flex items-center gap-1.5 text-xs text-muted-foreground">
 						<Trash2Icon className="size-3.5" />
 						网页与 MCP 走同一套 TaskService；默认列表不含已软删任务。

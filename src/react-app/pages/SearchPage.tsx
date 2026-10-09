@@ -17,7 +17,6 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
-import { shouldShowTasksEmpty } from "../lib/task-list-ui";
 
 export function SearchPage() {
 	const { projects } = useOutletContext<{ projects: Project[] }>();
@@ -26,7 +25,7 @@ export function SearchPage() {
 	const tagId = params.get("tagId")?.trim() ?? "";
 	const queryClient = useQueryClient();
 	const enabled = Boolean(q || tagId);
-	const { data, error, queryKey } = useTaskList(
+	const query = useTaskList(
 		{
 			q: q || undefined,
 			tagId: tagId || undefined,
@@ -43,7 +42,6 @@ export function SearchPage() {
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
 
-	const tasks = enabled ? (data?.items ?? []) : [];
 	const tags: Tag[] = tagsQuery.data?.items ?? [];
 
 	const sortedTags = useMemo(() => {
@@ -54,14 +52,6 @@ export function SearchPage() {
 			return a.name.localeCompare(b.name, "zh");
 		});
 	}, [tags]);
-
-	if (error) {
-		return (
-			<p className="p-6 text-sm text-destructive" role="alert">
-				{error instanceof Error ? error.message : "搜索失败"}
-			</p>
-		);
-	}
 
 	const tagName = tags.find((tag) => tag.id === tagId)?.name;
 	const title = tagName ? `#${tagName}` : q ? `搜索「${q}」` : "搜索";
@@ -120,13 +110,12 @@ export function SearchPage() {
 			hint="按标题、备注搜索；也可用下方标签筛选（含 @ 情境标签）。过长关键词会自动截断以适配数据库限制。"
 			toolbar={toolbar}
 			placeholder="新建一条下一步任务"
-			tasks={tasks}
+			// #99：加载 / 空 / 错误统一由 TaskBoard 里的 QueryView 决定；没关键词时 enabled=false → 空状态提示。
+			query={query}
+			loadKey={query.queryKey}
+			enabled={enabled}
 			projects={projects}
 			emptyText={emptyText}
-			showEmptyState={!enabled || shouldShowTasksEmpty(data)}
-			// #99：有关键词 / 标签但还没结果时显示骨架（按查询 key 记行数）。
-			loading={enabled && !data}
-			skeletonKey={queryKey}
 			onCreate={async (titleText) => {
 				await createTask.mutateAsync({ title: titleText, status: "next" });
 			}}

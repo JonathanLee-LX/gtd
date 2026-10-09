@@ -36,6 +36,8 @@ import {
 	type TaskSnapshot,
 } from "./task-cache";
 import { TASK_MUTATION_KEY } from "./task-mutation-lock";
+import { readInboxHint } from "./inbox-hint";
+import { INBOX_NAME } from "../../shared/constants";
 
 export function mutationErrorMessage(err: unknown, fallback: string) {
 	if (err instanceof TypeError) return `${fallback}：网络连接失败，请检查网络后重试`;
@@ -106,10 +108,12 @@ export function buildOptimisticTask(
 	body: CreateTaskVariables,
 	projects: readonly Project[] = [],
 	tempId = newTempTaskId(),
+	/** #101：项目列表还没回来时，用记住的收件箱 id 放临时行（只影响本地；请求体不带 projectId，以服务端为准）。 */
+	inboxHint: string | null = null,
 ): Task {
 	const inbox = projects.find((project) => project.isInbox);
 	const projectId =
-		typeof body.projectId === "string" && body.projectId ? body.projectId : (inbox?.id ?? "");
+		typeof body.projectId === "string" && body.projectId ? body.projectId : (inbox?.id ?? inboxHint ?? "");
 	const project = projects.find((item) => item.id === projectId);
 	const now = new Date().toISOString();
 	const str = (value: unknown) => (typeof value === "string" && value ? value : null);
@@ -123,7 +127,8 @@ export function buildOptimisticTask(
 		startAt: str(body.startAt),
 		waitingOn: str(body.waitingOn),
 		projectId,
-		projectName: project?.name ?? "",
+		// 没指定项目 = 服务端放进收件箱（getInbox）：项目列表还没回来时也先显示收件箱名。
+		projectName: project?.name ?? (typeof body.projectId === "string" && body.projectId ? "" : INBOX_NAME),
 		parentId: str(body.parentId),
 		// 来源由服务端按入口写入；临时行不猜，详情页在拿到真实记录前不显示来源。
 		source: null,
@@ -143,7 +148,14 @@ export function createTaskMutationOptions(
 		mutationFn: (body) => api.createTask(stripSourceFromBody(body)),
 		// 同步插入：不 await cancelQueries，点下去当帧就能看到。进行中的刷新由 withPendingCreates 补齐。
 		onMutate: (body) => {
-			const task = buildOptimisticTask(body, getProjects());
+			const projects = getProjects();
+			// 请求体（mutationFn 的 body）不变：没带 projectId 就不带，服务端默认收件箱。
+			const task = buildOptimisticTask(
+				body,
+				projects,
+				undefined,
+				projects.some((project) => project.isInbox) ? null : readInboxHint(),
+			);
 			registerPendingCreate(task);
 			upsertTaskInCaches(queryClient, task);
 			return { tempId: task.id };

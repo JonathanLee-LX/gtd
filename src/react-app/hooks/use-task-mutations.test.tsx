@@ -420,3 +420,63 @@ describe("temp task queues every action in order (#90 re-review)", () => {
 		expect(calls).toEqual(["update:real-x:X 改", "complete:real-x"]);
 	});
 });
+
+describe("useCreateTask before /api/projects resolves (#101)", () => {
+	function setupNoProjects() {
+		const wrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={qc}>{children}</QueryClientProvider>
+		);
+		return renderHook(() => useCreateTask([]), { wrapper });
+	}
+
+	afterEach(() => localStorage.clear());
+
+	it("with a stored inbox hint: temp row shows in the inbox list at once, request has no projectId, server projectId wins", async () => {
+		localStorage.setItem("gtd:inbox-project-id", "hint-inbox");
+		const hintKey = taskKeys.list({ projectId: "hint-inbox" });
+		const serverKey = taskKeys.list({ projectId: "server-inbox" });
+		qc.setQueryData(hintKey, { items: [], nextCursor: null });
+		qc.setQueryData(serverKey, { items: [], nextCursor: null });
+		const pending = deferred<{ task: Task }>();
+		api.createTask.mockReturnValueOnce(pending.promise);
+		const { result } = setupNoProjects();
+		let p!: Promise<unknown>;
+		act(() => {
+			p = result.current.mutateAsync({ title: "冷启动记一条", status: "inbox" });
+		});
+		// 当帧：临时行进了（记住的）收件箱列表，projectId 是提示值
+		const temp = (qc.getQueryData(hintKey) as { items: Task[] }).items;
+		expect(temp).toHaveLength(1);
+		expect(temp[0].id.startsWith("tmp-")).toBe(true);
+		expect(temp[0].projectId).toBe("hint-inbox");
+		expect(temp[0].projectName).toBe("收件箱");
+		// 请求体不带 projectId
+		await waitFor(() => expect(api.createTask).toHaveBeenCalledTimes(1));
+		expect(api.createTask.mock.calls[0][0]).not.toHaveProperty("projectId");
+
+		// 服务端说收件箱是 server-inbox：以它为准
+		await act(async () => {
+			pending.resolve({ task: task({ id: "real-1", title: "冷启动记一条", projectId: "server-inbox" }) });
+			await p;
+		});
+		expect((qc.getQueryData(hintKey) as { items: Task[] }).items).toEqual([]);
+		const final = (qc.getQueryData(serverKey) as { items: Task[] }).items;
+		expect(final.map((t) => [t.id, t.projectId])).toEqual([["real-1", "server-inbox"]]);
+	});
+
+	it("without a hint: temp row projectId is '' and the request has no projectId", async () => {
+		api.createTask.mockReturnValueOnce(new Promise(() => {}));
+		const focusKey = taskKeys.focus();
+		qc.setQueryData(focusKey, { today: "2026-10-09", items: [] });
+		const { result } = setupNoProjects();
+		act(() => {
+			void result.current.mutateAsync({ title: "下一步", status: "next" });
+		});
+		const temp = (qc.getQueryData(focusKey) as { items: Task[] }).items;
+		expect(temp).toHaveLength(1);
+		expect(temp[0].projectId).toBe("");
+		expect(temp[0].projectName).toBe("收件箱"); // 服务端默认收件箱，先显示收件箱名
+		await waitFor(() => expect(api.createTask).toHaveBeenCalledTimes(1));
+		expect(api.createTask.mock.calls[0][0]).not.toHaveProperty("projectId");
+	});
+});

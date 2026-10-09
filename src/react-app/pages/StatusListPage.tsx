@@ -1,6 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useOutletContext } from "react-router-dom";
-import { Spinner } from "@/components/ui/spinner";
 import { TASK_STATUS_LABELS } from "../../shared/constants";
 import type { TaskStatus } from "../../shared/schemas";
 import type { Project } from "../api";
@@ -46,7 +45,7 @@ export function StatusListPage({ status }: { status: "next" | "waiting" | "sched
 	const queryClient = useQueryClient();
 	const copy = LIST_COPY[status];
 	const title = TASK_STATUS_LABELS[status as TaskStatus];
-	const { data, error, isPending } = useTaskList({ status });
+	const { data, error, queryKey } = useTaskList({ status });
 	const createTask = useCreateTask(projects);
 	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
@@ -62,16 +61,6 @@ export function StatusListPage({ status }: { status: "next" | "waiting" | "sched
 		);
 	}
 
-	// Spinner only for cold load. Empty gated by showEmptyState (S1).
-	if (isPending && !data) {
-		return (
-			<div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
-				<Spinner />
-				加载{title}…
-			</div>
-		);
-	}
-
 	return (
 		<TaskBoard
 			title={title}
@@ -81,6 +70,9 @@ export function StatusListPage({ status }: { status: "next" | "waiting" | "sched
 			projects={projects}
 			emptyText={copy.emptyText}
 			showEmptyState={shouldShowTasksEmpty(data)}
+			// #99：冷加载（还没 data）显示骨架；缓存命中 data 已有，直接渲染。
+			loading={!data}
+			skeletonKey={queryKey}
 			onCreate={async (titleText) => {
 				await createTask.mutateAsync({ title: titleText, status });
 			}}

@@ -201,3 +201,6 @@ dist
 ### Tauri (desktop shell) ###
 src-tauri/target/
 src-tauri/gen/
+
+# Vitest browser mode failure screenshots (#99)
+.vitest/

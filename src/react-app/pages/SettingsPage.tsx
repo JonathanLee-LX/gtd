@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useOutletContext } from "react-router-dom";
 import {
 	AlertDialog,
@@ -36,6 +37,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { PasskeyCard } from "../components/PasskeyCard";
+import { SettingsListItem } from "../components/SettingsListItem";
+import { SkeletonList } from "../components/SkeletonList";
+import { useSkeletonCount } from "../hooks/use-skeleton";
+import { settingsKeys } from "../lib/settings-keys";
 import { SOFT_DELETE_RETENTION_DAYS } from "../../shared/constants";
 import { statusLabel } from "../lib/format";
 import { api, type Project, type Task } from "../api";
@@ -59,39 +64,58 @@ export function SettingsPage() {
 		projects: Project[];
 		reloadProjects: () => Promise<void>;
 	}>();
-	const [tokens, setTokens] = useState<TokenRow[]>([]);
-	const [deleted, setDeleted] = useState<Task[]>([]);
+	const queryClient = useQueryClient();
+	// #99：设置页列表改用查询缓存 —— 再次进入直接显示上次数据（后台刷新），只有冷加载才出骨架。
+	const tokensQuery = useQuery({
+		queryKey: settingsKeys.tokens(),
+		queryFn: () => api.tokens() as Promise<{ items: TokenRow[] }>,
+		refetchOnMount: "always",
+	});
+	const deletedQuery = useQuery({
+		queryKey: settingsKeys.deletedTasks(),
+		queryFn: () => api.deletedTasks(),
+		refetchOnMount: "always",
+	});
+	const tokens = tokensQuery.data?.items ?? [];
+	const deleted: Task[] = deletedQuery.data?.items ?? [];
+	const tokensLoading = !tokensQuery.data && !tokensQuery.error;
+	const recycleLoading = !deletedQuery.data && !deletedQuery.error;
+	const tokenSkeletonCount = useSkeletonCount({
+		storageKey: settingsKeys.tokens(),
+		loading: tokensLoading,
+		loadedCount: tokens.length,
+		max: 10,
+	});
+	const recycleSkeletonCount = useSkeletonCount({
+		storageKey: settingsKeys.deletedTasks(),
+		loading: recycleLoading,
+		loadedCount: deleted.length,
+		max: 10,
+	});
 	const [name, setName] = useState("MCP");
 	const [freshToken, setFreshToken] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [recycleError, setRecycleError] = useState<string | null>(null);
 	const [creating, setCreating] = useState(false);
-	const [recycleLoading, setRecycleLoading] = useState(true);
 	const [restoringId, setRestoringId] = useState<string | null>(null);
 	const [unarchivingId, setUnarchivingId] = useState<string | null>(null);
 	const mcpUrl = `${window.location.origin}/mcp`;
 	const archivedProjects = projects.filter((project) => !project.isInbox && project.archivedAt);
 
+	const tokensLoadError = tokensQuery.error
+		? tokensQuery.error instanceof Error
+			? tokensQuery.error.message
+			: "加载失败"
+		: null;
+	const recycleLoadError = deletedQuery.error
+		? deletedQuery.error instanceof Error
+			? deletedQuery.error.message
+			: "回收站加载失败"
+		: null;
+
 	async function load() {
-		const data = await api.tokens();
-		setTokens(data.items);
+		await queryClient.invalidateQueries({ queryKey: settingsKeys.tokens() });
 	}
-
-	async function loadDeleted() {
-		const data = await api.deletedTasks();
-		setDeleted(data.items);
-	}
-
-	useEffect(() => {
-		void load().catch((err: unknown) => {
-			setError(err instanceof Error ? err.message : "加载失败");
-		});
-		void loadDeleted()
-			.catch((err: unknown) => {
-				setRecycleError(err instanceof Error ? err.message : "回收站加载失败");
-			})
-			.finally(() => setRecycleLoading(false));
-	}, []);
 
 	async function copy(value: string, label: string) {
 		await navigator.clipboard.writeText(value);
@@ -118,7 +142,9 @@ export function SettingsPage() {
 		setRestoringId(id);
 		try {
 			await api.restoreTask(id);
-			setDeleted((items) => items.filter((item) => item.id !== id));
+			queryClient.setQueryData<{ items: Task[] }>(settingsKeys.deletedTasks(), (current) =>
+				current ? { ...current, items: current.items.filter((item) => item.id !== id) } : current,
+			);
 			toast.success("已恢复");
 		} catch (err) {
 			setRecycleError(err instanceof Error ? err.message : "恢复失败");
@@ -233,29 +259,38 @@ export function SettingsPage() {
 							</AlertDescription>
 						</Alert>
 					) : null}
-					{error ? (
+					{error || tokensLoadError ? (
 						<Alert variant="destructive">
 							<CircleAlertIcon />
 							<AlertTitle>出错了</AlertTitle>
-							<AlertDescription>{error}</AlertDescription>
+							<AlertDescription>{error ?? tokensLoadError}</AlertDescription>
 						</Alert>
+					) : null}
+					{tokensLoading ? (
+						<SkeletonList
+							loading
+							count={tokenSkeletonCount}
+							label="正在加载 Token"
+							className="flex flex-col gap-2"
+							renderItem={(index) => (
+								<SettingsListItem key={index} skeleton index={index} actionLabel="撤销" />
+							)}
+						/>
 					) : null}
 					<div className="flex flex-col gap-2">
 						{tokens.map((token) => (
-							<div
+							<SettingsListItem
 								key={token.id}
-								className="flex items-center justify-between rounded-lg border px-3 py-3"
-							>
-								<div className="flex min-w-0 flex-col gap-1">
-									<p className="truncate font-medium">{token.name}</p>
-									<div className="flex flex-wrap items-center gap-1.5">
+								title={token.name}
+								meta={
+									<>
 										<Badge variant="outline">{token.prefix}…</Badge>
 										<Badge variant={token.revokedAt ? "secondary" : "default"}>
 											{token.revokedAt ? "已撤销" : "有效"}
 										</Badge>
-									</div>
-								</div>
-								{token.revokedAt ? null : (
+									</>
+								}
+								action={token.revokedAt ? null : (
 									<AlertDialog>
 										<AlertDialogTrigger render={<Button variant="destructive" size="sm" />}>
 											撤销
@@ -284,7 +319,7 @@ export function SettingsPage() {
 										</AlertDialogContent>
 									</AlertDialog>
 								)}
-							</div>
+							/>
 						))}
 					</div>
 				</CardContent>
@@ -354,30 +389,33 @@ export function SettingsPage() {
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="flex flex-col gap-4">
-					{recycleError ? (
+					{recycleError || recycleLoadError ? (
 						<Alert variant="destructive">
 							<CircleAlertIcon />
 							<AlertTitle>出错了</AlertTitle>
-							<AlertDescription>{recycleError}</AlertDescription>
+							<AlertDescription>{recycleError ?? recycleLoadError}</AlertDescription>
 						</Alert>
 					) : null}
 					{recycleLoading ? (
-						<div className="flex items-center gap-2 text-sm text-muted-foreground">
-							<Spinner />
-							加载回收站…
-						</div>
-					) : deleted.length === 0 ? (
+						<SkeletonList
+							loading
+							count={recycleSkeletonCount}
+							label="正在加载回收站"
+							className="flex flex-col gap-2"
+							renderItem={(index) => (
+								<SettingsListItem key={index} skeleton index={index} actionLabel="恢复" />
+							)}
+						/>
+					) : !deletedQuery.data ? null : deleted.length === 0 ? (
 						<p className="text-sm text-muted-foreground">回收站是空的。</p>
 					) : (
 						<div className="flex flex-col gap-2">
 							{deleted.map((task) => (
-								<div
+								<SettingsListItem
 									key={task.id}
-									className="flex items-center justify-between gap-3 rounded-lg border px-3 py-3"
-								>
-									<div className="min-w-0">
-										<p className="truncate font-medium">{task.title}</p>
-										<div className="mt-1 flex flex-wrap items-center gap-1.5">
+									title={task.title}
+									meta={
+										<>
 											<Badge variant="outline">{statusLabel(task.status)}</Badge>
 											{task.projectName ? (
 												<Badge variant="secondary">{task.projectName}</Badge>
@@ -385,23 +423,25 @@ export function SettingsPage() {
 											{task.deletedAt ? (
 												<Badge variant="outline">删除于 {deletedOn(task.deletedAt)}</Badge>
 											) : null}
-										</div>
-									</div>
-									<Button
-										type="button"
-										variant="outline"
-										size="sm"
-										disabled={restoringId === task.id}
-										onClick={() => void restore(task.id)}
-									>
-										{restoringId === task.id ? (
-											<Spinner data-icon="inline-start" />
-										) : (
-											<RotateCcwIcon data-icon="inline-start" />
-										)}
-										恢复
-									</Button>
-								</div>
+										</>
+									}
+									action={
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											disabled={restoringId === task.id}
+											onClick={() => void restore(task.id)}
+										>
+											{restoringId === task.id ? (
+												<Spinner data-icon="inline-start" />
+											) : (
+												<RotateCcwIcon data-icon="inline-start" />
+											)}
+											恢复
+										</Button>
+									}
+								/>
 							))}
 						</div>
 					)}

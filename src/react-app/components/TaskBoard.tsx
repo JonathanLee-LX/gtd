@@ -56,7 +56,20 @@ import { ResizableSidePanel } from "./ResizableSidePanel";
 import { TaskComposer } from "./TaskComposer";
 import { TaskDetail } from "./TaskDetail";
 import { TaskRow } from "./TaskRow";
+import { SkeletonList } from "./SkeletonList";
 import { useTaskDetailLayout } from "../hooks/use-task-detail-layout";
+import { useSkeletonCount } from "../hooks/use-skeleton";
+import { TASK_ROW_ESTIMATE, rowsThatFit } from "../lib/skeleton";
+
+/** #99：一屏最多放几行骨架（按当前视口和行高估计）。 */
+function taskSkeletonMax(withInboxActions: boolean): number {
+	if (typeof window === "undefined") return 10;
+	const mobile = window.innerWidth < 768;
+	const row =
+		(mobile ? TASK_ROW_ESTIMATE.mobile : TASK_ROW_ESTIMATE.desktop) +
+		(withInboxActions ? TASK_ROW_ESTIMATE.inboxExtra : 0);
+	return rowsThatFit(window.innerHeight, row);
+}
 
 export function TaskBoard({
 	title,
@@ -67,6 +80,8 @@ export function TaskBoard({
 	projects,
 	emptyText,
 	showEmptyState = true,
+	loading = false,
+	skeletonKey,
 	onCreate,
 	onSave,
 	onComplete,
@@ -85,6 +100,13 @@ export function TaskBoard({
 	 * Never true while data is undefined (cache miss / remount) — avoids「没有任务」flash.
 	 */
 	showEmptyState?: boolean;
+	/**
+	 * #99：冷加载中（查询还没有 data）。列表区显示骨架（150ms 后），标题 / 输入框照常渲染不位移。
+	 * 缓存命中时页面传 false，直接渲染数据。
+	 */
+	loading?: boolean;
+	/** #99：记骨架行数用的查询 key（localStorage 按它区分）。 */
+	skeletonKey?: readonly unknown[];
 	onCreate: (title: string) => Promise<void>;
 	onSave: (id: string, patch: Record<string, unknown>) => Promise<void>;
 	onComplete: (id: string) => Promise<void>;
@@ -346,6 +368,12 @@ export function TaskBoard({
 	) : null;
 
 	const listEmpty = tasks.length === 0 && exiting.size === 0;
+	const skeletonCount = useSkeletonCount({
+		storageKey: skeletonKey,
+		loading,
+		loadedCount: ordered.length,
+		max: taskSkeletonMax(enableInboxProcess),
+	});
 
 	return (
 		<div className="flex min-h-0 flex-1">
@@ -372,7 +400,24 @@ export function TaskBoard({
 						}
 					}}
 				/>
-				{listEmpty ? (
+				{loading ? (
+					<SkeletonList
+						loading
+						count={skeletonCount}
+						label="正在加载任务"
+						className="flex flex-col gap-1"
+						renderItem={(index) => (
+							<div key={index} className="flex flex-col gap-1">
+								<TaskRow skeleton index={index} />
+								{enableInboxProcess ? (
+									<div className="pb-2" style={{ paddingLeft: "40px" }}>
+										<InboxProcessActions skeleton onProcess={() => {}} />
+									</div>
+								) : null}
+							</div>
+						)}
+					/>
+				) : listEmpty ? (
 					showEmptyState ? (
 						<Empty className="border">
 							<EmptyHeader>

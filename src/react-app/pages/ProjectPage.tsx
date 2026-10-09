@@ -36,7 +36,7 @@ export function ProjectPage() {
 	}>();
 	const project = projects.find((item) => item.id === id);
 	const queryClient = useQueryClient();
-	const { data, error, isPending } = useTaskList(
+	const { data, error, queryKey } = useTaskList(
 		{ projectId: id },
 		{ enabled: Boolean(id) },
 	);
@@ -56,15 +56,6 @@ export function ProjectPage() {
 			<p className="p-6 text-sm text-destructive" role="alert">
 				{error instanceof Error ? error.message : "加载失败"}
 			</p>
-		);
-	}
-	// Spinner only for cold load. Empty gated by showEmptyState (S1).
-	if (isPending && !data) {
-		return (
-			<div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
-				<Spinner />
-				加载项目…
-			</div>
 		);
 	}
 
@@ -141,6 +132,9 @@ export function ProjectPage() {
 			projects={projects}
 			emptyText="这个项目还没有未完成任务。"
 			showEmptyState={shouldShowTasksEmpty(data)}
+			// #99：冷加载（还没 data）显示骨架；缓存命中 data 已有，直接渲染。
+			loading={!data}
+			skeletonKey={queryKey}
 			onCreate={async (title) => {
 				await createTask.mutateAsync({ title, projectId: project.id, status: "next" });
 			}}

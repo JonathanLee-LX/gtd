@@ -34,12 +34,17 @@ export async function runInboxProcess(
  * Shared one-click inbox clarify actions (weekly review + daily inbox).
  * Waiting always prompts for who; discard → cancelled via TaskService.
  */
+const skel = (on: boolean) => (on ? "skeleton-fill border-transparent disabled:opacity-100" : undefined);
+
 export function InboxProcessActions({
 	disabled,
 	extra,
 	onProcess,
+	skeleton = false,
 }: {
 	disabled?: boolean;
+	/** #99：骨架变体 —— 同样的按钮和尺寸，画成灰块、不可点、对读屏隐藏。 */
+	skeleton?: boolean;
 	/** Extra buttons (e.g. review「仅归项目」). */
 	extra?: ReactNode;
 	onProcess: (action: InboxProcessAction, waitingOn?: string) => void | Promise<void>;
@@ -55,14 +60,22 @@ export function InboxProcessActions({
 	}
 
 	return (
-		<div className="flex flex-wrap gap-2">
-			<Button size="sm" disabled={disabled} onClick={() => void handle("next")}>
+		<div className="flex flex-wrap gap-2" aria-hidden={skeleton || undefined}>
+			<Button
+				size="sm"
+				disabled={disabled || skeleton}
+				tabIndex={skeleton ? -1 : undefined}
+				className={skel(skeleton)}
+				onClick={() => void handle("next")}
+			>
 				下一步
 			</Button>
 			<Button
 				size="sm"
 				variant="secondary"
-				disabled={disabled}
+				disabled={disabled || skeleton}
+				tabIndex={skeleton ? -1 : undefined}
+				className={skel(skeleton)}
 				onClick={() => void handle("waiting")}
 			>
 				等待
@@ -70,16 +83,20 @@ export function InboxProcessActions({
 			<Button
 				size="sm"
 				variant="secondary"
-				disabled={disabled}
+				disabled={disabled || skeleton}
+				tabIndex={skeleton ? -1 : undefined}
+				className={skel(skeleton)}
 				onClick={() => void handle("someday")}
 			>
 				将来
 			</Button>
-			{extra}
+			{skeleton ? null : extra}
 			<Button
 				size="sm"
 				variant="ghost"
-				disabled={disabled}
+				disabled={disabled || skeleton}
+				tabIndex={skeleton ? -1 : undefined}
+				className={skel(skeleton)}
 				onClick={() => void handle("discard")}
 			>
 				丢掉

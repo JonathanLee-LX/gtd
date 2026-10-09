@@ -1,6 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useOutletContext } from "react-router-dom";
-import { Spinner } from "@/components/ui/spinner";
 import type { Project } from "../api";
 import { TaskBoard } from "../components/TaskBoard";
 import {
@@ -19,7 +18,7 @@ export function InboxPage() {
 	}>();
 	const inbox = projects.find((project) => project.isInbox);
 	const queryClient = useQueryClient();
-	const { data, error, isPending } = useTaskList(
+	const { data, error, queryKey } = useTaskList(
 		{ projectId: inbox?.id },
 		{ enabled: Boolean(inbox?.id) },
 	);
@@ -40,15 +39,6 @@ export function InboxPage() {
 			</p>
 		);
 	}
-	// Spinner only for cold load. Empty gated by showEmptyState (S1).
-	if (isPending && !data) {
-		return (
-			<div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
-				<Spinner />
-				加载收件箱…
-			</div>
-		);
-	}
 
 	return (
 		<TaskBoard
@@ -59,6 +49,9 @@ export function InboxPage() {
 			projects={projects}
 			emptyText="收件箱是空的。这是一件好事。"
 			showEmptyState={shouldShowTasksEmpty(data)}
+			// #99：冷加载（还没 data）显示骨架；缓存命中 data 已有，直接渲染。
+			loading={!data}
+			skeletonKey={queryKey}
 			onCreate={async (title) => {
 				await createTask.mutateAsync({ title, projectId: inbox.id, status: "inbox" });
 			}}

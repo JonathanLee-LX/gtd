@@ -3,7 +3,6 @@ import { useMemo } from "react";
 import { NavLink, useOutletContext, useSearchParams } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
 import {
 	CONTEXT_TAG_EXAMPLES,
 	isContextTagName,
@@ -27,7 +26,7 @@ export function SearchPage() {
 	const tagId = params.get("tagId")?.trim() ?? "";
 	const queryClient = useQueryClient();
 	const enabled = Boolean(q || tagId);
-	const { data, error, isPending } = useTaskList(
+	const { data, error, queryKey } = useTaskList(
 		{
 			q: q || undefined,
 			tagId: tagId || undefined,
@@ -115,18 +114,6 @@ export function SearchPage() {
 		</div>
 	);
 
-	if (enabled && isPending && !data) {
-		return (
-			<div className="flex flex-1 flex-col gap-5 overflow-auto p-6">
-				{toolbar}
-				<div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-					<Spinner />
-					搜索中…
-				</div>
-			</div>
-		);
-	}
-
 	return (
 		<TaskBoard
 			title={title}
@@ -137,6 +124,9 @@ export function SearchPage() {
 			projects={projects}
 			emptyText={emptyText}
 			showEmptyState={!enabled || shouldShowTasksEmpty(data)}
+			// #99：有关键词 / 标签但还没结果时显示骨架（按查询 key 记行数）。
+			loading={enabled && !data}
+			skeletonKey={queryKey}
 			onCreate={async (titleText) => {
 				await createTask.mutateAsync({ title: titleText, status: "next" });
 			}}

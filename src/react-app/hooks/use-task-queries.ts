@@ -18,7 +18,7 @@ export function useFocusTasks() {
 		query.data,
 		queryClient.getQueryData<FocusQueryData>(key),
 	);
-	return { ...query, data };
+	return { ...query, data, queryKey: key };
 }
 
 export function useTaskList(filters: TaskListFilters, options?: { enabled?: boolean }) {
@@ -42,5 +42,5 @@ export function useTaskList(filters: TaskListFilters, options?: { enabled?: bool
 		query.data,
 		queryClient.getQueryData<ListQueryData>(key),
 	);
-	return { ...query, data };
+	return { ...query, data, queryKey: key };
 }

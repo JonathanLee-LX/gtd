@@ -13,8 +13,16 @@ import {
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { CircleAlertIcon } from "lucide-react";
+import { CircleAlertIcon, FingerprintPatternIcon } from "lucide-react";
 import { api } from "../api";
+import { authClient } from "../auth-client";
+import {
+	browserSupportsPasskey,
+	DEFAULT_PASSKEY_RP_ID,
+	isPasskeyHost,
+	PASSKEY_HOST_HINT,
+	passkeySignInErrorMessage,
+} from "../lib/passkey";
 
 export function LoginPage() {
 	const navigate = useNavigate();
@@ -25,13 +33,19 @@ export function LoginPage() {
 	const [password, setPassword] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
+	const [passkeyBusy, setPasskeyBusy] = useState(false);
+	const [passkeyRpId, setPasskeyRpId] = useState(DEFAULT_PASSKEY_RP_ID);
+	const passkeyAvailable =
+		browserSupportsPasskey() && isPasskeyHost(window.location.hostname, passkeyRpId);
 
 	useEffect(() => {
 		let cancelled = false;
 		api
 			.health()
 			.then((health) => {
-				if (!cancelled) setSignupEnabled(Boolean(health.signupEnabled));
+				if (cancelled) return;
+				setSignupEnabled(Boolean(health.signupEnabled));
+				if (health.passkeyRpId) setPasskeyRpId(health.passkeyRpId);
 			})
 			.catch(() => {
 				if (!cancelled) setSignupEnabled(false);
@@ -44,6 +58,49 @@ export function LoginPage() {
 	useEffect(() => {
 		if (!signupEnabled && mode === "up") setMode("in");
 	}, [signupEnabled, mode]);
+
+	// 产品验收：点邮箱框即弹出已绑定的通行密钥（conditional UI），选中后验证一次直接进。
+	useEffect(() => {
+		if (!passkeyAvailable) return;
+		let cancelled = false;
+		void (async () => {
+			const supported = await PublicKeyCredential.isConditionalMediationAvailable?.().catch(
+				() => false,
+			);
+			if (!supported || cancelled) return;
+			const result = await authClient.signIn.passkey({ autoFill: true });
+			if (cancelled) return;
+			if (result.data) {
+				navigate("/today");
+				return;
+			}
+			// 自动弹出被按钮 / 卸载打断或用户没选是常态，静默；只提示密钥已失效这种需要处理的情况。
+			const code = (result.error as { code?: string } | null)?.code;
+			if (code === "PASSKEY_NOT_FOUND") {
+				setError(passkeySignInErrorMessage(result.error, passkeyRpId));
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [passkeyAvailable, passkeyRpId, navigate]);
+
+	async function signInWithPasskey() {
+		setPasskeyBusy(true);
+		setError(null);
+		try {
+			const result = await authClient.signIn.passkey();
+			if (result.data) {
+				navigate("/today");
+				return;
+			}
+			setError(passkeySignInErrorMessage(result.error, passkeyRpId));
+		} catch {
+			setError(passkeySignInErrorMessage(null, passkeyRpId));
+		} finally {
+			setPasskeyBusy(false);
+		}
+	}
 
 	async function submit(event: React.FormEvent) {
 		event.preventDefault();
@@ -96,6 +153,7 @@ export function LoginPage() {
 									id="email"
 									placeholder="you@example.com"
 									type="email"
+									autoComplete="username webauthn"
 									value={email}
 									onChange={(event) => setEmail(event.target.value)}
 									required
@@ -126,6 +184,28 @@ export function LoginPage() {
 							{mode === "in" ? "进入工作台" : "创建账号"}
 						</Button>
 					</form>
+					{mode === "in" ? (
+						<div className="mt-4 flex flex-col gap-2">
+							{passkeyAvailable ? (
+								<Button
+									type="button"
+									variant="outline"
+									className="w-full"
+									disabled={busy || passkeyBusy}
+									onClick={() => void signInWithPasskey()}
+								>
+									{passkeyBusy ? (
+										<Spinner data-icon="inline-start" />
+									) : (
+										<FingerprintPatternIcon data-icon="inline-start" />
+									)}
+									用通行密钥登录
+								</Button>
+							) : (
+								<p className="text-center text-xs text-muted-foreground">{PASSKEY_HOST_HINT}</p>
+							)}
+						</div>
+					) : null}
 				</CardContent>
 				{signupEnabled ? (
 					<CardFooter>

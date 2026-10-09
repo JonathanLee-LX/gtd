@@ -2,4 +2,8 @@ BETTER_AUTH_SECRET=replace-with-openssl-rand-base64-32
 BETTER_AUTH_URL=http://localhost:5173
 # Signup is OFF by default (production-safe). Uncomment to allow local registration:
 # ALLOW_SIGNUP=true
+# Passkey (#81) defaults to rpID gtd.livs.top / origin https://gtd.livs.top.
+# To try passkeys locally, open http://localhost:5173 (not 127.0.0.1) and set both:
+# PASSKEY_RP_ID=localhost
+# PASSKEY_ORIGIN=http://localhost:5173
 # XAI_API_KEY=  # only needed for in-app AI (phase 5)

@@ -23,7 +23,7 @@ export function InboxPage() {
 		{ projectId: inbox?.id },
 		{ enabled: Boolean(inbox?.id) },
 	);
-	const createTask = useCreateTask();
+	const createTask = useCreateTask(projects);
 	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
@@ -72,7 +72,8 @@ export function InboxPage() {
 				await deleteTask.mutateAsync(id);
 			}}
 			onReload={async () => {
-				await silentInvalidateTasks(queryClient);
+				// 后台刷新不阻塞界面（#90）。
+				void silentInvalidateTasks(queryClient);
 			}}
 			enableInboxProcess
 		/>

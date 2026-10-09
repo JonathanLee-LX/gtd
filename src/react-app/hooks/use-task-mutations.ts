@@ -1,203 +1,101 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import { toast } from "sonner";
-import { toastTaskCompleted } from "../lib/complete-feedback";
-import { api, type Task } from "../api";
+import { api, type Project, type Task } from "../api";
 import {
-	applyOptimisticTaskPatch,
-	findCachedTask,
-	removeTaskFromCaches,
-	restoreTaskQueries,
-	silentInvalidateTasks,
-	snapshotTaskQueries,
-	stripSourceFromBody,
-	upsertTaskInCaches,
-} from "../lib/task-cache";
+	completeTaskMutationOptions,
+	createTaskMutationOptions,
+	deleteTaskMutationOptions,
+	mutationErrorMessage,
+	processInboxMutationOptions,
+	updateTaskMutationOptions,
+} from "../lib/task-mutations";
+import { isAwaitingRealId, isTempTaskId } from "../lib/pending-creates";
+import { silentInvalidateTasks, upsertTaskInCaches } from "../lib/task-cache";
 import {
 	releaseTaskMutationLock,
 	TASK_MUTATION_KEY,
-	TASK_MUTATION_SCOPE,
+	taskIdFromVariables,
 	tryAcquireTaskMutationLock,
 } from "../lib/task-mutation-lock";
 
-function mutationErrorMessage(err: unknown, fallback: string) {
-	return err instanceof Error ? err.message : fallback;
-}
-
-const optimisticMutationOptions = {
-	mutationKey: TASK_MUTATION_KEY,
-	scope: TASK_MUTATION_SCOPE,
-} as const;
-
 /**
- * Run mutateAsync only if no other optimistic task mutation is in flight.
+ * Run mutateAsync only if no other optimistic mutation is in flight **for the same task**.
  * Sync lock covers the double-click-before-paint gap that isPending cannot.
+ * Other tasks stay actionable — including while a create waits for its real id (#90).
+ *
+ * A task still waiting for its real id takes no lock at all: every action is applied
+ * optimistically right away and appended to that task's queue (enqueueTaskAction),
+ * which sends them in order once the real id arrives — queue, don't disable.
  */
 function useGuardedMutateAsync<TVariables, TData>(
 	mutateAsync: (variables: TVariables) => Promise<TData>,
 ): (variables: TVariables) => Promise<TData | undefined> {
 	return useCallback(
 		async (variables: TVariables) => {
-			if (!tryAcquireTaskMutationLock()) return undefined;
+			const id = taskIdFromVariables(variables);
+			if (!id || isAwaitingRealId(id)) return mutateAsync(variables);
+			if (!tryAcquireTaskMutationLock(id)) return undefined;
 			try {
 				return await mutateAsync(variables);
 			} finally {
-				releaseTaskMutationLock();
+				releaseTaskMutationLock(id);
 			}
 		},
 		[mutateAsync],
 	);
 }
 
-export function useCompleteTask() {
-	const queryClient = useQueryClient();
-	const mutation = useMutation({
-		...optimisticMutationOptions,
-		mutationFn: (id: string) => api.completeTask(id),
-		onMutate: async (id) => {
-			await queryClient.cancelQueries({ queryKey: ["tasks"] });
-			const snapshot = snapshotTaskQueries(queryClient);
-			removeTaskFromCaches(queryClient, id);
-			return { snapshot };
-		},
-		onError: (err, _id, ctx) => {
-			if (ctx?.snapshot) restoreTaskQueries(queryClient, ctx.snapshot);
-			toast.error(mutationErrorMessage(err, "完成失败"));
-		},
-		onSuccess: ({ task }) => {
-			// Keep completed out of active lists; patch any leftover shards.
-			removeTaskFromCaches(queryClient, task.id);
-			void silentInvalidateTasks(queryClient);
-			toastTaskCompleted();
-		},
-	});
+function useGuarded<T extends { mutateAsync: (v: never) => Promise<unknown>; isPending: boolean }>(
+	mutation: T,
+) {
 	const mutateAsync = useGuardedMutateAsync(mutation.mutateAsync);
 	return useMemo(
 		() => ({ ...mutation, mutateAsync, isPending: mutation.isPending }),
 		[mutation, mutateAsync],
 	);
+}
+
+/**
+ * Ids of tasks with an optimistic mutation in flight (for per-row disabled state).
+ * Actions on a temp id are queued, never blocking: those don't disable anything.
+ */
+export function usePendingTaskIds(): string[] {
+	const ids = useMutationState({
+		filters: { mutationKey: [...TASK_MUTATION_KEY], status: "pending" },
+		select: (mutation) => taskIdFromVariables(mutation.state.variables) ?? "",
+	});
+	return useMemo(() => ids.filter((id) => id && !isTempTaskId(id)), [ids]);
+}
+
+export function useCompleteTask() {
+	const queryClient = useQueryClient();
+	return useGuarded(useMutation(completeTaskMutationOptions(queryClient)));
 }
 
 export function useUpdateTask() {
 	const queryClient = useQueryClient();
-	const mutation = useMutation({
-		...optimisticMutationOptions,
-		mutationFn: ({ id, patch }: { id: string; patch: Record<string, unknown> }) =>
-			api.updateTask(id, stripSourceFromBody(patch)),
-		onMutate: async ({ id, patch }) => {
-			await queryClient.cancelQueries({ queryKey: ["tasks"] });
-			const snapshot = snapshotTaskQueries(queryClient);
-			applyOptimisticTaskPatch(queryClient, id, patch);
-			return { snapshot };
-		},
-		onError: (err, _vars, ctx) => {
-			if (ctx?.snapshot) restoreTaskQueries(queryClient, ctx.snapshot);
-			toast.error(mutationErrorMessage(err, "保存失败"));
-		},
-		onSuccess: ({ task }) => {
-			upsertTaskInCaches(queryClient, task);
-			void silentInvalidateTasks(queryClient);
-		},
-	});
-	const mutateAsync = useGuardedMutateAsync(mutation.mutateAsync);
-	return useMemo(
-		() => ({ ...mutation, mutateAsync, isPending: mutation.isPending }),
-		[mutation, mutateAsync],
-	);
+	return useGuarded(useMutation(updateTaskMutationOptions(queryClient)));
 }
 
-export function useCreateTask() {
+/**
+ * #90 乐观新建。不加任务锁：连续新建多条互不阻塞。
+ * `projects` 只用来给临时行补上收件箱 / 项目名，让它立刻落进正确的列表分片。
+ */
+export function useCreateTask(projects?: readonly Project[]) {
 	const queryClient = useQueryClient();
-	return useMutation({
-		mutationFn: (body: Record<string, unknown>) => api.createTask(stripSourceFromBody(body)),
-		onSuccess: ({ task }) => {
-			upsertTaskInCaches(queryClient, task);
-			void silentInvalidateTasks(queryClient);
-		},
-		onError: (err) => {
-			toast.error(mutationErrorMessage(err, "创建失败"));
-		},
-	});
+	// useMutation 每次渲染都会 setOptions，闭包拿到的就是最新的 projects。
+	return useMutation(createTaskMutationOptions(queryClient, () => projects ?? []));
 }
 
 export function useDeleteTask() {
 	const queryClient = useQueryClient();
-	const mutation = useMutation({
-		...optimisticMutationOptions,
-		mutationFn: (id: string) => api.deleteTask(id),
-		onMutate: async (id) => {
-			await queryClient.cancelQueries({ queryKey: ["tasks"] });
-			const snapshot = snapshotTaskQueries(queryClient);
-			removeTaskFromCaches(queryClient, id);
-			return { snapshot };
-		},
-		onError: (err, _id, ctx) => {
-			if (ctx?.snapshot) restoreTaskQueries(queryClient, ctx.snapshot);
-			toast.error(mutationErrorMessage(err, "删除失败"));
-		},
-		onSuccess: (_data, id) => {
-			removeTaskFromCaches(queryClient, id);
-			void silentInvalidateTasks(queryClient);
-		},
-	});
-	const mutateAsync = useGuardedMutateAsync(mutation.mutateAsync);
-	return useMemo(
-		() => ({ ...mutation, mutateAsync, isPending: mutation.isPending }),
-		[mutation, mutateAsync],
-	);
+	return useGuarded(useMutation(deleteTaskMutationOptions(queryClient)));
 }
 
 export function useProcessInboxTask() {
 	const queryClient = useQueryClient();
-	const mutation = useMutation({
-		...optimisticMutationOptions,
-		mutationFn: ({
-			id,
-			body,
-		}: {
-			id: string;
-			body: {
-				action: "next" | "waiting" | "someday" | "discard";
-				waitingOn?: string;
-				projectId?: string;
-			};
-		}) => api.processInbox(id, body),
-		onMutate: async ({ id, body }) => {
-			await queryClient.cancelQueries({ queryKey: ["tasks"] });
-			const snapshot = snapshotTaskQueries(queryClient);
-			const current = findCachedTask(queryClient, id);
-			if (body.action === "discard") {
-				removeTaskFromCaches(queryClient, id);
-			} else if (current) {
-				const patch: Record<string, unknown> = {
-					status: body.action,
-					...(body.waitingOn !== undefined ? { waitingOn: body.waitingOn } : {}),
-					...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
-				};
-				applyOptimisticTaskPatch(queryClient, id, patch, current);
-			} else {
-				removeTaskFromCaches(queryClient, id);
-			}
-			return { snapshot };
-		},
-		onError: (err, _vars, ctx) => {
-			if (ctx?.snapshot) restoreTaskQueries(queryClient, ctx.snapshot);
-			toast.error(mutationErrorMessage(err, "处理失败"));
-		},
-		onSuccess: ({ task }, { body }) => {
-			if (body.action === "discard" || task.deletedAt || task.status === "cancelled") {
-				removeTaskFromCaches(queryClient, task.id);
-			} else {
-				upsertTaskInCaches(queryClient, task);
-			}
-			void silentInvalidateTasks(queryClient);
-		},
-	});
-	const mutateAsync = useGuardedMutateAsync(mutation.mutateAsync);
-	return useMemo(
-		() => ({ ...mutation, mutateAsync, isPending: mutation.isPending }),
-		[mutation, mutateAsync],
-	);
+	return useGuarded(useMutation(processInboxMutationOptions(queryClient)));
 }
 
 export function useCommitAiDraft() {

@@ -39,7 +39,7 @@ export function SearchPage() {
 		queryKey: ["tags"],
 		queryFn: () => api.tags(),
 	});
-	const createTask = useCreateTask();
+	const createTask = useCreateTask(projects);
 	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
@@ -150,7 +150,8 @@ export function SearchPage() {
 				await deleteTask.mutateAsync(id);
 			}}
 			onReload={async () => {
-				await silentInvalidateTasks(queryClient);
+				// 后台刷新不阻塞界面（#90）。
+				void silentInvalidateTasks(queryClient);
 			}}
 		/>
 	);

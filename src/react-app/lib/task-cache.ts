@@ -225,3 +225,107 @@ export function silentInvalidateTasks(queryClient: QueryClient) {
 		refetchType: "active",
 	});
 }
+
+/**
+ * #90：把缓存里 fromId 那一行原地换成 next（保持列表位置，不闪），
+ * 不再属于该分片的就拿掉；其它已缓存、匹配的分片照常 upsert。
+ */
+export function replaceTaskInCaches(queryClient: QueryClient, fromId: string, next: Task) {
+	const entries = queryClient.getQueriesData<TaskQueryData>({ queryKey: taskKeys.all });
+	for (const [key, data] of entries) {
+		if (!data) continue;
+		const idx = data.items.findIndex((task) => task.id === fromId);
+		if (idx < 0) continue;
+		const belongs = isFocusKey(key)
+			? !next.deletedAt && isFocusTask(next, (data as FocusQueryData).today)
+			: taskMatchesListFilters(next, listFilters(key) ?? {});
+		const alreadyHasNext = next.id !== fromId && data.items.some((task) => task.id === next.id);
+		const items = data.items.flatMap((task) => {
+			if (task.id === fromId) return belongs && !alreadyHasNext ? [next] : [];
+			if (task.id === next.id && belongs) return [next];
+			return [task];
+		});
+		queryClient.setQueryData(key, withItems(data, items));
+	}
+	upsertTaskInCaches(queryClient, next);
+}
+
+/** 缓存里是否还有这条任务（任意分片）。 */
+export function isTaskInCaches(queryClient: QueryClient, id: string): boolean {
+	return findCachedTask(queryClient, id) !== undefined;
+}
+
+/**
+ * 后台刷新（refetch）回来的数据里还没有「正在新建」的任务：把它们补上，
+ * 避免连续新建时列表先少一条再出现（闪烁 / 看似丢失）。
+ */
+export function withPendingCreates<T extends TaskQueryData>(
+	queryClient: QueryClient,
+	key: QueryKey,
+	data: T,
+	pending: readonly { tempId: string; optimistic: Task }[],
+): T {
+	if (pending.length === 0) return data;
+	const present = new Set(data.items.map((task) => task.id));
+	const extra: Task[] = [];
+	for (const entry of pending) {
+		if (present.has(entry.tempId)) continue;
+		const current = findCachedTask(queryClient, entry.tempId) ?? entry.optimistic;
+		const belongs = isFocusKey(key)
+			? isFocusTask(current, (data as FocusQueryData).today)
+			: isListKey(key)
+				? taskMatchesListFilters(current, listFilters(key) ?? {})
+				: false;
+		if (belongs) extra.push(current);
+	}
+	if (extra.length === 0) return data;
+	return withItems(data, [...extra, ...data.items]) as T;
+}
+
+/** #90：只针对一条任务的快照（每个分片里它在不在、在哪个位置、是什么值）。 */
+export type TaskSnapshot = {
+	id: string;
+	entries: Array<[QueryKey, { index: number; task: Task } | null]>;
+};
+
+export function snapshotTask(queryClient: QueryClient, id: string): TaskSnapshot {
+	const entries: TaskSnapshot["entries"] = [];
+	for (const [key, data] of queryClient.getQueriesData<TaskQueryData>({ queryKey: taskKeys.all })) {
+		if (!data) continue;
+		const index = data.items.findIndex((task) => task.id === id);
+		entries.push([key, index >= 0 ? { index, task: data.items[index]! } : null]);
+	}
+	return { id, entries };
+}
+
+/**
+ * 只回滚这一条任务：其它任务（包括期间完成的新建、别的乐观修改）原样保留。
+ * `targetId`：任务现在在缓存里的 id（临时 id 已换成真实 id 时传真实 id）；
+ * `map`：把快照里的旧值换成要恢复的值（例如补上真实 id）。
+ */
+export function restoreTask(
+	queryClient: QueryClient,
+	snapshot: TaskSnapshot,
+	targetId: string = snapshot.id,
+	map: (task: Task) => Task = (task) => task,
+) {
+	for (const [key, prev] of snapshot.entries) {
+		const data = queryClient.getQueryData<TaskQueryData>(key);
+		if (!data) continue;
+		let items = data.items;
+		if (targetId !== snapshot.id) items = items.filter((task) => task.id !== snapshot.id);
+		const currentIdx = items.findIndex((task) => task.id === targetId);
+		if (prev) {
+			const restored = map(prev.task);
+			if (currentIdx >= 0) {
+				items = items.map((task, i) => (i === currentIdx ? restored : task));
+			} else {
+				const at = Math.min(prev.index, items.length);
+				items = [...items.slice(0, at), restored, ...items.slice(at)];
+			}
+		} else if (currentIdx >= 0) {
+			items = items.filter((_, i) => i !== currentIdx);
+		}
+		if (items !== data.items) queryClient.setQueryData(key, withItems(data, items));
+	}
+}

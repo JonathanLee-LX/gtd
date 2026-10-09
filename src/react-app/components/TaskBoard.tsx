@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,7 +26,6 @@ import {
 	SheetHeader,
 	SheetTitle,
 } from "@/components/ui/sheet";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { ChevronLeftIcon, InboxIcon, SparklesIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { TaskDraft } from "../../shared/schemas";
@@ -55,6 +55,7 @@ import {
 import { TaskComposer } from "./TaskComposer";
 import { TaskDetail } from "./TaskDetail";
 import { TaskRow } from "./TaskRow";
+import { useTaskDetailLayout } from "../hooks/use-task-detail-layout";
 
 export function TaskBoard({
 	title,
@@ -109,7 +110,27 @@ export function TaskBoard({
 	const selectedIdRef = useRef<string | null>(null);
 	selectedIdRef.current = selectedId;
 	const cancelFeedbackRef = useRef<Map<string, () => void>>(new Map());
-	const isMobile = useIsMobile();
+	// #94：< 1024px（Tailwind lg）一律用全屏详情（#49），≥ 1024px 用右侧面板。
+	// 以前全屏按 768 判断、面板却是 `hidden lg:flex`，768–1023px 打不开详情。
+	const detailLayout = useTaskDetailLayout();
+	const isMobile = detailLayout === "mobile";
+	/**
+	 * #94：详情始终 portal 进同一个 DOM 节点，再把节点挂到全屏 Sheet 或右侧面板里。
+	 * 跨 1024px 拖动窗口时 TaskDetail 不重新挂载，没保存的输入（#90 脏状态）不丢。
+	 */
+	const [detailHost] = useState<HTMLDivElement | null>(() => {
+		if (typeof document === "undefined") return null;
+		const host = document.createElement("div");
+		host.className = "flex min-h-0 min-w-0 flex-1 flex-col";
+		host.dataset.taskDetailHost = "";
+		return host;
+	});
+	const attachDetailHost = useCallback(
+		(slot: HTMLDivElement | null) => {
+			if (slot && detailHost && detailHost.parentNode !== slot) slot.appendChild(detailHost);
+		},
+		[detailHost],
+	);
 	const ordered = useMemo(() => orderTasksWithDepth(tasks), [tasks]);
 	const displayRows = useMemo(
 		() => mergeOrderedWithExiting(ordered, exiting),
@@ -158,8 +179,8 @@ export function TaskBoard({
 		if (shouldHistoryBack) window.history.back();
 	}, [restoreListScroll]);
 
+	// 不按 isMobile 挂：全屏时推了历史记录、随后窗口拉宽成面板，浏览器返回仍要能关详情（#94）。
 	useEffect(() => {
-		if (!isMobile) return;
 		function onPopState() {
 			if (!detailHistoryPushedRef.current) return;
 			// System/browser back: dismiss without a second history.back().
@@ -169,7 +190,7 @@ export function TaskBoard({
 		}
 		window.addEventListener("popstate", onPopState);
 		return () => window.removeEventListener("popstate", onPopState);
-	}, [isMobile, restoreListScroll]);
+	}, [restoreListScroll]);
 
 	// Task left the current list (complete / process / delete elsewhere) — drop detail + history.
 	// While complete feedback is playing, keep detail mounted until hard-drop.
@@ -405,7 +426,7 @@ export function TaskBoard({
 					}}
 				>
 					{/*
-					  True fullscreen page (<768): bottom-up / fade, ~100dvw×100dvh.
+					  True fullscreen page (<1024, #94; phones #49): bottom-up / fade, ~100dvw×100dvh.
 					  Not a right drawer — no list edge, no narrow max-w card.
 					  List stays mounted; scroll restored via client state (#43).
 					*/}
@@ -430,22 +451,28 @@ export function TaskBoard({
 								<SheetDescription>改状态、优先级和截止日期。</SheetDescription>
 							</div>
 						</SheetHeader>
-						<div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-3">
-							{detail}
-						</div>
+						<div
+							ref={attachDetailHost}
+							className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-3"
+						/>
 					</SheetContent>
 				</Sheet>
 			) : selected ? (
-				<aside className="hidden w-full max-w-md shrink-0 border-l bg-card lg:flex lg:flex-col">
+				// 只在 ≥ 1024px 渲染（useTaskDetailLayout），不再靠 `hidden lg:flex` 隐藏（#94）。
+				<aside
+					aria-label="任务详情"
+					className="flex w-full max-w-md shrink-0 flex-col border-l bg-card"
+				>
 					<Card className="size-full rounded-none ring-0">
 						<CardHeader>
 							<CardTitle>任务详情</CardTitle>
 						</CardHeader>
 						<Separator />
-						<CardContent className="flex min-h-0 flex-1 flex-col">{detail}</CardContent>
+						<CardContent ref={attachDetailHost} className="flex min-h-0 flex-1 flex-col" />
 					</Card>
 				</aside>
 			) : null}
+			{detail && detailHost ? createPortal(detail, detailHost) : null}
 			<Dialog open={drafts.length > 0} onOpenChange={(open) => !open && setDrafts([])}>
 				<DialogContent className="max-h-[85vh] overflow-auto sm:max-w-lg">
 					<DialogHeader>

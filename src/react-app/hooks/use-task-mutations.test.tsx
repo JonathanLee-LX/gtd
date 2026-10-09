@@ -213,7 +213,9 @@ describe("queueing is per task (#90 review item 3)", () => {
 			queued = result.current.complete.mutateAsync(tempId);
 			await Promise.resolve();
 		});
-		await waitFor(() => expect(result.current.pending).toEqual([tempId]));
+		// 排队中的临时任务不算 pending：按钮不禁用（queue, don't disable）
+		await waitFor(() => expect(qc.isMutating({ mutationKey: ["task-mutation"] })).toBe(1));
+		expect(result.current.pending).toEqual([]);
 
 		// 其它任务：照常、立刻发请求并完成
 		await act(async () => {
@@ -229,7 +231,8 @@ describe("queueing is per task (#90 review item 3)", () => {
 		expect(api.deleteTask).toHaveBeenCalledWith("other");
 		// old 已完成、other 已删除；临时任务已乐观完成离开列表，但它的 complete 请求仍在排队等真实 id
 		expect(view()).toEqual([]);
-		await waitFor(() => expect(result.current.pending).toEqual([tempId]));
+		expect(qc.isMutating({ mutationKey: ["task-mutation"] })).toBe(1);
+		expect(result.current.pending).toEqual([]);
 		void queued;
 	});
 
@@ -275,5 +278,145 @@ describe("queueing is per task (#90 review item 3)", () => {
 		expect(api.completeTask).toHaveBeenCalledTimes(1);
 		expect(api.completeTask).toHaveBeenCalledWith("real-x");
 		expect(view()).toEqual(["old:旧任务", "other:别的任务"]);
+	});
+});
+
+describe("temp task queues every action in order (#90 re-review)", () => {
+	function setupCreate() {
+		const create = deferred<{ task: Task }>();
+		api.createTask.mockReturnValue(create.promise);
+		const calls: string[] = [];
+		api.updateTask.mockImplementation(async (id: string, patch: { title: string }) => {
+			calls.push(`update:${id}:${patch.title}`);
+			return { task: task({ id, title: patch.title }) };
+		});
+		api.completeTask.mockImplementation(async (id: string) => {
+			calls.push(`complete:${id}`);
+			return { task: task({ id, status: "completed" }) };
+		});
+		api.deleteTask.mockImplementation(async (id: string) => {
+			calls.push(`delete:${id}`);
+			return { ok: true };
+		});
+		const hook = setup();
+		let created!: Promise<unknown>;
+		act(() => {
+			created = hook.result.current.create.mutateAsync({ title: "X", status: "inbox" }).catch(() => "failed");
+		});
+		const tempId = items()[0]!.id;
+		return { create, calls, hook, tempId, created: () => created };
+	}
+
+	it("create -> edit -> complete: both applied right away, sent in order with the real id", async () => {
+		const { create, calls, hook, tempId, created } = setupCreate();
+		const done: Promise<unknown>[] = [];
+		await act(async () => {
+			done.push(hook.result.current.update.mutateAsync({ id: tempId, patch: { title: "X 改" } }));
+			await Promise.resolve();
+		});
+		expect(view()[0]).toBe("tmp:X 改"); // optimistic edit
+		expect(hook.result.current.pending).toEqual([]); // buttons stay enabled
+		await act(async () => {
+			done.push(hook.result.current.complete.mutateAsync(tempId));
+			await Promise.resolve();
+		});
+		expect(view()).toEqual(["old:旧任务", "other:别的任务"]); // optimistic complete
+		expect(calls).toEqual([]);
+		await act(async () => {
+			create.resolve({ task: task({ id: "real-x", title: "X" }) });
+			await created();
+			await Promise.all(done);
+		});
+		expect(calls).toEqual(["update:real-x:X 改", "complete:real-x"]);
+		expect(toast.error).not.toHaveBeenCalled();
+		expect(view()).toEqual(["old:旧任务", "other:别的任务"]);
+	});
+
+	it("create -> edit -> delete: the superseded edit is not sent, delete goes out with the real id", async () => {
+		const { create, calls, hook, tempId, created } = setupCreate();
+		const done: Promise<unknown>[] = [];
+		await act(async () => {
+			done.push(hook.result.current.update.mutateAsync({ id: tempId, patch: { title: "X 改" } }));
+			await Promise.resolve();
+			done.push(hook.result.current.remove.mutateAsync(tempId));
+			await Promise.resolve();
+		});
+		expect(view()).toEqual(["old:旧任务", "other:别的任务"]);
+		await act(async () => {
+			create.resolve({ task: task({ id: "real-x", title: "X" }) });
+			await created();
+			await Promise.all(done);
+		});
+		expect(calls).toEqual(["delete:real-x"]);
+		expect(toast.error).not.toHaveBeenCalled();
+		expect(view()).toEqual(["old:旧任务", "other:别的任务"]);
+	});
+
+	it("create fails: every queued action (edit, complete) is dropped with a single toast", async () => {
+		const { create, calls, hook, tempId, created } = setupCreate();
+		const done: Promise<unknown>[] = [];
+		await act(async () => {
+			done.push(hook.result.current.update.mutateAsync({ id: tempId, patch: { title: "X 改" } }).catch((e) => e));
+			await Promise.resolve();
+			done.push(hook.result.current.complete.mutateAsync(tempId).catch((e) => e));
+			await Promise.resolve();
+		});
+		await act(async () => {
+			create.reject(new Error("服务器出错了"));
+			await created();
+			await Promise.all(done);
+		});
+		expect(calls).toEqual([]);
+		expect(toast.error).toHaveBeenCalledTimes(1);
+		expect(view()).toEqual(["old:旧任务", "other:别的任务"]);
+	});
+
+	it("create fails after edit -> delete queued: nothing sent, one toast", async () => {
+		const { create, calls, hook, tempId, created } = setupCreate();
+		const done: Promise<unknown>[] = [];
+		await act(async () => {
+			done.push(hook.result.current.update.mutateAsync({ id: tempId, patch: { title: "X 改" } }).catch((e) => e));
+			await Promise.resolve();
+			done.push(hook.result.current.remove.mutateAsync(tempId).catch((e) => e));
+			await Promise.resolve();
+		});
+		await act(async () => {
+			create.reject(new Error("服务器出错了"));
+			await created();
+			await Promise.all(done);
+		});
+		expect(calls).toEqual([]);
+		expect(toast.error).toHaveBeenCalledTimes(1);
+		expect(view()).toEqual(["old:旧任务", "other:别的任务"]);
+	});
+
+	it("an action on the real id while the queue is still draining goes after it", async () => {
+		const { create, calls, hook, tempId, created } = setupCreate();
+		const slowSave = deferred<{ task: Task }>();
+		api.updateTask.mockImplementationOnce(async (id: string, patch: { title: string }) => {
+			calls.push(`update:${id}:${patch.title}`);
+			return slowSave.promise;
+		});
+		let edit!: Promise<unknown>;
+		await act(async () => {
+			edit = hook.result.current.update.mutateAsync({ id: tempId, patch: { title: "X 改" } });
+			await Promise.resolve();
+		});
+		await act(async () => {
+			create.resolve({ task: task({ id: "real-x", title: "X" }) });
+			await created();
+		});
+		let complete!: Promise<unknown>;
+		await act(async () => {
+			complete = hook.result.current.complete.mutateAsync("real-x");
+			await Promise.resolve();
+		});
+		expect(calls).toEqual(["update:real-x:X 改"]);
+		await act(async () => {
+			slowSave.resolve({ task: task({ id: "real-x", title: "X 改" }) });
+			await edit;
+			await complete;
+		});
+		expect(calls).toEqual(["update:real-x:X 改", "complete:real-x"]);
 	});
 });

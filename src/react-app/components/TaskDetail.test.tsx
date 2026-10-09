@@ -109,6 +109,39 @@ describe("TaskDetail keeps typed text (#90 review blocker 2)", () => {
 		expect(titleInput().value).toBe("新标题");
 	});
 
+	it("after a failed save, reverting the form makes it clean again so server/MCP updates sync", async () => {
+		const save = deferred();
+		const rerender = mount(task(), () => save.promise);
+		type(titleInput(), "新标题");
+		clickSave();
+		rerender(task({ title: "新标题" }));
+		await act(async () => {
+			save.reject(new Error("服务器出错了"));
+			await save.promise.catch(() => undefined);
+		});
+		rerender(task()); // rollback
+		expect(titleInput().value).toBe("新标题");
+		type(titleInput(), "原标题"); // user changes it back
+		rerender(task({ title: "MCP 改的标题", notes: "MCP 加的备注" }));
+		expect(titleInput().value).toBe("MCP 改的标题");
+		expect(notesInput().value).toBe("MCP 加的备注");
+	});
+
+	it("rollback landing before the failure callback still keeps the typed text", async () => {
+		const save = deferred();
+		const rerender = mount(task(), () => save.promise);
+		type(titleInput(), "新标题");
+		clickSave();
+		rerender(task({ title: "新标题" }));
+		rerender(task()); // rollback re-render arrives while the save promise is still pending
+		await act(async () => {
+			save.reject(new Error("服务器出错了"));
+			await save.promise.catch(() => undefined);
+		});
+		rerender(task({ updatedAt: "2026-10-09T03:00:00.000Z" }));
+		expect(titleInput().value).toBe("新标题");
+	});
+
 	it("temp → real id swap is the same task: typed text survives", () => {
 		const temp = task({ id: "tmp-1-x", title: "刚记下", source: null });
 		registerPendingCreate(temp);

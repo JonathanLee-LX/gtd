@@ -124,9 +124,10 @@ export function TaskDetail({
 	const [deleting, setDeleting] = useState(false);
 	/**
 	 * #90：表单只在「换了一条任务」或「表单没有未保存修改」时跟随 task 变化。
-	 * baseline = 表单上次同步 / 提交的值；null = 保存失败后强制视为有修改（保留用户输入）。
+	 * 有没有修改 = 表单值和当前显示的这条任务（taskDraftRef，上一次看到的 task）比，
+	 * 不用粘滞标记：保存失败后用户改回原值，就又会跟随服务端 / MCP 的更新。
 	 */
-	const baselineRef = useRef<Draft | null>(draftFromTask(task));
+	const taskDraftRef = useRef<Draft>(draftFromTask(task));
 	const syncedTaskIdRef = useRef(task.id);
 	const savingRef = useRef(0);
 	const pendingCreate = isTempTaskId(task.id);
@@ -180,18 +181,17 @@ export function TaskDetail({
 		if (!sameTask(previousId, task.id)) {
 			// 真的换了一条任务：整体重置。临时 id → 真实 id 不算换任务。
 			applyDraft(next);
-			baselineRef.current = next;
+			taskDraftRef.current = next;
 			setTagDraft("");
 			setError(null);
 			setConfirmOpen(false);
 			return;
 		}
 		const form: Draft = { title, notes, status, priority, dueAt, projectId, parentId, waitingOn, tags: localTags };
-		const dirty =
-			savingRef.current > 0 || baselineRef.current === null || !sameDraft(form, baselineRef.current);
+		const dirty = savingRef.current > 0 || !sameDraft(form, taskDraftRef.current);
+		taskDraftRef.current = next;
 		if (dirty) return; // 保存中 / 有未保存的输入：不覆盖用户正在填的内容
 		applyDraft(next);
-		baselineRef.current = next;
 		// 只在 task 变化时同步；表单值只用来判断是否有未保存修改。
 	}, [task]);
 
@@ -203,7 +203,9 @@ export function TaskDetail({
 		event.preventDefault();
 		setError(null);
 		const submitted: Draft = { title, notes, status, priority, dueAt, projectId, parentId, waitingOn, tags: localTags };
-		baselineRef.current = submitted;
+		// 失败回滚后，task 会回到点保存之前的值；以它为准判断表单是否还有未保存修改。
+		const beforeSave = taskDraftRef.current;
+		taskDraftRef.current = submitted;
 		savingRef.current += 1;
 		onSave({
 			title,
@@ -217,7 +219,7 @@ export function TaskDetail({
 			tagIds: localTags.map((tag) => tag.id),
 		})
 			.catch((err: unknown) => {
-				baselineRef.current = null;
+				taskDraftRef.current = beforeSave;
 				setError(
 					`保存失败，已恢复原值；你填写的内容还在，可以再点保存。${err instanceof Error && err.message ? `（${err.message}）` : ""}`,
 				);

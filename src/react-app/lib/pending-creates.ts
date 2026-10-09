@@ -3,8 +3,8 @@
  *
  * 新建任务先以临时 id（`tmp-…`）插进列表缓存，服务端返回后换成真实记录。
  * 在此之前用户可能已经对这条任务点了完成 / 保存 / 删除：这些请求不能带着临时 id 发出去
- * （会 404 并触发回滚），所以它们的 mutationFn 先 `await resolveTaskId(id)`，
- * 等真实 id 到了再发（排队，而不是禁用按钮）；新建失败则一起放弃。
+ * （会 404 并触发回滚），所以它们的 mutationFn 走 `enqueueTaskAction`：按点击顺序排进这条任务的队列，
+ * 等真实 id 到了再依次发出（排队，而不是禁用按钮）；新建失败则一起放弃。
  */
 import type { Task } from "../api";
 
@@ -43,6 +43,12 @@ type Entry = {
 	touched: boolean;
 	/** 已被排队的完成 / 删除从列表里拿掉：真实记录回来后不要再插回去。 */
 	removed: boolean;
+	/** 已排队删除（删除 / 收件箱丢掉）：排在它前面、还没发出的其它操作不必再发。 */
+	deleted: boolean;
+	/** 这条任务的操作队列尾部：所有操作按点击顺序串行发出。 */
+	tail: Promise<unknown>;
+	/** 队列里还没结束的操作数。 */
+	queued: number;
 	promise: Promise<string>;
 	resolve: (id: string) => void;
 	reject: (error: Error) => void;
@@ -66,6 +72,9 @@ export function registerPendingCreate(task: Task): void {
 		state: "pending",
 		touched: false,
 		removed: false,
+		deleted: false,
+		tail: promise.catch(() => undefined),
+		queued: 0,
 		promise,
 		resolve,
 		reject,
@@ -77,7 +86,7 @@ function pruneSettled() {
 	if (entries.size <= MAX_SETTLED) return;
 	for (const [id, entry] of entries) {
 		if (entries.size <= MAX_SETTLED) break;
-		if (entry.state !== "pending") entries.delete(id);
+		if (entry.state !== "pending" && entry.queued === 0) entries.delete(id);
 	}
 }
 
@@ -100,11 +109,68 @@ export function isPendingCreateTouched(tempId: string): boolean {
 }
 
 /** 在乐观 onMutate 里调用：这条临时任务被改过 / 将被拿掉，新建返回时别用服务端原始记录覆盖。 */
-export function touchPendingCreate(tempId: string, opts: { removed?: boolean } = {}): void {
+export function touchPendingCreate(
+	tempId: string,
+	opts: { removed?: boolean; deleted?: boolean } = {},
+): void {
 	const entry = entries.get(tempId);
 	if (!entry || entry.state !== "pending") return;
 	entry.touched = true;
-	if (opts.removed) entry.removed = true;
+	if (opts.removed || opts.deleted) entry.removed = true;
+	if (opts.deleted) entry.deleted = true;
+}
+
+/** 还在等真实 id 的临时任务：它上面的操作排队，不加锁、不禁用按钮。 */
+export function isAwaitingRealId(id: string): boolean {
+	return isTempTaskId(id) && entries.get(id)?.state === "pending";
+}
+
+function entryForTask(id: string): Entry | undefined {
+	if (isTempTaskId(id)) return entries.get(id);
+	for (const entry of entries.values()) {
+		if (entry.created?.id === id && entry.queued > 0) return entry;
+	}
+	return undefined;
+}
+
+/** 排队的操作因为后面已经排了删除而不必发出。 */
+export const SKIPPED_BY_DELETE = Symbol("skipped-by-delete");
+
+/**
+ * #90：对刚新建（临时 id）的任务的操作按点击顺序排进这条任务的队列，
+ * 真实 id 到了以后逐个发出（每个都已经先乐观改过缓存）。
+ * - 新建失败：队列里所有操作都以 PendingCreateFailedError 结束（只由新建提示一次）。
+ * - 真实 id 已到、但队列还没跑完时，对真实 id 的新操作也排在后面，保证顺序。
+ * - 后面已经排了删除时，`skipIfDeleted` 的操作直接跳过（返回 SKIPPED_BY_DELETE）。
+ */
+export function enqueueTaskAction<T>(
+	id: string,
+	run: (realId: string) => Promise<T>,
+	opts: { skipIfDeleted?: boolean } = {},
+): Promise<T | typeof SKIPPED_BY_DELETE> {
+	const entry = entryForTask(id);
+	if (!entry) {
+		if (isTempTaskId(id)) return Promise.reject(new PendingCreateFailedError(id));
+		return run(id);
+	}
+	if (entry.state === "failed") return Promise.reject(new PendingCreateFailedError(entry.tempId));
+	if (entry.state === "created" && entry.queued === 0 && entry.created) return run(entry.created.id);
+	entry.touched = true;
+	entry.queued += 1;
+	const result = entry.tail.then<T | typeof SKIPPED_BY_DELETE>(() => {
+		if (entry.state !== "created" || !entry.created) throw new PendingCreateFailedError(entry.tempId);
+		if (opts.skipIfDeleted && entry.deleted) return SKIPPED_BY_DELETE;
+		return run(entry.created.id);
+	});
+	const settled = result.then(
+		() => undefined,
+		() => undefined,
+	);
+	entry.tail = settled;
+	void settled.then(() => {
+		entry.queued -= 1;
+	});
+	return result;
 }
 
 export function resolvePendingCreate(tempId: string, created: Task): void {

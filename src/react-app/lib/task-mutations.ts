@@ -18,8 +18,9 @@ import {
 	PendingCreateFailedError,
 	registerPendingCreate,
 	rejectPendingCreate,
+	enqueueTaskAction,
 	resolvePendingCreate,
-	resolveTaskId,
+	SKIPPED_BY_DELETE,
 	touchPendingCreate,
 } from "./pending-creates";
 import {
@@ -193,10 +194,10 @@ type SnapshotContext = { snapshot: TaskSnapshot };
 
 export function completeTaskMutationOptions(
 	queryClient: QueryClient,
-): MutationOptions<{ task: Task }, Error, string, SnapshotContext> {
+): MutationOptions<{ task: Task } | typeof SKIPPED_BY_DELETE, Error, string, SnapshotContext> {
 	return {
 		...optimisticMutationOptions,
-		mutationFn: async (id) => api.completeTask(await resolveTaskId(id)),
+		mutationFn: (id) => enqueueTaskAction(id, api.completeTask, { skipIfDeleted: true }),
 		onMutate: async (id) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
 			const snapshot = snapshotTask(queryClient, id);
@@ -208,7 +209,9 @@ export function completeTaskMutationOptions(
 			rollbackTask(queryClient, ctx?.snapshot);
 			toastUnlessCreateFailed(err, "完成失败");
 		},
-		onSuccess: ({ task }, id) => {
+		onSuccess: (data, id) => {
+			if (data === SKIPPED_BY_DELETE) return;
+			const { task } = data;
 			// Keep completed out of active lists; patch any leftover shards.
 			removeTaskFromCaches(queryClient, task.id);
 			if (id !== task.id) removeTaskFromCaches(queryClient, id);
@@ -222,11 +225,13 @@ export type UpdateTaskVariables = { id: string; patch: Record<string, unknown> }
 
 export function updateTaskMutationOptions(
 	queryClient: QueryClient,
-): MutationOptions<{ task: Task }, Error, UpdateTaskVariables, SnapshotContext> {
+): MutationOptions<{ task: Task } | typeof SKIPPED_BY_DELETE, Error, UpdateTaskVariables, SnapshotContext> {
 	return {
 		...optimisticMutationOptions,
-		mutationFn: async ({ id, patch }) =>
-			api.updateTask(await resolveTaskId(id), stripSourceFromBody(patch)),
+		mutationFn: ({ id, patch }) =>
+			enqueueTaskAction(id, (realId) => api.updateTask(realId, stripSourceFromBody(patch)), {
+				skipIfDeleted: true,
+			}),
 		onMutate: async ({ id, patch }) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
 			const snapshot = snapshotTask(queryClient, id);
@@ -238,7 +243,9 @@ export function updateTaskMutationOptions(
 			rollbackTask(queryClient, ctx?.snapshot);
 			toastUnlessCreateFailed(err, "保存失败，已恢复原值");
 		},
-		onSuccess: ({ task }, { id }) => {
+		onSuccess: (data, { id }) => {
+			if (data === SKIPPED_BY_DELETE) return;
+			const { task } = data;
 			if (id !== task.id && findCachedTask(queryClient, id)) {
 				replaceTaskInCaches(queryClient, id, task);
 			} else {
@@ -254,11 +261,11 @@ export function deleteTaskMutationOptions(
 ): MutationOptions<unknown, Error, string, SnapshotContext> {
 	return {
 		...optimisticMutationOptions,
-		mutationFn: async (id) => api.deleteTask(await resolveTaskId(id)),
+		mutationFn: (id) => enqueueTaskAction(id, api.deleteTask),
 		onMutate: async (id) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
 			const snapshot = snapshotTask(queryClient, id);
-			if (isTempTaskId(id)) touchPendingCreate(id, { removed: true });
+			if (isTempTaskId(id)) touchPendingCreate(id, { deleted: true });
 			removeTaskFromCaches(queryClient, id);
 			return { snapshot };
 		},
@@ -268,6 +275,8 @@ export function deleteTaskMutationOptions(
 		},
 		onSuccess: (_data, id) => {
 			removeTaskFromCaches(queryClient, id);
+			const realId = isTempTaskId(id) ? getPendingCreate(id)?.created?.id : undefined;
+			if (realId) removeTaskFromCaches(queryClient, realId);
 			void silentInvalidateTasks(queryClient);
 		},
 	};
@@ -284,15 +293,23 @@ export type ProcessInboxVariables = {
 
 export function processInboxMutationOptions(
 	queryClient: QueryClient,
-): MutationOptions<{ task: Task }, Error, ProcessInboxVariables, SnapshotContext> {
+): MutationOptions<{ task: Task } | typeof SKIPPED_BY_DELETE, Error, ProcessInboxVariables, SnapshotContext> {
 	return {
 		...optimisticMutationOptions,
-		mutationFn: async ({ id, body }) => api.processInbox(await resolveTaskId(id), body),
+		mutationFn: ({ id, body }) =>
+			enqueueTaskAction(id, (realId) => api.processInbox(realId, body), {
+				skipIfDeleted: body.action !== "discard",
+			}),
 		onMutate: async ({ id, body }) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
 			const snapshot = snapshotTask(queryClient, id);
 			const current = findCachedTask(queryClient, id);
-			if (isTempTaskId(id)) touchPendingCreate(id, { removed: body.action === "discard" || !current });
+			if (isTempTaskId(id)) {
+				touchPendingCreate(id, {
+					removed: body.action === "discard" || !current,
+					deleted: body.action === "discard",
+				});
+			}
 			if (body.action === "discard") {
 				removeTaskFromCaches(queryClient, id);
 			} else if (current) {
@@ -311,7 +328,9 @@ export function processInboxMutationOptions(
 			rollbackTask(queryClient, ctx?.snapshot);
 			toastUnlessCreateFailed(err, "处理失败");
 		},
-		onSuccess: ({ task }, { id, body }) => {
+		onSuccess: (data, { id, body }) => {
+			if (data === SKIPPED_BY_DELETE) return;
+			const { task } = data;
 			if (id !== task.id) removeTaskFromCaches(queryClient, id);
 			if (body.action === "discard" || task.deletedAt || task.status === "cancelled") {
 				removeTaskFromCaches(queryClient, task.id);

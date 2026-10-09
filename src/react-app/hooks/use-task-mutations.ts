@@ -10,6 +10,7 @@ import {
 	processInboxMutationOptions,
 	updateTaskMutationOptions,
 } from "../lib/task-mutations";
+import { isAwaitingRealId, isTempTaskId } from "../lib/pending-creates";
 import { silentInvalidateTasks, upsertTaskInCaches } from "../lib/task-cache";
 import {
 	releaseTaskMutationLock,
@@ -22,6 +23,10 @@ import {
  * Run mutateAsync only if no other optimistic mutation is in flight **for the same task**.
  * Sync lock covers the double-click-before-paint gap that isPending cannot.
  * Other tasks stay actionable — including while a create waits for its real id (#90).
+ *
+ * A task still waiting for its real id takes no lock at all: every action is applied
+ * optimistically right away and appended to that task's queue (enqueueTaskAction),
+ * which sends them in order once the real id arrives — queue, don't disable.
  */
 function useGuardedMutateAsync<TVariables, TData>(
 	mutateAsync: (variables: TVariables) => Promise<TData>,
@@ -29,7 +34,7 @@ function useGuardedMutateAsync<TVariables, TData>(
 	return useCallback(
 		async (variables: TVariables) => {
 			const id = taskIdFromVariables(variables);
-			if (!id) return mutateAsync(variables);
+			if (!id || isAwaitingRealId(id)) return mutateAsync(variables);
 			if (!tryAcquireTaskMutationLock(id)) return undefined;
 			try {
 				return await mutateAsync(variables);
@@ -51,13 +56,16 @@ function useGuarded<T extends { mutateAsync: (v: never) => Promise<unknown>; isP
 	);
 }
 
-/** Ids of tasks with an optimistic mutation in flight (for per-row disabled state). */
+/**
+ * Ids of tasks with an optimistic mutation in flight (for per-row disabled state).
+ * Actions on a temp id are queued, never blocking: those don't disable anything.
+ */
 export function usePendingTaskIds(): string[] {
 	const ids = useMutationState({
 		filters: { mutationKey: [...TASK_MUTATION_KEY], status: "pending" },
 		select: (mutation) => taskIdFromVariables(mutation.state.variables) ?? "",
 	});
-	return useMemo(() => ids.filter(Boolean), [ids]);
+	return useMemo(() => ids.filter((id) => id && !isTempTaskId(id)), [ids]);
 }
 
 export function useCompleteTask() {

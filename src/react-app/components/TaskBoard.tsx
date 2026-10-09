@@ -47,7 +47,7 @@ import {
 	type ExitingTaskEntry,
 } from "../lib/merge-exiting-tasks";
 import { isTaskIdPending } from "../lib/task-mutation-lock";
-import { isTempTaskId, realIdFor } from "../lib/pending-creates";
+import { isAwaitingRealId, isTempTaskId, realIdFor } from "../lib/pending-creates";
 import {
 	InboxProcessActions,
 	type InboxProcessAction,
@@ -283,7 +283,8 @@ export function TaskBoard({
 		waitingOn?: string,
 	) {
 		if (isPending(taskId) || processBusy === taskId) return;
-		setProcessBusy(taskId);
+		// 临时任务的操作只是排队（已乐观生效），不把按钮锁到新建返回为止（#90）。
+		if (!isAwaitingRealId(taskId)) setProcessBusy(taskId);
 		try {
 			await processInbox.mutateAsync({ id: taskId, body: { action, waitingOn } });
 			toast.success(
@@ -298,7 +299,7 @@ export function TaskBoard({
 		} catch {
 			// toast + rollback handled in mutation
 		} finally {
-			setProcessBusy(null);
+			setProcessBusy((current) => (current === taskId ? null : current));
 		}
 	}
 

@@ -11,6 +11,8 @@ export type LoadStatus = "skeleton" | "data" | "empty" | "error";
 export type LoadableQuery<T> = {
 	data: T | undefined;
 	error: unknown;
+	/** 有的话，出错时界面给「重试」按钮（react-query 的 refetch）。 */
+	refetch?: () => Promise<unknown>;
 };
 
 /** 默认的「空」判断：`{ items: [] }` 或 `[]`。 */

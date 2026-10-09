@@ -1,13 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
-import { NavLink, useOutletContext, useSearchParams } from "react-router-dom";
+import { NavLink, useSearchParams } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
 	CONTEXT_TAG_EXAMPLES,
 	isContextTagName,
 } from "../../shared/constants";
-import { api, type Project, type Tag } from "../api";
+import { api, type Tag } from "../api";
 import { TaskBoard } from "../components/TaskBoard";
 import {
 	useCompleteTask,
@@ -17,9 +17,10 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
+import { useShellContext } from "../hooks/use-shell-data";
 
 export function SearchPage() {
-	const { projects } = useOutletContext<{ projects: Project[] }>();
+	const { projects } = useShellContext();
 	const [params, setSearchParams] = useSearchParams();
 	const q = params.get("q")?.trim() ?? "";
 	const tagId = params.get("tagId")?.trim() ?? "";

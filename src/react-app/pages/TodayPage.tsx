@@ -1,6 +1,4 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useOutletContext } from "react-router-dom";
-import type { Project } from "../api";
 import { TaskBoard } from "../components/TaskBoard";
 import {
 	useCompleteTask,
@@ -11,9 +9,10 @@ import {
 import { useFocusTasks } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
 import { ymdInZone } from "../../shared/today";
+import { useShellContext } from "../hooks/use-shell-data";
 
 export function TodayPage() {
-	const { projects } = useOutletContext<{ projects: Project[] }>();
+	const { projects } = useShellContext();
 	const queryClient = useQueryClient();
 	const query = useFocusTasks();
 	const createTask = useCreateTask(projects);

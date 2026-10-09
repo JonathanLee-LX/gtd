@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -11,15 +11,6 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuGroup,
-	DropdownMenuItem,
-	DropdownMenuLabel,
-	DropdownMenuSeparator,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -53,63 +44,87 @@ import {
 	ClipboardCheckIcon,
 	ClockIcon,
 	CloudyIcon,
-	FolderIcon,
 	InboxIcon,
 	ListTodoIcon,
-	LogOutIcon,
 	PlusIcon,
 	RefreshCwIcon,
 	SearchIcon,
-	SettingsIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api, type Me, type Project } from "../api";
-import { shellLoadOutcome } from "../lib/session";
+import { api, type Project } from "../api";
+import { QueryView } from "../components/QueryView";
+import { SidebarProjectItem, SidebarUserButton } from "../components/ShellSidebarItems";
+import {
+	shellKeys,
+	useMeQuery,
+	useProjectsQuery,
+	useReloadProjects,
+	type ShellOutletContext,
+} from "../hooks/use-shell-data";
+import { createLoginRedirectOnce, loadErrorMessage, shellLoadOutcome } from "../lib/session";
 import { MobileBottomNav } from "../components/MobileBottomNav";
 import { MobileQuickCollect } from "../components/MobileQuickCollect";
+
+const SIDEBAR_MENU_CLASS = "flex w-full min-w-0 flex-col gap-0";
+
+const NO_PROJECTS: Project[] = [];
 
 export function Shell() {
 	const navigate = useNavigate();
 	const location = useLocation();
-	const [me, setMe] = useState<Me["user"] | null>(null);
-	const [projects, setProjects] = useState<Project[]>([]);
+	const queryClient = useQueryClient();
+	// #101：外壳不再等 me / projects —— 侧栏 + <Outlet> 立刻渲染，页面列表请求和这两个并行发出。
+	const meQuery = useMeQuery();
+	const projectsQuery = useProjectsQuery();
+	const reloadProjects = useReloadProjects();
 	const [projectOpen, setProjectOpen] = useState(false);
 	const [projectName, setProjectName] = useState("");
 	const [creating, setCreating] = useState(false);
 	const [query, setQuery] = useState("");
-	const [loadError, setLoadError] = useState<string | null>(null);
 	const [retrying, setRetrying] = useState(false);
 
-	// #82：只有 401（真没登录 / 会话过期）才回登录页；断网、5xx 原地提示重试，不当成退出。
-	async function load() {
-		try {
-			const [meRes, projectRes] = await Promise.all([api.me(), api.projects()]);
-			setMe(meRes.user);
-			setProjects(projectRes.items);
-			setLoadError(null);
-		} catch (err) {
-			const outcome = shellLoadOutcome(err);
-			if (outcome.kind === "login") {
-				navigate("/login", { replace: true });
-				return;
-			}
-			if (me) toast.error(outcome.message);
-			else setLoadError(outcome.message);
-		}
-	}
+	// #82 / #101：任何查询（me、projects、页面列表）401 → 回登录页，且同时多个 401 只跳一次。
+	// 断网、5xx 不跳，原地提示重试。
+	const navigateRef = useRef(navigate);
+	navigateRef.current = navigate;
+	const [onQueryError] = useState(() =>
+		createLoginRedirectOnce(() => navigateRef.current("/login", { replace: true })),
+	);
+	useEffect(
+		() =>
+			queryClient.getQueryCache().subscribe((event) => {
+				if (event.type === "updated" && event.action.type === "error") onQueryError(event.action.error);
+			}),
+		[queryClient, onQueryError],
+	);
+
+	const projects = projectsQuery.data?.items ?? NO_PROJECTS;
+	const projectsReady = projectsQuery.data !== undefined;
+	const outletContext = useMemo<ShellOutletContext>(
+		() => ({
+			projects,
+			projectsReady,
+			projectsError: projectsReady ? null : projectsQuery.error,
+			reloadProjects,
+		}),
+		[projects, projectsReady, projectsQuery.error, reloadProjects],
+	);
+
+	// 外壳数据加载失败（非 401、且没有任何缓存数据）→ 内容区顶部提示 + 重试；页面照常渲染。
+	const shellError = [meQuery, projectsQuery].find(
+		(item) => item.data === undefined && item.error && shellLoadOutcome(item.error).kind === "retry",
+	)?.error;
 
 	async function retry() {
 		setRetrying(true);
 		try {
-			await load();
+			await Promise.all(
+				[meQuery, projectsQuery].filter((item) => item.error).map((item) => item.refetch()),
+			);
 		} finally {
 			setRetrying(false);
 		}
 	}
-
-	useEffect(() => {
-		void load();
-	}, []);
 
 	async function addProject(event: React.FormEvent) {
 		event.preventDefault();
@@ -120,7 +135,7 @@ export function Shell() {
 			await api.createProject(name);
 			setProjectName("");
 			setProjectOpen(false);
-			await load();
+			await reloadProjects();
 			toast.success("项目已创建");
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : "创建项目失败");
@@ -140,43 +155,13 @@ export function Shell() {
 		navigate("/login", { replace: true });
 	}
 
-	if (!me && loadError) {
-		return (
-			<div className="flex min-h-svh items-center justify-center p-6">
-				<Alert className="w-full max-w-md">
-					<CircleAlertIcon />
-					<AlertTitle>工作台暂时打不开</AlertTitle>
-					<AlertDescription>
-						<p>{loadError}</p>
-						<p>你的登录状态还在，恢复后点重试即可。</p>
-						<Button
-							type="button"
-							size="sm"
-							className="mt-2"
-							disabled={retrying}
-							onClick={() => void retry()}
-						>
-							{retrying ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
-							重试
-						</Button>
-					</AlertDescription>
-				</Alert>
-			</div>
-		);
-	}
-
-	if (!me) {
-		return (
-			<div className="flex min-h-svh items-center justify-center gap-3 text-muted-foreground">
-				<Spinner />
-				加载工作台…
-			</div>
-		);
-	}
-
 	const inbox = projects.find((project) => project.isInbox);
 	const rest = projects.filter((project) => !project.isInbox && !project.archivedAt);
-	const initials = (me.name || me.email).slice(0, 2).toUpperCase();
+	// 侧栏项目列表的查询视图：只列非收件箱、未归档的项目。
+	const restQuery = {
+		data: projectsQuery.data ? { items: rest } : undefined,
+		error: projectsQuery.error,
+	};
 
 	return (
 		<SidebarProvider className="h-svh overflow-hidden">
@@ -211,7 +196,8 @@ export function Shell() {
 										<span>今日焦点</span>
 									</SidebarMenuButton>
 								</SidebarMenuItem>
-								{inbox ? (
+								{/* 收件箱每个账号都有：项目还没回来时也先显示，避免回来后导航跳动。 */}
+								{inbox || !projectsReady ? (
 									<SidebarMenuItem>
 										<SidebarMenuButton
 											isActive={location.pathname === "/inbox"}
@@ -293,62 +279,62 @@ export function Shell() {
 							<span className="sr-only">新项目</span>
 						</SidebarGroupAction>
 						<SidebarGroupContent>
-							<SidebarMenu>
-								{rest.map((project) => (
-									<SidebarMenuItem key={project.id}>
-										<SidebarMenuButton
-											isActive={location.pathname === `/projects/${project.id}`}
-											tooltip={project.name}
-											render={<NavLink to={`/projects/${project.id}`} />}
-										>
-											<FolderIcon />
-											<span>{project.name}</span>
-										</SidebarMenuButton>
-									</SidebarMenuItem>
-								))}
-							</SidebarMenu>
+							<QueryView
+								query={restQuery}
+								loadKey={shellKeys.projects}
+								skeletonAs="ul"
+								skeletonClassName={SIDEBAR_MENU_CLASS}
+								skeletonLabel="正在加载项目"
+								fallbackCount={3}
+								maxCount={8}
+								skeleton={(index) => <SidebarProjectItem.Skeleton key={index} index={index} />}
+								empty={null}
+								error={() => (
+									<p className="px-2 py-1 text-xs text-muted-foreground" role="alert">
+										项目列表没加载出来
+									</p>
+								)}
+							>
+								{(data) => (
+									<SidebarMenu>
+										{data.items.map((project) => (
+											<SidebarProjectItem
+												key={project.id}
+												project={project}
+												active={location.pathname === `/projects/${project.id}`}
+											/>
+										))}
+									</SidebarMenu>
+								)}
+							</QueryView>
 						</SidebarGroupContent>
 					</SidebarGroup>
 				</SidebarContent>
 				<SidebarFooter>
-					<SidebarMenu>
-						<SidebarMenuItem>
-							<DropdownMenu>
-								<DropdownMenuTrigger
-									render={
-										<SidebarMenuButton
-											size="lg"
-											className="data-open:bg-sidebar-accent data-open:text-sidebar-accent-foreground"
-										/>
-									}
-								>
-									<Avatar className="size-8">
-										<AvatarFallback>{initials}</AvatarFallback>
-									</Avatar>
-									<div className="grid flex-1 text-left text-sm leading-tight">
-										<span className="truncate font-medium">{me.name || "我"}</span>
-										<span className="truncate text-xs text-muted-foreground">{me.email}</span>
-									</div>
-								</DropdownMenuTrigger>
-								<DropdownMenuContent className="w-56" side="top" align="start">
-									<DropdownMenuGroup>
-										<DropdownMenuLabel>{me.email}</DropdownMenuLabel>
-									</DropdownMenuGroup>
-									<DropdownMenuSeparator />
-									<DropdownMenuGroup>
-										<DropdownMenuItem render={<NavLink to="/settings" />}>
-											<SettingsIcon />
-											设置 / MCP
-										</DropdownMenuItem>
-										<DropdownMenuItem variant="destructive" onClick={() => void signOut()}>
-											<LogOutIcon />
-											退出
-										</DropdownMenuItem>
-									</DropdownMenuGroup>
-								</DropdownMenuContent>
-							</DropdownMenu>
-						</SidebarMenuItem>
-					</SidebarMenu>
+					<QueryView
+						query={meQuery}
+						loadKey={shellKeys.me}
+						skeletonAs="ul"
+						skeletonClassName={SIDEBAR_MENU_CLASS}
+						skeletonLabel="正在加载账户"
+						fallbackCount={1}
+						maxCount={1}
+						countOf={() => 1}
+						isEmpty={() => false}
+						skeleton={(index) => <SidebarUserButton.Skeleton key={index} />}
+						empty={null}
+						error={() => (
+							<SidebarMenu>
+								<SidebarUserButton user={null} onSignOut={() => void signOut()} />
+							</SidebarMenu>
+						)}
+					>
+						{(data) => (
+							<SidebarMenu>
+								<SidebarUserButton user={data.user} onSignOut={() => void signOut()} />
+							</SidebarMenu>
+						)}
+					</QueryView>
 				</SidebarFooter>
 				<SidebarRail />
 			</Sidebar>
@@ -380,12 +366,35 @@ export function Shell() {
 						</InputGroup>
 					</form>
 				</header>
+				{shellError ? (
+					<div className="shrink-0 px-4 pt-4">
+						<Alert>
+							<CircleAlertIcon />
+							<AlertTitle>工作台没加载完整</AlertTitle>
+							<AlertDescription>
+								<p>{loadErrorMessage(shellError)}</p>
+								<p>你的登录状态还在，恢复后点重试即可。</p>
+								<Button
+									type="button"
+									size="sm"
+									className="mt-2"
+									disabled={retrying}
+									onClick={() => void retry()}
+								>
+									{retrying ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
+									重试
+								</Button>
+							</AlertDescription>
+						</Alert>
+					</div>
+				) : null}
 				<div className="flex min-h-0 flex-1 flex-col overflow-hidden pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0">
-					<Outlet context={{ projects, reloadProjects: load }} />
+					<Outlet context={outletContext} />
 				</div>
 			</SidebarInset>
 			<MobileBottomNav
 				projects={rest}
+				projectsReady={projectsReady}
 				onNewProject={() => setProjectOpen(true)}
 				onSignOut={() => void signOut()}
 			/>

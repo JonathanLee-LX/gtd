@@ -4,7 +4,7 @@
  * 断网 / 5xx 原地提示 + 重试；reloadProjects = 让 ["projects"] 失效。
  */
 import { QueryClientProvider, useQuery, type QueryClient } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -197,6 +197,9 @@ describe("Shell cold start (#101)", () => {
 
 		await respond((p) => p === "/api/projects", { status: 200, body: PROJECTS });
 		await respond((p) => p === "/api/me", { status: 200, body: ME });
+		// CI 机器慢：等渲染落地再断言
+		await waitFor(() => expect(screen.getByText("jon@example.com")).toBeTruthy());
+		await waitFor(() => expect(screen.getByText("装修房子")).toBeTruthy());
 		expect(screen.queryByLabelText("正在加载项目")).toBeNull();
 		expect(screen.queryByLabelText("正在加载账户")).toBeNull();
 		expect(screen.getByText("装修房子")).toBeTruthy();
@@ -224,8 +227,7 @@ describe("Shell cold start (#101)", () => {
 		const unauthorized: Reply = { status: 401, body: { error: "unauthorized", message: "未登录" } };
 		// 同时返回 401
 		await respond(() => true, unauthorized);
-		await act(flush);
-		expect(screen.getByText("登录页")).toBeTruthy();
+		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
 		expect(loginMounts).toBe(1);
 		expect(locations.filter((p) => p === "/login")).toHaveLength(1);
 		// 401 不重试：一共只发了这三个请求（清缓存也没有引发重新请求）
@@ -239,8 +241,7 @@ describe("Shell cold start (#101)", () => {
 		renderShell(client);
 		await act(flush);
 		await respond(() => true, { status: 401, body: { error: "unauthorized" } });
-		await act(flush);
-		expect(loginMounts).toBe(1);
+		await waitFor(() => expect(loginMounts).toBe(1));
 		expect(readInboxHint()).toBeNull();
 		expect(client.getQueryData(["tasks", "list", { projectId: "inbox" }])).toBeUndefined();
 		expect(client.getQueryData(["me"])).toBeUndefined();
@@ -267,9 +268,8 @@ describe("Shell cold start (#101)", () => {
 			fireEvent.click(await screen.findByRole("menuitem", { name: "退出" }));
 			await flush();
 		});
-		await act(flush);
+		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
 		expect(fetchCalls).toContain("/api/auth/sign-out");
-		expect(screen.getByText("登录页")).toBeTruthy();
 		expect(readInboxHint()).toBeNull();
 		expect(client.getQueryData(["me"])).toBeUndefined();
 		expect(client.getQueryData(["projects"])).toBeUndefined();
@@ -282,7 +282,7 @@ describe("Shell cold start (#101)", () => {
 		await respond((p) => p === "/api/tasks/focus", unauthorized);
 		await respond((p) => p === "/api/me", unauthorized);
 		await respond((p) => p === "/api/projects", unauthorized);
-		expect(loginMounts).toBe(1);
+		await waitFor(() => expect(loginMounts).toBe(1));
 		expect(locations.filter((p) => p === "/login")).toHaveLength(1);
 	});
 
@@ -295,7 +295,7 @@ describe("Shell cold start (#101)", () => {
 			await respond((p) => p === "/api/me" || p === "/api/projects", { status: 503, body: {} });
 			await act(flush);
 		}
-		expect(screen.getByText("工作台没加载完整")).toBeTruthy();
+		await waitFor(() => expect(screen.getByText("工作台没加载完整")).toBeTruthy());
 		expect(screen.getByText("服务器暂时出错了（503），稍后重试。")).toBeTruthy();
 		// 页面照常在（不是白页），也没跳登录页
 		expect(screen.getByText("页面内容")).toBeTruthy();
@@ -310,8 +310,7 @@ describe("Shell cold start (#101)", () => {
 			fireEvent.click(screen.getByRole("button", { name: "重试" }));
 			await flush();
 		});
-		await act(flush);
-		expect(screen.queryByText("工作台没加载完整")).toBeNull();
+		await waitFor(() => expect(screen.queryByText("工作台没加载完整")).toBeNull());
 		expect(screen.getByText("装修房子")).toBeTruthy();
 		expect(screen.getByText("jon@example.com")).toBeTruthy();
 	});
@@ -323,7 +322,7 @@ describe("Shell cold start (#101)", () => {
 			await respond((p) => p === "/api/me" || p === "/api/projects", "network-error");
 			await act(flush);
 		}
-		expect(screen.getByText("网络连接失败，请检查网络后重试。")).toBeTruthy();
+		await waitFor(() => expect(screen.getByText("网络连接失败，请检查网络后重试。")).toBeTruthy());
 		expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
 		expect(loginMounts).toBe(0);
 	});
@@ -347,7 +346,7 @@ describe("Shell cold start (#101)", () => {
 		await act(flush);
 		expect(invalidate).toHaveBeenCalledWith({ queryKey: ["projects"] });
 		expect(fetchCalls.filter((p) => p === "/api/projects")).toHaveLength(1);
-		expect(screen.getByText("论文")).toBeTruthy();
+		await waitFor(() => expect(screen.getByText("论文")).toBeTruthy());
 		// 刷新期间侧栏没出骨架（已有数据）
 		expect(screen.queryByLabelText("正在加载项目")).toBeNull();
 	});

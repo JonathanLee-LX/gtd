@@ -420,3 +420,31 @@ describe("temp task queues every action in order (#90 re-review)", () => {
 		expect(calls).toEqual(["update:real-x:X 改", "complete:real-x"]);
 	});
 });
+
+describe("useCreateTask before /api/projects resolves (#101)", () => {
+	function setupNoProjects() {
+		const wrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={qc}>{children}</QueryClientProvider>
+		);
+		return renderHook(() => useCreateTask([]), { wrapper });
+	}
+
+	afterEach(() => localStorage.clear());
+
+	it("temp row projectId is '' (no stored-hint lookup) and the request has no projectId", async () => {
+		localStorage.setItem("gtd:inbox-project-id", "stored-inbox"); // 有记录也不用
+		api.createTask.mockReturnValueOnce(new Promise(() => {}));
+		const focusKey = taskKeys.focus();
+		qc.setQueryData(focusKey, { today: "2026-10-09", items: [] });
+		const { result } = setupNoProjects();
+		act(() => {
+			void result.current.mutateAsync({ title: "下一步", status: "next" });
+		});
+		const temp = (qc.getQueryData(focusKey) as { items: Task[] }).items;
+		expect(temp).toHaveLength(1);
+		expect(temp[0].projectId).toBe("");
+		expect(temp[0].projectName).toBe("收件箱"); // 服务端默认收件箱，先显示收件箱名
+		await waitFor(() => expect(api.createTask).toHaveBeenCalledTimes(1));
+		expect(api.createTask.mock.calls[0][0]).not.toHaveProperty("projectId");
+	});
+});

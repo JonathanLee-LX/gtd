@@ -56,6 +56,7 @@ import { ResizableSidePanel } from "./ResizableSidePanel";
 import { TaskComposer } from "./TaskComposer";
 import { TaskDetail } from "./TaskDetail";
 import { TaskRow } from "./TaskRow";
+import { LoadErrorRetry } from "./LoadErrorRetry";
 import { QueryView } from "./QueryView";
 import { useTaskDetailLayout } from "../hooks/use-task-detail-layout";
 import { TASK_ROW_ESTIMATE, rowsThatFit } from "../lib/skeleton";
@@ -89,7 +90,7 @@ export function TaskBoard({
 	onDelete,
 	enableInboxProcess = false,
 }: {
-	title: string;
+	title: ReactNode;
 	hint?: string;
 	toolbar?: ReactNode;
 	placeholder: string;
@@ -401,6 +402,8 @@ export function TaskBoard({
 					maxCount={taskSkeletonMax(enableInboxProcess)}
 					skeletonClassName="flex flex-col gap-1"
 					skeletonLabel="正在加载任务"
+					// #101：断网 / 5xx 原地提示 + 重试。
+					error={(err) => <LoadErrorRetry error={err} onRetry={query.refetch} />}
 					skeleton={(index) => (
 						<div key={index} className="flex flex-col gap-1">
 							<TaskRow.Skeleton index={index} />

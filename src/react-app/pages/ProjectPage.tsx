@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useOutletContext, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -13,10 +13,11 @@ import {
 	AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { ArchiveIcon, ArchiveRestoreIcon } from "lucide-react";
 import { toast } from "sonner";
-import { api, type Project } from "../api";
+import { api } from "../api";
 import { TaskBoard } from "../components/TaskBoard";
 import {
 	useCompleteTask,
@@ -24,15 +25,13 @@ import {
 	useDeleteTask,
 	useUpdateTask,
 } from "../hooks/use-task-mutations";
+import { useShellContext } from "../hooks/use-shell-data";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
 
 export function ProjectPage() {
 	const { id } = useParams();
-	const { projects, reloadProjects } = useOutletContext<{
-		projects: Project[];
-		reloadProjects: () => Promise<void>;
-	}>();
+	const { projects, projectsReady, reloadProjects } = useShellContext();
 	const project = projects.find((item) => item.id === id);
 	const queryClient = useQueryClient();
 	const query = useTaskList(
@@ -45,8 +44,33 @@ export function ProjectPage() {
 	const deleteTask = useDeleteTask();
 	const [archiveBusy, setArchiveBusy] = useState(false);
 
-	if (!project) {
+	if (!project && projectsReady) {
 		return <p className="p-6 text-sm text-muted-foreground">找不到这个项目。</p>;
+	}
+	if (!project) {
+		// #101：项目列表还没回来 —— 任务列表请求已经按 URL 里的 id 并行发出；标题先画骨架。
+		return (
+			<TaskBoard
+				title={<Skeleton className="w-fit rounded-sm">项目名称</Skeleton>}
+				placeholder="添加到这个项目"
+				query={query}
+				loadKey={query.queryKey}
+				projects={projects}
+				emptyText="这个项目还没有未完成任务。"
+				onCreate={async (title) => {
+					if (id) await createTask.mutateAsync({ title, projectId: id, status: "next" });
+				}}
+				onSave={async (taskId, patch) => {
+					await updateTask.mutateAsync({ id: taskId, patch });
+				}}
+				onComplete={async (taskId) => {
+					await completeTask.mutateAsync(taskId);
+				}}
+				onDelete={async (taskId) => {
+					await deleteTask.mutateAsync(taskId);
+				}}
+			/>
+		);
 	}
 
 	async function setArchived(archived: boolean) {

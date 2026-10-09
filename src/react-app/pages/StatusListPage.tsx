@@ -1,8 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useOutletContext } from "react-router-dom";
 import { TASK_STATUS_LABELS } from "../../shared/constants";
 import type { TaskStatus } from "../../shared/schemas";
-import type { Project } from "../api";
 import { TaskBoard } from "../components/TaskBoard";
 import {
 	useCompleteTask,
@@ -12,6 +10,7 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
+import { useShellContext } from "../hooks/use-shell-data";
 
 const LIST_COPY: Record<
 	"next" | "waiting" | "scheduled" | "someday",
@@ -40,7 +39,7 @@ const LIST_COPY: Record<
 };
 
 export function StatusListPage({ status }: { status: "next" | "waiting" | "scheduled" | "someday" }) {
-	const { projects } = useOutletContext<{ projects: Project[] }>();
+	const { projects } = useShellContext();
 	const queryClient = useQueryClient();
 	const copy = LIST_COPY[status];
 	const title = TASK_STATUS_LABELS[status as TaskStatus];

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useOutletContext } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,12 +28,14 @@ import {
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { api, type Project, type Task } from "../api";
+import { api, type Task } from "../api";
 import { silentInvalidateTasks } from "../lib/task-cache";
 import {
 	InboxProcessActions,
 	type InboxProcessAction,
 } from "../components/InboxProcessActions";
+import { useShellContext } from "../hooks/use-shell-data";
+import { projectPickerItems } from "../lib/project-items";
 
 type StepId = "inbox" | "waiting" | "someday" | "projects" | "done";
 
@@ -59,7 +61,7 @@ async function fetchAllByStatus(status: string): Promise<Task[]> {
 
 export function ReviewPage() {
 	const queryClient = useQueryClient();
-	const { projects } = useOutletContext<{ projects: Project[] }>();
+	const { projects, projectsReady } = useShellContext();
 	const activeProjects = useMemo(
 		() => projects.filter((p) => !p.isInbox && !p.archivedAt),
 		[projects],
@@ -264,10 +266,10 @@ export function ReviewPage() {
 					) : (
 						<ul className="flex flex-col gap-3">
 							{inbox.map((task) => {
-								const projectItems = projects.map((p) => ({
-									value: p.id,
-									label: p.name,
-								}));
+								const projectItems = projectPickerItems(projects, {
+									id: task.projectId,
+									name: task.projectName,
+								});
 								const selectedProject = inboxProjectId[task.id] ?? task.projectId;
 								return (
 									<li
@@ -285,6 +287,7 @@ export function ReviewPage() {
 												<Select
 													items={projectItems}
 													value={selectedProject}
+													disabled={!projectsReady}
 													onValueChange={(value) =>
 														setInboxProjectId((prev) => ({
 															...prev,
@@ -497,7 +500,12 @@ export function ReviewPage() {
 						</div>
 						<Badge variant="outline">{projectsMissingNext.length}</Badge>
 					</div>
-					{activeProjects.length === 0 ? (
+					{!projectsReady ? (
+						<div className="flex items-center gap-3 text-sm text-muted-foreground" role="status">
+							<Spinner />
+							正在加载项目…
+						</div>
+					) : activeProjects.length === 0 ? (
 						<Empty className="border">
 							<EmptyHeader>
 								<EmptyMedia variant="icon">

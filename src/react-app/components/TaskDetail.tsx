@@ -32,6 +32,7 @@ import type { TaskPriority, TaskStatus } from "../../shared/schemas";
 import { api, type Activity, type Project, type Tag, type Task } from "../api";
 import { activityTimeLabel, sourceLabel } from "../lib/format";
 import { isTempTaskId } from "../lib/pending-creates";
+import { projectPickerItems } from "../lib/project-items";
 import { sameTask } from "../lib/task-mutation-lock";
 import { TaskAttachments } from "./TaskAttachments";
 
@@ -132,10 +133,9 @@ export function TaskDetail({
 	const savingRef = useRef(0);
 	const pendingCreate = isTempTaskId(task.id);
 	const [confirmOpen, setConfirmOpen] = useState(false);
-	const projectItems = projects.map((project) => ({
-		value: project.id,
-		label: project.name,
-	}));
+	// #101：冷启动时项目列表可能还没回来 —— 先放上当前项目、禁用选择框，不报错。
+	const projectsLoading = projects.length === 0;
+	const projectItems = projectPickerItems(projects, { id: task.projectId, name: task.projectName });
 
 	const parentItems = useMemo(() => {
 		const parentOf = new Map(tasks.map((item) => [item.id, item.parentId]));
@@ -332,6 +332,7 @@ export function TaskDetail({
 					<Select
 						items={projectItems}
 						value={projectId}
+						disabled={projectsLoading}
 						onValueChange={(value) => setProjectId(String(value))}
 					>
 						<SelectTrigger className="w-full">

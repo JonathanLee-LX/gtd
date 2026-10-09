@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useOutletContext } from "react-router-dom";
+import { Link } from "react-router-dom";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -43,7 +43,8 @@ import { loadErrorMessage } from "../lib/load-state";
 import { settingsKeys } from "../lib/settings-keys";
 import { SOFT_DELETE_RETENTION_DAYS } from "../../shared/constants";
 import { statusLabel } from "../lib/format";
-import { api, type Project, type Task } from "../api";
+import { api, type Task } from "../api";
+import { useShellContext } from "../hooks/use-shell-data";
 
 type TokenRow = {
 	id: string;
@@ -71,10 +72,7 @@ function deletedOn(value: string | null) {
 }
 
 export function SettingsPage() {
-	const { projects, reloadProjects } = useOutletContext<{
-		projects: Project[];
-		reloadProjects: () => Promise<void>;
-	}>();
+	const { projects, projectsReady, projectsError, reloadProjects } = useShellContext();
 	const queryClient = useQueryClient();
 	// #99：设置页列表改用查询缓存 —— 再次进入直接显示上次数据（后台刷新），只有冷加载才出骨架。
 	const tokensQuery = useQuery({
@@ -316,48 +314,61 @@ export function SettingsPage() {
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="flex flex-col gap-4">
-					{archivedProjects.length === 0 ? (
-						<p className="text-sm text-muted-foreground">没有已归档的项目。</p>
-					) : (
-						<div className="flex flex-col gap-2">
-							{archivedProjects.map((project) => (
-								<div
-									key={project.id}
-									className="flex items-center justify-between gap-3 rounded-lg border px-3 py-3"
-								>
-									<div className="min-w-0">
-										<Link
-											to={`/projects/${project.id}`}
-											className="block truncate font-medium hover:underline"
-										>
-											{project.name}
-										</Link>
-										{project.archivedAt ? (
-											<div className="mt-1">
-												<Badge variant="outline">
-													归档于 {project.archivedAt.slice(0, 10)}
-												</Badge>
-											</div>
-										) : null}
-									</div>
-									<Button
-										type="button"
-										variant="outline"
-										size="sm"
-										disabled={unarchivingId === project.id}
-										onClick={() => void unarchive(project.id)}
+					{/* #101：项目列表还没回来时出骨架，不先显示「没有已归档的项目」。 */}
+					<QueryView
+						query={{ data: projectsReady ? { items: archivedProjects } : undefined, error: projectsError }}
+						loadKey={["projects", "archived"]}
+						fallbackCount={1}
+						maxCount={10}
+						skeletonClassName="flex flex-col gap-2"
+						skeletonLabel="正在加载已归档项目"
+						skeleton={(index) => (
+							<SettingsListItem.Skeleton key={index} index={index} actionLabel="取消归档" />
+						)}
+						empty={<p className="text-sm text-muted-foreground">没有已归档的项目。</p>}
+						error={(err) => <LoadAlert message={loadErrorMessage(err)} />}
+					>
+						{(data) => (
+							<div className="flex flex-col gap-2">
+								{data.items.map((project) => (
+									<div
+										key={project.id}
+										className="flex items-center justify-between gap-3 rounded-lg border px-3 py-3"
 									>
-										{unarchivingId === project.id ? (
-											<Spinner data-icon="inline-start" />
-										) : (
-											<ArchiveRestoreIcon data-icon="inline-start" />
-										)}
-										取消归档
-									</Button>
-								</div>
-							))}
-						</div>
-					)}
+										<div className="min-w-0">
+											<Link
+												to={`/projects/${project.id}`}
+												className="block truncate font-medium hover:underline"
+											>
+												{project.name}
+											</Link>
+											{project.archivedAt ? (
+												<div className="mt-1">
+													<Badge variant="outline">
+														归档于 {project.archivedAt.slice(0, 10)}
+													</Badge>
+												</div>
+											) : null}
+										</div>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											disabled={unarchivingId === project.id}
+											onClick={() => void unarchive(project.id)}
+										>
+											{unarchivingId === project.id ? (
+												<Spinner data-icon="inline-start" />
+											) : (
+												<ArchiveRestoreIcon data-icon="inline-start" />
+											)}
+											取消归档
+										</Button>
+									</div>
+								))}
+							</div>
+						)}
+					</QueryView>
 					<p className="flex items-center gap-1.5 text-xs text-muted-foreground">
 						<FolderArchiveIcon className="size-3.5" />
 						网页与 MCP 走同一套 ProjectService；收件箱不能归档。

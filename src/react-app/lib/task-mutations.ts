@@ -36,6 +36,7 @@ import {
 	type TaskSnapshot,
 } from "./task-cache";
 import { TASK_MUTATION_KEY } from "./task-mutation-lock";
+import { INBOX_NAME } from "../../shared/constants";
 
 export function mutationErrorMessage(err: unknown, fallback: string) {
 	if (err instanceof TypeError) return `${fallback}：网络连接失败，请检查网络后重试`;
@@ -123,7 +124,8 @@ export function buildOptimisticTask(
 		startAt: str(body.startAt),
 		waitingOn: str(body.waitingOn),
 		projectId,
-		projectName: project?.name ?? "",
+		// 没指定项目 = 服务端放进收件箱（getInbox）：项目列表还没回来时也先显示收件箱名。
+		projectName: project?.name ?? (typeof body.projectId === "string" && body.projectId ? "" : INBOX_NAME),
 		parentId: str(body.parentId),
 		// 来源由服务端按入口写入；临时行不猜，详情页在拿到真实记录前不显示来源。
 		source: null,
@@ -143,6 +145,7 @@ export function createTaskMutationOptions(
 		mutationFn: (body) => api.createTask(stripSourceFromBody(body)),
 		// 同步插入：不 await cancelQueries，点下去当帧就能看到。进行中的刷新由 withPendingCreates 补齐。
 		onMutate: (body) => {
+			// #101：项目列表没回来时临时行 projectId 为 ''（不用记住的收件箱 id）；请求体不带 projectId，以服务端为准。
 			const task = buildOptimisticTask(body, getProjects());
 			registerPendingCreate(task);
 			upsertTaskInCaches(queryClient, task);

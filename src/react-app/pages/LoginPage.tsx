@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -24,10 +25,13 @@ import {
 	passkeySignInErrorMessage,
 } from "../lib/passkey";
 import { createPasskeyAutofillController, type PasskeyAutofillController } from "../lib/passkey-autofill";
+import { clearClientSession } from "../lib/client-session";
 import { hasActiveSession } from "../lib/session";
+import { shellKeys } from "../lib/shell-keys";
 
 export function LoginPage() {
 	const navigate = useNavigate();
+	const queryClient = useQueryClient();
 	const [signupEnabled, setSignupEnabled] = useState(false);
 	const [mode, setMode] = useState<"in" | "up">("in");
 	const [name, setName] = useState("");
@@ -45,7 +49,15 @@ export function LoginPage() {
 
 	useEffect(() => {
 		let cancelled = false;
-		void hasActiveSession(api.me).then((active) => {
+		// #101：外壳数据（me / projects / 任务列表）进了查询缓存，回到登录页（401、退出、换账号）时清掉，
+		// 下一个登录的人不会先看到上一个人的缓存。收件箱 id 提示同理。
+		clearClientSession(queryClient);
+		void hasActiveSession(async () => {
+			const me = await api.me();
+			// 已登录 → 直接进工作台；顺手把 me 放进缓存，外壳不用再请求一次。
+			if (!cancelled) queryClient.setQueryData(shellKeys.me, me);
+			return me;
+		}).then((active) => {
 			if (cancelled) return;
 			if (active) navigate("/today", { replace: true });
 			else setCheckingSession(false);
@@ -53,7 +65,7 @@ export function LoginPage() {
 		return () => {
 			cancelled = true;
 		};
-	}, [navigate]);
+	}, [navigate, queryClient]);
 
 	useEffect(() => {
 		let cancelled = false;

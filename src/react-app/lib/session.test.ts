@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { ApiError, hasActiveSession, isUnauthorized, loadErrorMessage, shellLoadOutcome } from "./session";
+import {
+	ApiError,
+	createLoginRedirectOnce,
+	hasActiveSession,
+	isUnauthorized,
+	loadErrorMessage,
+	shellLoadOutcome,
+	shouldRetryQuery,
+} from "./session";
 
 describe("shellLoadOutcome (#82)", () => {
 	it("sends the user to /login only on 401", () => {
@@ -49,5 +57,40 @@ describe("hasActiveSession (LoginPage auto-enter)", () => {
 		expect(await hasActiveSession(async () => Promise.reject(new ApiError("未登录", 401)))).toBe(false);
 		expect(await hasActiveSession(async () => Promise.reject(new ApiError("boom", 503)))).toBe(false);
 		expect(await hasActiveSession(async () => Promise.reject(new TypeError("Failed to fetch")))).toBe(false);
+	});
+});
+
+describe("createLoginRedirectOnce (#101)", () => {
+	it("redirects once even when me / projects / list all 401 at the same time", () => {
+		let redirects = 0;
+		const handle = createLoginRedirectOnce(() => {
+			redirects += 1;
+		});
+		const unauthorized = () => new ApiError("未登录", 401, "unauthorized");
+		expect(handle(unauthorized())).toBe(true);
+		expect(handle(unauthorized())).toBe(true);
+		expect(handle(unauthorized())).toBe(true);
+		expect(redirects).toBe(1);
+	});
+
+	it("ignores offline / 5xx (handled in place with retry)", () => {
+		let redirects = 0;
+		const handle = createLoginRedirectOnce(() => {
+			redirects += 1;
+		});
+		expect(handle(new ApiError("boom", 503))).toBe(false);
+		expect(handle(new TypeError("Failed to fetch"))).toBe(false);
+		expect(redirects).toBe(0);
+	});
+});
+
+describe("shouldRetryQuery (#101)", () => {
+	it("never retries 401 so the login redirect is immediate", () => {
+		expect(shouldRetryQuery(0, new ApiError("未登录", 401))).toBe(false);
+	});
+	it("retries offline / 5xx once", () => {
+		expect(shouldRetryQuery(0, new ApiError("boom", 500))).toBe(true);
+		expect(shouldRetryQuery(1, new ApiError("boom", 500))).toBe(false);
+		expect(shouldRetryQuery(0, new TypeError("Failed to fetch"))).toBe(true);
 	});
 });

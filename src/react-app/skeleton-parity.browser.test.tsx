@@ -11,11 +11,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import type { Attachment, Project, Task } from "./api";
 import { SettingsListItem } from "./components/SettingsListItem";
+import { SidebarProjectItem, SidebarUserButton } from "./components/ShellSidebarItems";
 import { TaskAttachments } from "./components/TaskAttachments";
 import { TaskBoard } from "./components/TaskBoard";
 import { TaskRow } from "./components/TaskRow";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SidebarMenu, SidebarProvider } from "@/components/ui/sidebar";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { attachmentKeys } from "./lib/attachment-service";
 import { writeSkeletonCount } from "./lib/skeleton";
 import { taskKeys } from "./lib/task-query-keys";
@@ -208,6 +211,60 @@ for (const vp of [
 			const skelRow = rect(skelView.container.querySelector('[data-testid="skeleton-list"] li'));
 			expect(realRow.height).toBeGreaterThan(40);
 			expect(Math.abs(realRow.height - skelRow.height)).toBeLessThanOrEqual(2);
+		});
+
+		it("sidebar project item skeleton matches a real item (±2px) (#101)", () => {
+			const view = render(
+				<Providers>
+					<TooltipProvider>
+						<SidebarProvider>
+							<div style={{ width: 256 }}>
+								<SidebarMenu data-real>
+									<SidebarProjectItem
+										project={{ ...projects[0], id: "p1", name: "装修房子", isInbox: false }}
+										active={false}
+									/>
+								</SidebarMenu>
+								<SidebarMenu data-skel>
+									<SidebarProjectItem.Skeleton index={0} />
+								</SidebarMenu>
+							</div>
+						</SidebarProvider>
+					</TooltipProvider>
+				</Providers>,
+			);
+			const real = rect(view.container.querySelector("[data-real] li"));
+			const skel = rect(view.container.querySelector("[data-skel] li"));
+			expect(real.height).toBeGreaterThan(24); // 真有布局（h-8）
+			expect(Math.abs(real.height - skel.height)).toBeLessThanOrEqual(2);
+			expect(Math.abs(real.width - skel.width)).toBeLessThanOrEqual(2);
+		});
+
+		it("sidebar user button skeleton matches the real button (±2px) (#101)", () => {
+			const view = render(
+				<Providers>
+					<TooltipProvider>
+						<SidebarProvider>
+							<div style={{ width: 256 }}>
+								<SidebarMenu data-real>
+									<SidebarUserButton
+										user={{ id: "u1", email: "jonathanleelx@gmail.com", name: "Jonathan" }}
+										onSignOut={() => {}}
+									/>
+								</SidebarMenu>
+								<SidebarMenu data-skel>
+									<SidebarUserButton.Skeleton />
+								</SidebarMenu>
+							</div>
+						</SidebarProvider>
+					</TooltipProvider>
+				</Providers>,
+			);
+			const real = rect(view.container.querySelector("[data-real] li"));
+			const skel = rect(view.container.querySelector("[data-skel] li"));
+			expect(real.height).toBeGreaterThan(40); // 真有布局（h-12）
+			expect(Math.abs(real.height - skel.height)).toBeLessThanOrEqual(2);
+			expect(Math.abs(real.width - skel.width)).toBeLessThanOrEqual(2);
 		});
 
 		it("settings card row skeleton matches a real row (±2px)", () => {

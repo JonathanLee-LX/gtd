@@ -9,6 +9,7 @@ import {
 	SheetHeader,
 	SheetTitle,
 } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
 	CalendarClockIcon,
@@ -57,11 +58,13 @@ function isMoreRoute(pathname: string) {
 
 type MobileBottomNavProps = {
 	projects: Project[];
+	/** #101：项目列表还没回来时显示骨架，而不是「还没有项目」。默认 true。 */
+	projectsReady?: boolean;
 	onNewProject: () => void;
 	onSignOut: () => void;
 };
 
-export function MobileBottomNav({ projects, onNewProject, onSignOut }: MobileBottomNavProps) {
+export function MobileBottomNav({ projects, projectsReady = true, onNewProject, onSignOut }: MobileBottomNavProps) {
 	const location = useLocation();
 	const navigate = useNavigate();
 	const [moreOpen, setMoreOpen] = useState(false);
@@ -167,7 +170,16 @@ export function MobileBottomNav({ projects, onNewProject, onSignOut }: MobileBot
 								新项目
 							</Button>
 						</div>
-						{projects.length === 0 ? (
+						{!projectsReady ? (
+							<ul className="flex flex-col gap-0.5" role="status" aria-busy="true" aria-label="正在加载项目">
+								{[0, 1].map((index) => (
+									<li key={index} aria-hidden className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm">
+										<Skeleton className="size-4 shrink-0 rounded-sm" />
+										<Skeleton className="rounded-sm">{index === 0 ? "装修房子" : "季度报告"}</Skeleton>
+									</li>
+								))}
+							</ul>
+						) : projects.length === 0 ? (
 							<p className="px-3 py-2 text-sm text-muted-foreground">还没有项目。</p>
 						) : (
 							<ul className="flex flex-col gap-0.5">

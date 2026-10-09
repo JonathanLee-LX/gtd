@@ -60,6 +60,7 @@ app.all("/mcp", (c) => handleMcp(c.req.raw, c.env));
 app.all("/mcp/*", (c) => handleMcp(c.req.raw, c.env));
 
 // 未知 API 保持 404；其余交给静态资源（SPA 回退由 assets.not_found_handling 处理）。
+// 带哈希的 /assets/* 不经过 Worker（wrangler.json run_worker_first 排除），直接由资源层返回。
 app.all("/api/*", (c) => c.notFound());
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 

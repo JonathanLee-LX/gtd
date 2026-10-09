@@ -37,7 +37,9 @@ pnpm run deploy
 
 线上地址：https://gtd.livs.top
 
-旧地址 `https://gtd.jonathanleelx.workers.dev` 只为兼容保留：页面会 301 跳到 gtd.livs.top（登录接口 308），`/mcp` 和带 Bearer Token 的 `/api/*` 在旧地址上仍可用，但新配置请一律用 gtd.livs.top。登录 cookie 只认 gtd.livs.top，这样浏览器、桌面端、手机只有一份登录态（#82）。
+旧地址 `https://gtd.jonathanleelx.workers.dev` 只为兼容保留：页面会 307 跳到 gtd.livs.top（登录接口 308），`/mcp` 和带 Bearer Token 的 `/api/*` 在旧地址上仍可用，但新配置请一律用 gtd.livs.top。登录 cookie 只认 gtd.livs.top，这样浏览器、桌面端、手机只有一份登录态（#82）。
+
+**登录只能在 https://gtd.livs.top 上进行**：workers.dev 旧地址和 Cloudflare 预览地址（`<版本>-gtd.<子域>.workers.dev`）上登录不可用（不在 trustedOrigins 里），请改用 gtd.livs.top。
 
 产品内 AI 走 Cloudflare Workers AI（`wrangler.json` 里已绑定 `AI`），不需要外部 API key。模型在 `src/worker/services/ai.ts` 的 `AI_MODEL` 常量里可换。
 

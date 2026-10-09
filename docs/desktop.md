@@ -4,7 +4,9 @@ Desktop v1 is a **thin native window** that loads the **production** GTD web app
 
 `https://gtd.livs.top`
 
-(Before #82 the shell loaded `gtd.jonathanleelx.workers.dev`. That host now 301-redirects pages to `gtd.livs.top`, and session cookies only live on `gtd.livs.top`, so an **old desktop build will ask you to log in once more**. Rebuild with `pnpm desktop:build` to pick up the new URL.)
+(Before #82 the shell loaded `gtd.jonathanleelx.workers.dev`. That host now 307-redirects pages to `gtd.livs.top`, and session cookies only live on `gtd.livs.top`, so an **old desktop build will ask you to log in once more**. Rebuild with `pnpm desktop:build` to pick up the new URL.)
+
+**Login only works on `https://gtd.livs.top`.** Signing in on `gtd.jonathanleelx.workers.dev` or on Cloudflare preview URLs (`<version>-gtd.<subdomain>.workers.dev`) is not supported (those origins are not trusted) — use gtd.livs.top.
 
 There is no second API base URL, no duplicated `TaskService`, and the client must not set `source` (unchanged — server still sets `human` for the web session).
 

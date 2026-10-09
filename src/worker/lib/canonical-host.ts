@@ -4,7 +4,8 @@
  * 旧入口 gtd.<账号>.workers.dev 仍然开着（workers_dev: true），但 cookie 是按主机名存的，
  * 两个域名各有一份登录态，于是「换个入口就要重新登录」。这里把旧入口导到正式域名：
  *
- * - 页面 / 静态资源（GET、HEAD）：301 永久跳转，保留路径和查询串。
+ * - 页面 / 根目录静态文件（GET、HEAD）：307 临时跳转，保留路径和查询串。不用 301：浏览器会长期缓存，
+ *   将来想撤回就难了。带哈希的 /assets/* 不经过 Worker（run_worker_first 排除），两个域名都直接返回，无害。
  * - 其它方法的非 API 请求：308（保留方法和请求体）。
  * - /api/auth/*：308。登录只在正式域名上发生，旧域名上不再签发新的 cookie。
  * - /mcp、/mcp/*、其余 /api/*：两个域名都照常服务，不跳转。这些入口用 Bearer Token，
@@ -57,6 +58,6 @@ export function legacyHostRedirect(request: Request, configuredBaseUrl: string |
 
 	const location = `${target}${pathname}${url.search}`;
 	const method = request.method.toUpperCase();
-	const status = isAuthPath(pathname) || (method !== "GET" && method !== "HEAD") ? 308 : 301;
+	const status = isAuthPath(pathname) || (method !== "GET" && method !== "HEAD") ? 308 : 307;
 	return new Response(null, { status, headers: { Location: location } });
 }

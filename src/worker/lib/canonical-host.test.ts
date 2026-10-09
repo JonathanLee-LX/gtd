@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import worker from "../index";
 import type { WorkerEnv } from "./auth";
@@ -34,13 +36,13 @@ describe("canonicalOrigin", () => {
 });
 
 describe("legacyHostRedirect", () => {
-	it("301s page navigations to gtd.livs.top keeping path + query", () => {
-		for (const path of ["/", "/today", "/projects/abc?tab=1&x=%E4%B8%AD", "/login", "/assets/index-abc.js"]) {
+	it("307s (temporary, not cached long-term) page navigations to gtd.livs.top keeping path + query", () => {
+		for (const path of ["/", "/today", "/projects/abc?tab=1&x=%E4%B8%AD", "/login", "/vite.svg"]) {
 			const res = redirectOf(`${LEGACY}${path}`);
-			expect(res?.status).toBe(301);
+			expect(res?.status).toBe(307);
 			expect(res?.headers.get("Location")).toBe(`${CANONICAL}${path}`);
 		}
-		expect(redirectOf(`${LEGACY}/today`, { method: "HEAD" })?.status).toBe(301);
+		expect(redirectOf(`${LEGACY}/today`, { method: "HEAD" })?.status).toBe(307);
 	});
 
 	it("308s auth endpoints so no new session cookie is minted on workers.dev", () => {
@@ -61,8 +63,8 @@ describe("legacyHostRedirect", () => {
 		expect(redirectOf(`${LEGACY}/api/tasks`, { method: "POST", body: "{}" })).toBeNull();
 		expect(redirectOf(`${LEGACY}/api/health`)).toBeNull();
 		// 前缀相似但不是 /mcp、/api 的页面照常跳转
-		expect(redirectOf(`${LEGACY}/mcpx`)?.status).toBe(301);
-		expect(redirectOf(`${LEGACY}/apix`)?.status).toBe(301);
+		expect(redirectOf(`${LEGACY}/mcpx`)?.status).toBe(307);
+		expect(redirectOf(`${LEGACY}/apix`)?.status).toBe(307);
 	});
 
 	it("never redirects the canonical host, previews, or local dev", () => {
@@ -97,7 +99,7 @@ describe("worker fetch wiring", () => {
 	it("redirects workers.dev pages before touching assets", async () => {
 		assetCalls.length = 0;
 		const res = await call(`${LEGACY}/today?view=1`);
-		expect(res.status).toBe(301);
+		expect(res.status).toBe(307);
 		expect(res.headers.get("Location")).toBe(`${CANONICAL}/today?view=1`);
 		expect(assetCalls).toEqual([]);
 	});
@@ -118,5 +120,17 @@ describe("worker fetch wiring", () => {
 		const missing = await call(`${CANONICAL}/api/nope`);
 		expect(missing.status).toBe(404);
 		expect(assetCalls).toEqual([]);
+	});
+});
+
+describe("wrangler.json assets routing", () => {
+	it("runs the Worker first for everything except hashed /assets/* (served directly on both hosts)", () => {
+		const config = JSON.parse(readFileSync(resolve(process.cwd(), "wrangler.json"), "utf8")) as {
+			assets: { binding: string; run_worker_first: unknown };
+			vars: Record<string, string>;
+		};
+		expect(config.assets.run_worker_first).toEqual(["/*", "!/assets/*"]);
+		expect(config.assets.binding).toBe("ASSETS");
+		expect(config.vars.BETTER_AUTH_URL).toBe("https://gtd.livs.top");
 	});
 });

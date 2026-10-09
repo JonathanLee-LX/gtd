@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -60,7 +60,6 @@ function typeLabel(item: Attachment) {
  */
 export function TaskAttachments({ taskId }: { taskId: string }) {
 	const queryClient = useQueryClient();
-	const inputRef = useRef<HTMLInputElement>(null);
 	const [uploads, setUploads] = useState<UploadItem[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [preview, setPreview] = useState<Attachment | null>(null);
@@ -78,6 +77,7 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 	});
 	const items = query.data?.items ?? [];
 	const uploading = uploads.some((item) => !item.error);
+	const pickerDisabled = uploading || items.length >= MAX_ATTACHMENTS_PER_TASK;
 
 	function patchUpload(key: string, patch: Partial<UploadItem>) {
 		setUploads((current) => current.map((item) => (item.key === key ? { ...item, ...patch } : item)));
@@ -169,31 +169,38 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 						{items.length}/{MAX_ATTACHMENTS_PER_TASK}
 					</span>
 				</p>
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					disabled={uploading || items.length >= MAX_ATTACHMENTS_PER_TASK}
-					onClick={() => inputRef.current?.click()}
+				{/*
+				  #89：不用 JS 转发（button.onClick → input.click()）。整个可见「按钮」就是 <label>，
+				  input 嵌在 label 里，用户点击由浏览器原生激活 file input，不依赖 ref / 用户激活传递，
+				  各浏览器、WebView 行为一致。input 只做视觉隐藏（sr-only），不用 display:none / hidden。
+				*/}
+				<label
+					data-testid="attachment-picker"
+					aria-disabled={pickerDisabled || undefined}
+					className={cn(
+						buttonVariants({ variant: "outline", size: "sm" }),
+						"relative cursor-pointer has-[:focus-visible]:border-ring has-[:focus-visible]:ring-3 has-[:focus-visible]:ring-ring/50",
+						pickerDisabled && "pointer-events-none cursor-not-allowed opacity-50",
+					)}
 				>
 					{uploading ? <Spinner data-icon="inline-start" /> : <PaperclipIcon data-icon="inline-start" />}
 					添加附件
-				</Button>
-				<input
-					ref={inputRef}
-					type="file"
-					accept={ATTACHMENT_INPUT_ACCEPT}
-					multiple
-					className="sr-only"
-					tabIndex={-1}
-					aria-label="选择图片或 PDF"
-					data-testid="attachment-input"
-					onChange={(event) => {
-						const files = Array.from(event.target.files ?? []);
-						event.target.value = "";
-						void handleFiles(files);
-					}}
-				/>
+					<input
+						type="file"
+						accept={ATTACHMENT_INPUT_ACCEPT}
+						multiple
+						disabled={pickerDisabled}
+						className="sr-only"
+						aria-label="添加附件（图片或 PDF）"
+						data-testid="attachment-input"
+						onChange={(event) => {
+							const files = Array.from(event.target.files ?? []);
+							// 清空 value，同一个文件再选一次也会触发 change。
+							event.target.value = "";
+							void handleFiles(files);
+						}}
+					/>
+				</label>
 			</div>
 			<p className="text-xs text-muted-foreground">
 				图片或 PDF，单个不超过 {formatLimitBytes(MAX_ATTACHMENT_BYTES)}。手机上可直接拍照或从相册选。

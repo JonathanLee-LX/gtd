@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { legacyHostRedirect } from "../lib/canonical-host";
 import { contentDisposition, parseByteRange, toAttachmentDto } from "./attachments";
 
 describe("attachment routes helpers", () => {
@@ -36,5 +37,18 @@ describe("attachment routes helpers", () => {
 		expect(dto).not.toHaveProperty("r2Key");
 		expect(dto).not.toHaveProperty("userId");
 		expect(dto.contentUrl).toBe("/api/attachments/a1/content");
+	});
+
+	it("is served on the legacy workers.dev host without redirect (#82 rules: /api/* not redirected)", () => {
+		const base = "https://gtd.example.workers.dev";
+		for (const [method, path] of [
+			["GET", "/api/tasks/t1/attachments"],
+			["POST", "/api/tasks/t1/attachments/uploads"],
+			["PUT", "/api/attachments/uploads/u1/content"],
+			["GET", "/api/attachments/a1/content"],
+			["DELETE", "/api/tasks/t1/attachments/a1"],
+		]) {
+			expect(legacyHostRedirect(new Request(base + path, { method }), "https://gtd.livs.top")).toBeNull();
+		}
 	});
 });

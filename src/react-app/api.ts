@@ -1,4 +1,7 @@
 import type { TaskDraft, TaskPriority, TaskStatus, UpdateProjectInput } from "../shared/schemas";
+import { ApiError } from "./lib/session";
+
+export { ApiError } from "./lib/session";
 
 export type Tag = { id: string; name: string };
 
@@ -60,18 +63,6 @@ export type AttachmentUploadTicket = {
 	kind: "image" | "file";
 	expiresAt: string;
 };
-
-/** 服务端错误：保留 HTTP 状态和 code，前端可按 code 出文案。 */
-export class ApiError extends Error {
-	constructor(
-		message: string,
-		public readonly status: number,
-		public readonly code?: string,
-	) {
-		super(message);
-		this.name = "ApiError";
-	}
-}
 
 export type Me = { user: { id: string; email: string; name: string }; source: string };
 

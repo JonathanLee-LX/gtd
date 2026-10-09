@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "dev.jonathanleelx.gtd",
   "build": {
-    "devUrl": "https://gtd.jonathanleelx.workers.dev",
-    "frontendDist": "https://gtd.jonathanleelx.workers.dev"
+    "devUrl": "https://gtd.livs.top",
+    "frontendDist": "https://gtd.livs.top"
   },
   "app": {
     "withGlobalTauri": false,

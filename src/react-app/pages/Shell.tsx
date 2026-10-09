@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -48,6 +49,7 @@ import { Spinner } from "@/components/ui/spinner";
 import {
 	CalendarClockIcon,
 	CalendarDaysIcon,
+	CircleAlertIcon,
 	ClipboardCheckIcon,
 	ClockIcon,
 	CloudyIcon,
@@ -56,11 +58,13 @@ import {
 	ListTodoIcon,
 	LogOutIcon,
 	PlusIcon,
+	RefreshCwIcon,
 	SearchIcon,
 	SettingsIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Me, type Project } from "../api";
+import { shellLoadOutcome } from "../lib/session";
 import { MobileBottomNav } from "../components/MobileBottomNav";
 import { MobileQuickCollect } from "../components/MobileQuickCollect";
 
@@ -73,14 +77,33 @@ export function Shell() {
 	const [projectName, setProjectName] = useState("");
 	const [creating, setCreating] = useState(false);
 	const [query, setQuery] = useState("");
+	const [loadError, setLoadError] = useState<string | null>(null);
+	const [retrying, setRetrying] = useState(false);
 
+	// #82：只有 401（真没登录 / 会话过期）才回登录页；断网、5xx 原地提示重试，不当成退出。
 	async function load() {
 		try {
 			const [meRes, projectRes] = await Promise.all([api.me(), api.projects()]);
 			setMe(meRes.user);
 			setProjects(projectRes.items);
-		} catch {
-			navigate("/login");
+			setLoadError(null);
+		} catch (err) {
+			const outcome = shellLoadOutcome(err);
+			if (outcome.kind === "login") {
+				navigate("/login", { replace: true });
+				return;
+			}
+			if (me) toast.error(outcome.message);
+			else setLoadError(outcome.message);
+		}
+	}
+
+	async function retry() {
+		setRetrying(true);
+		try {
+			await load();
+		} finally {
+			setRetrying(false);
 		}
 	}
 
@@ -107,8 +130,39 @@ export function Shell() {
 	}
 
 	async function signOut() {
-		await api.signOut();
-		navigate("/login");
+		try {
+			await api.signOut();
+		} catch (err) {
+			// 退出没成功（如断网）就别假装退出：会话还在，登录页会直接把人送回来。
+			toast.error(err instanceof Error ? `退出失败：${err.message}` : "退出失败，请重试");
+			return;
+		}
+		navigate("/login", { replace: true });
+	}
+
+	if (!me && loadError) {
+		return (
+			<div className="flex min-h-svh items-center justify-center p-6">
+				<Alert className="w-full max-w-md">
+					<CircleAlertIcon />
+					<AlertTitle>工作台暂时打不开</AlertTitle>
+					<AlertDescription>
+						<p>{loadError}</p>
+						<p>你的登录状态还在，恢复后点重试即可。</p>
+						<Button
+							type="button"
+							size="sm"
+							className="mt-2"
+							disabled={retrying}
+							onClick={() => void retry()}
+						>
+							{retrying ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
+							重试
+						</Button>
+					</AlertDescription>
+				</Alert>
+			</div>
+		);
 	}
 
 	if (!me) {

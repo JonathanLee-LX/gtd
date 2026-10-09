@@ -52,6 +52,7 @@ import {
 	InboxProcessActions,
 	type InboxProcessAction,
 } from "./InboxProcessActions";
+import { ResizableSidePanel } from "./ResizableSidePanel";
 import { TaskComposer } from "./TaskComposer";
 import { TaskDetail } from "./TaskDetail";
 import { TaskRow } from "./TaskRow";
@@ -459,10 +460,8 @@ export function TaskBoard({
 				</Sheet>
 			) : selected ? (
 				// 只在 ≥ 1024px 渲染（useTaskDetailLayout），不再靠 `hidden lg:flex` 隐藏（#94）。
-				<aside
-					aria-label="任务详情"
-					className="flex w-full max-w-md shrink-0 flex-col border-l bg-card"
-				>
+				// #96：左边缘可拖拽调宽，宽度记在 localStorage，所有页面共用这一个边栏组件。
+				<ResizableSidePanel aria-label="任务详情" id="task-detail-panel">
 					<Card className="size-full rounded-none ring-0">
 						<CardHeader>
 							<CardTitle>任务详情</CardTitle>
@@ -470,7 +469,7 @@ export function TaskBoard({
 						<Separator />
 						<CardContent ref={attachDetailHost} className="flex min-h-0 flex-1 flex-col" />
 					</Card>
-				</aside>
+				</ResizableSidePanel>
 			) : null}
 			{detail && detailHost ? createPortal(detail, detailHost) : null}
 			<Dialog open={drafts.length > 0} onOpenChange={(open) => !open && setDrafts([])}>

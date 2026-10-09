@@ -116,7 +116,7 @@ export function PasskeyCard() {
 					绑定后在登录页用指纹 / 面容 / 设备密码一步登录，不用输密码。邮箱密码登录仍然可用。
 				</CardDescription>
 			</CardHeader>
-			<CardContent className="flex flex-col gap-4 pb-(--card-spacing)">
+			<CardContent className="flex flex-col gap-4">
 				{available ? (
 					<div>
 						<Button type="button" onClick={() => void add()} disabled={adding}>

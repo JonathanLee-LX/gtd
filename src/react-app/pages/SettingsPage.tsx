@@ -141,7 +141,7 @@ export function SettingsPage() {
 	}
 
 	return (
-		<section className="flex flex-col gap-6 overflow-auto p-6">
+		<section className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6 pb-24 *:shrink-0 md:pb-6">
 			<header className="flex flex-col gap-1">
 				<h1 className="font-heading text-2xl tracking-tight">设置</h1>
 				<p className="max-w-2xl text-sm text-muted-foreground">
@@ -192,7 +192,7 @@ export function SettingsPage() {
 					<CardTitle>API Token</CardTitle>
 					<CardDescription>明文只显示一次，之后只能看到前缀。</CardDescription>
 				</CardHeader>
-				<CardContent className="flex flex-col gap-4 pb-(--card-spacing)">
+				<CardContent className="flex flex-col gap-4">
 					<FieldGroup>
 						<Field orientation="horizontal">
 							<FieldLabel htmlFor="token-name" className="sr-only">

@@ -50,7 +50,7 @@ Cursor 全局配置：`~/.cursor/mcp.json`
   "mcpServers": {
     "gtd": {
       "type": "http",
-      "url": "https://gtd.jonathanleelx.workers.dev/mcp",
+      "url": "https://gtd.livs.top/mcp",
       "headers": {
         "Authorization": "Bearer gtd_your_token"
       }
@@ -59,4 +59,4 @@ Cursor 全局配置：`~/.cursor/mcp.json`
 }
 ```
 
-本地开发可把 `url` 换成 `http://localhost:5173/mcp`。改完后在 Cursor 里打开 **Settings → MCP**，确认 `gtd` 已启用；必要时 Reload。
+本地开发可把 `url` 换成 `http://localhost:5173/mcp`。旧地址 `https://gtd.jonathanleelx.workers.dev/mcp` 仍然照常服务（不跳转，避免客户端丢掉 Authorization 头），已经配好的不用急着改，新配置请用 gtd.livs.top。改完后在 Cursor 里打开 **Settings → MCP**，确认 `gtd` 已启用；必要时 Reload。

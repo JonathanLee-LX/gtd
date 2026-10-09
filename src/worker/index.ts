@@ -3,6 +3,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createDb } from "../db/client";
 import { AppError } from "./lib/errors";
 import { createAuth, isSignupEnabled, type WorkerEnv } from "./lib/auth";
+import { legacyHostRedirect } from "./lib/canonical-host";
 import { resolvePasskeyConfig } from "./lib/passkey";
 import { handleMcp } from "./mcp/handler";
 import { meRoutes } from "./routes/me";
@@ -24,6 +25,13 @@ app.onError((error, c) => {
 	}
 	console.error(error);
 	return c.json({ error: "internal", message: "服务器出错了" }, 500);
+});
+
+// #82：旧 workers.dev 入口导到 gtd.livs.top（/mcp 与 Bearer API 除外，见 canonical-host.ts）。
+app.use("*", async (c, next) => {
+	const redirect = legacyHostRedirect(c.req.raw, c.env.BETTER_AUTH_URL);
+	if (redirect) return redirect;
+	await next();
 });
 
 app.get("/api/health", (c) =>
@@ -50,6 +58,10 @@ app.route("/api/ai", aiRoutes);
 
 app.all("/mcp", (c) => handleMcp(c.req.raw, c.env));
 app.all("/mcp/*", (c) => handleMcp(c.req.raw, c.env));
+
+// 未知 API 保持 404；其余交给静态资源（SPA 回退由 assets.not_found_handling 处理）。
+app.all("/api/*", (c) => c.notFound());
+app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 export default {
 	fetch: app.fetch.bind(app),

@@ -35,7 +35,9 @@ pnpm db:migrate
 pnpm run deploy
 ```
 
-线上地址：https://gtd.jonathanleelx.workers.dev
+线上地址：https://gtd.livs.top
+
+旧地址 `https://gtd.jonathanleelx.workers.dev` 只为兼容保留：页面会 301 跳到 gtd.livs.top（登录接口 308），`/mcp` 和带 Bearer Token 的 `/api/*` 在旧地址上仍可用，但新配置请一律用 gtd.livs.top。登录 cookie 只认 gtd.livs.top，这样浏览器、桌面端、手机只有一份登录态（#82）。
 
 产品内 AI 走 Cloudflare Workers AI（`wrangler.json` 里已绑定 `AI`），不需要外部 API key。模型在 `src/worker/services/ai.ts` 的 `AI_MODEL` 常量里可换。
 
@@ -52,11 +54,7 @@ pnpm run deploy
 
 `BETTER_AUTH_SECRET` 已写在 Worker secrets 里，部署不会覆盖。
 
-生产环境 `BETTER_AUTH_URL` 不写进 `wrangler.json`，Worker 会用请求 Origin。需要固定值时：
-
-```sh
-pnpm wrangler secret put BETTER_AUTH_URL
-```
+生产环境 `BETTER_AUTH_URL=https://gtd.livs.top` 写在 `wrangler.json` 的 `vars` 里（不是密钥，不要再用 `wrangler secret put` 设同名值，会冲突）。本地开发不受影响：请求来自 `localhost` / `127.0.0.1` 时始终用请求自己的 origin，`.dev.vars` 里的 `BETTER_AUTH_URL=http://localhost:5173` 也会覆盖 `vars`。
 
 
 ## 桌面壳（Tauri）

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,8 @@ import {
 	PASSKEY_HOST_HINT,
 	passkeySignInErrorMessage,
 } from "../lib/passkey";
+import { createPasskeyAutofillController, type PasskeyAutofillController } from "../lib/passkey-autofill";
+import { hasActiveSession } from "../lib/session";
 
 export function LoginPage() {
 	const navigate = useNavigate();
@@ -35,8 +37,23 @@ export function LoginPage() {
 	const [busy, setBusy] = useState(false);
 	const [passkeyBusy, setPasskeyBusy] = useState(false);
 	const [passkeyRpId, setPasskeyRpId] = useState(DEFAULT_PASSKEY_RP_ID);
+	// #82：已有有效会话就直接进工作台，不再让人对着登录表单重新输入。
+	const [checkingSession, setCheckingSession] = useState(true);
+	const autofillRef = useRef<PasskeyAutofillController | null>(null);
 	const passkeyAvailable =
 		browserSupportsPasskey() && isPasskeyHost(window.location.hostname, passkeyRpId);
+
+	useEffect(() => {
+		let cancelled = false;
+		void hasActiveSession(api.me).then((active) => {
+			if (cancelled) return;
+			if (active) navigate("/today", { replace: true });
+			else setCheckingSession(false);
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [navigate]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -60,43 +77,44 @@ export function LoginPage() {
 	}, [signupEnabled, mode]);
 
 	// 产品验收：点邮箱框即弹出已绑定的通行密钥（conditional UI），选中后验证一次直接进。
+	// 请求由 AbortController 控制：卸载即中止；按钮流程期间暂停，取消后重新挂上。
+	const autofillEnabled = passkeyAvailable && !checkingSession && mode === "in";
 	useEffect(() => {
-		if (!passkeyAvailable) return;
-		let cancelled = false;
-		void (async () => {
-			const supported = await PublicKeyCredential.isConditionalMediationAvailable?.().catch(
-				() => false,
-			);
-			if (!supported || cancelled) return;
-			const result = await authClient.signIn.passkey({ autoFill: true });
-			if (cancelled) return;
-			if (result.data) {
-				navigate("/today");
-				return;
-			}
-			// 自动弹出被按钮 / 卸载打断或用户没选是常态，静默；只提示密钥已失效这种需要处理的情况。
-			const code = (result.error as { code?: string } | null)?.code;
-			if (code === "PASSKEY_NOT_FOUND") {
-				setError(passkeySignInErrorMessage(result.error, passkeyRpId));
-			}
-		})();
+		if (!autofillEnabled) return;
+		const controller = createPasskeyAutofillController({
+			onSignedIn: () => navigate("/today", { replace: true }),
+			onError: (code) => {
+				// 没选 / 被打断是常态，静默；只提示密钥已失效这种需要处理的情况。
+				if (code === "PASSKEY_NOT_FOUND") {
+					setError(passkeySignInErrorMessage({ code }, passkeyRpId));
+				}
+			},
+		});
+		autofillRef.current = controller;
+		controller.arm();
 		return () => {
-			cancelled = true;
+			controller.dispose();
+			if (autofillRef.current === controller) autofillRef.current = null;
 		};
-	}, [passkeyAvailable, passkeyRpId, navigate]);
+	}, [autofillEnabled, passkeyRpId, navigate]);
 
 	async function signInWithPasskey() {
 		setPasskeyBusy(true);
 		setError(null);
-		try {
-			const result = await authClient.signIn.passkey();
-			if (result.data) {
-				navigate("/today");
-				return;
+		const modal = async () => {
+			try {
+				const result = await authClient.signIn.passkey();
+				if (result.data) return true;
+				setError(passkeySignInErrorMessage(result.error, passkeyRpId));
+			} catch {
+				setError(passkeySignInErrorMessage(null, passkeyRpId));
 			}
-			setError(passkeySignInErrorMessage(result.error, passkeyRpId));
-		} catch {
-			setError(passkeySignInErrorMessage(null, passkeyRpId));
+			return false;
+		};
+		try {
+			const autofill = autofillRef.current;
+			const signedIn = autofill ? await autofill.runExclusive(modal) : await modal();
+			if (signedIn) navigate("/today", { replace: true });
 		} finally {
 			setPasskeyBusy(false);
 		}
@@ -115,12 +133,21 @@ export function LoginPage() {
 			} else {
 				await api.signIn(email, password);
 			}
-			navigate("/today");
+			navigate("/today", { replace: true });
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "登录失败");
 		} finally {
 			setBusy(false);
 		}
+	}
+
+	if (checkingSession) {
+		return (
+			<div className="flex min-h-svh items-center justify-center gap-3 bg-muted/40 text-muted-foreground">
+				<Spinner />
+				检查登录状态…
+			</div>
+		);
 	}
 
 	return (
@@ -134,13 +161,16 @@ export function LoginPage() {
 					<CardDescription>同一套任务，网页和 MCP 都能读写。</CardDescription>
 				</CardHeader>
 				<CardContent>
-					<form onSubmit={submit} className="flex flex-col gap-5">
+					{/* 真实 <form> 提交 + name/autocomplete：浏览器才会提示保存密码、下次自动填充（#82）。 */}
+					<form method="post" onSubmit={submit} className="flex flex-col gap-5">
 						<FieldGroup>
 							{mode === "up" ? (
 								<Field>
 									<FieldLabel htmlFor="name">名字</FieldLabel>
 									<Input
 										id="name"
+										name="name"
+										autoComplete="name"
 										placeholder="怎么称呼你"
 										value={name}
 										onChange={(event) => setName(event.target.value)}
@@ -151,8 +181,13 @@ export function LoginPage() {
 								<FieldLabel htmlFor="email">邮箱</FieldLabel>
 								<Input
 									id="email"
+									name="email"
 									placeholder="you@example.com"
 									type="email"
+									inputMode="email"
+									autoCapitalize="none"
+									spellCheck={false}
+									// 浏览器据此保存 / 自动填充账号；webauthn 让通行密钥出现在同一个下拉里（#81）。
 									autoComplete="username webauthn"
 									value={email}
 									onChange={(event) => setEmail(event.target.value)}
@@ -163,8 +198,10 @@ export function LoginPage() {
 								<FieldLabel htmlFor="password">密码</FieldLabel>
 								<Input
 									id="password"
+									name="password"
 									placeholder="至少 8 位"
 									type="password"
+									autoComplete={mode === "in" ? "current-password" : "new-password"}
 									value={password}
 									onChange={(event) => setPassword(event.target.value)}
 									required

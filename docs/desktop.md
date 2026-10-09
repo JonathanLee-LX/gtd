@@ -2,7 +2,9 @@
 
 Desktop v1 is a **thin native window** that loads the **production** GTD web app at the same origin:
 
-`https://gtd.jonathanleelx.workers.dev`
+`https://gtd.livs.top`
+
+(Before #82 the shell loaded `gtd.jonathanleelx.workers.dev`. That host now 301-redirects pages to `gtd.livs.top`, and session cookies only live on `gtd.livs.top`, so an **old desktop build will ask you to log in once more**. Rebuild with `pnpm desktop:build` to pick up the new URL.)
 
 There is no second API base URL, no duplicated `TaskService`, and the client must not set `source` (unchanged — server still sets `human` for the web session).
 
@@ -98,7 +100,7 @@ There is no automated desktop login test in CI (no production credentials in the
 
 Prereq: production account that can sign in on the web app; `pnpm desktop:dev` (or a local `desktop:build` package).
 
-1. [ ] Open desktop shell → production login UI loads (URL bar / network shows `gtd.jonathanleelx.workers.dev`).
+1. [ ] Open desktop shell → production login UI loads (URL bar / network shows `gtd.livs.top`).
 2. [ ] Sign in with the existing account → lands on **今日 / today**.
 3. [ ] Complete **one** task on today (check → success feedback).
 4. [ ] Soft refresh the WebView (reload) → still logged in; completed item stays completed (or reflects server state). On Linux, prefer context-menu Reload if Ctrl+R does nothing.

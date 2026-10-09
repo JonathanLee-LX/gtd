@@ -1,5 +1,5 @@
 -- Migration number: 0004 	 2026-10-09T00:00:00.000Z
--- #68 任务附件：attachments + attachment_uploads（drizzle-kit generate 生成，只新增表/索引，不改已有表）。
+-- #68 任务附件：attachments + attachment_uploads + r2_pending_deletions（drizzle-kit generate 生成，只新增表/索引，不改已有表）。
 
 CREATE TABLE `attachment_uploads` (
 	`id` text PRIMARY KEY NOT NULL,
@@ -43,4 +43,15 @@ CREATE TABLE `attachments` (
 --> statement-breakpoint
 CREATE INDEX `attachments_user_task_idx` ON `attachments` (`user_id`,`task_id`);--> statement-breakpoint
 CREATE INDEX `attachments_user_deleted_idx` ON `attachments` (`user_id`,`deleted_at`);--> statement-breakpoint
-CREATE UNIQUE INDEX `attachments_r2_key_unique` ON `attachments` (`r2_key`);
+CREATE UNIQUE INDEX `attachments_r2_key_unique` ON `attachments` (`r2_key`);--> statement-breakpoint
+CREATE TABLE `r2_pending_deletions` (
+	`r2_key` text PRIMARY KEY NOT NULL,
+	`user_id` text NOT NULL,
+	`reason` text NOT NULL,
+	`attempts` integer DEFAULT 0 NOT NULL,
+	`last_error` text,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL
+);
+--> statement-breakpoint
+CREATE INDEX `r2_pending_deletions_created_idx` ON `r2_pending_deletions` (`created_at`);

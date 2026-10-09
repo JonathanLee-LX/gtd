@@ -309,6 +309,26 @@ export const attachmentUploads = sqliteTable(
 	],
 );
 
+/**
+ * R2 待删清单（outbox）：附件行会随任务 / 项目被 FK cascade 删掉，删掉之后就再也找不到 r2_key。
+ * 所以硬删前先把 key 记在这里，删成功再移除；没删掉的由每日 cron 重试。
+ * 故意不加外键：用户 / 任务 / 项目没了，这条记录也得留着把 R2 对象清掉。
+ * cron 删之前会确认没有活着的 attachments / attachment_uploads 行还引用这个 key。
+ */
+export const r2PendingDeletions = sqliteTable(
+	"r2_pending_deletions",
+	{
+		r2Key: text("r2_key").primaryKey(),
+		userId: text("user_id").notNull(),
+		reason: text("reason").notNull(),
+		attempts: integer("attempts").default(0).notNull(),
+		lastError: text("last_error"),
+		createdAt: text("created_at").notNull(),
+		updatedAt: text("updated_at").notNull(),
+	},
+	(table) => [index("r2_pending_deletions_created_idx").on(table.createdAt)],
+);
+
 export const userRelations = relations(user, ({ many }) => ({
 	sessions: many(session),
 	projects: many(projects),
@@ -347,4 +367,5 @@ export const schema = {
 	activityLog,
 	attachments,
 	attachmentUploads,
+	r2PendingDeletions,
 };

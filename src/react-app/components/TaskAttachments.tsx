@@ -46,6 +46,14 @@ function attachmentName(item: Attachment) {
 	return item.fileName || (item.kind === "image" ? "图片" : "文件");
 }
 
+/** 文件类型短标签：PDF / HEIC / JPG…（缩略图加载失败时显示在图标下）。 */
+function typeLabel(item: Attachment) {
+	const sub = (item.mime ?? "").split("/")[1] ?? "";
+	if (sub === "pdf") return "PDF";
+	if (sub === "jpeg") return "JPG";
+	return sub ? sub.toUpperCase().slice(0, 4) : "文件";
+}
+
 /**
  * 任务详情里的附件区（#68）：上传（手机可拍照 / 相册 / 文件）、列表、图片缩略图 + 大图预览、
  * PDF 新标签打开、下载、确认后删除。读写都走 attachmentService，后端按 user_id 隔离。
@@ -59,6 +67,10 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 	const [pendingDelete, setPendingDelete] = useState<Attachment | null>(null);
 	const [deleting, setDeleting] = useState(false);
 	const [dragOver, setDragOver] = useState(false);
+	// 浏览器渲染不了的图片（Chrome / Android / Windows 上的 HEIC 等）：退回文件图标，下载照常。
+	const [brokenImages, setBrokenImages] = useState<Set<string>>(() => new Set());
+	const markBroken = (id: string) =>
+		setBrokenImages((current) => (current.has(id) ? current : new Set(current).add(id)));
 
 	const query = useQuery({
 		queryKey: attachmentKeys.task(taskId),
@@ -240,6 +252,8 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 					{items.map((item) => {
 						const name = attachmentName(item);
 						const isImage = item.kind === "image" && isInlineImageMime(item.mime);
+						const thumbBroken = brokenImages.has(item.id);
+						const TileIcon = isImage ? ImageIcon : FileTextIcon;
 						return (
 							<li key={item.id} className="flex min-w-0 items-center gap-3 rounded-lg border p-2">
 								{isImage ? (
@@ -249,12 +263,20 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 										onClick={() => setPreview(item)}
 										aria-label={`预览 ${name}`}
 									>
-										<img
-											src={item.contentUrl}
-											alt={name}
-											loading="lazy"
-											className="size-full object-cover"
-										/>
+										{thumbBroken ? (
+											<span className="flex size-full flex-col items-center justify-center gap-0.5 text-muted-foreground">
+												<ImageIcon className="size-6" />
+												<span className="text-[10px] font-medium">{typeLabel(item)}</span>
+											</span>
+										) : (
+											<img
+												src={item.contentUrl}
+												alt={name}
+												loading="lazy"
+												className="size-full object-cover"
+												onError={() => markBroken(item.id)}
+											/>
+										)}
 									</button>
 								) : (
 									<a
@@ -264,8 +286,8 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 										className="flex size-14 shrink-0 flex-col items-center justify-center gap-0.5 rounded-md border bg-muted text-muted-foreground hover:text-foreground"
 										aria-label={`打开 ${name}`}
 									>
-										<FileTextIcon className="size-6" />
-										<span className="text-[10px] font-medium">PDF</span>
+										<TileIcon className="size-6" />
+										<span className="text-[10px] font-medium">{typeLabel(item)}</span>
 									</a>
 								)}
 								<div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -325,11 +347,21 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 						<DialogTitle className="truncate pr-8">{preview ? attachmentName(preview) : ""}</DialogTitle>
 						<DialogDescription>{preview ? formatFileSize(preview.size) : ""}</DialogDescription>
 					</DialogHeader>
-					{preview ? (
+					{preview && brokenImages.has(preview.id) ? (
+						<div
+							data-testid="attachment-preview-fallback"
+							className="flex flex-col items-center justify-center gap-2 rounded-md border bg-muted px-4 py-10 text-center"
+						>
+							<ImageIcon className="size-10 text-muted-foreground" />
+							<p className="text-sm">当前浏览器无法预览这种图片格式（{typeLabel(preview)}）。</p>
+							<p className="text-xs text-muted-foreground">请下载后用系统相册或图片查看器打开。</p>
+						</div>
+					) : preview ? (
 						<img
 							src={preview.contentUrl}
 							alt={attachmentName(preview)}
 							className="max-h-[65dvh] w-full rounded-md object-contain"
+							onError={() => markBroken(preview.id)}
 						/>
 					) : null}
 					{preview ? (

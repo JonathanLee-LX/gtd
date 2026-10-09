@@ -5,6 +5,11 @@ import type { CreateProjectInput, TaskSource, UpdateProjectInput } from "../../s
 import { badRequest, notFound } from "../lib/errors";
 import { newId, nowIso } from "../lib/ids";
 import { logActivity } from "./activity";
+import {
+	detachProjectAttachments,
+	flushPendingDeletions,
+	type AttachmentBucket,
+} from "./attachments";
 import { ensureInbox } from "./ensure-inbox";
 
 export type ProjectRow = typeof projects.$inferSelect;
@@ -119,10 +124,21 @@ export async function deleteProject(
 	userId: string,
 	id: string,
 	source: TaskSource,
+	/** #68：附件存储。删项目会硬删其下所有任务，附件的 R2 对象要一起清掉。 */
+	bucket?: AttachmentBucket | null,
 ) {
 	const project = await getProject(db, userId, id);
 	if (project.isInbox) throw badRequest("收件箱不能删除");
+	// 先把附件 key 记进待删清单并删掉附件行，再删项目（FK cascade 删任务），最后删 R2。
+	// R2 删不掉的留在清单里，由每日 cron 重试，不会成为孤儿对象。
+	const r2Keys = await detachProjectAttachments(db, userId, id);
 	await db.delete(projects).where(and(eq(projects.id, id), eq(projects.userId, userId)));
+	if (r2Keys.length > 0) {
+		const result = await flushPendingDeletions(db, bucket, r2Keys);
+		if (result.failed > 0) {
+			console.error("project delete: r2 cleanup deferred to cron", id, result);
+		}
+	}
 	await logActivity(db, {
 		userId,
 		source,

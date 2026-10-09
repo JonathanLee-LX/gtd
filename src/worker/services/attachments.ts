@@ -14,7 +14,7 @@
  */
 
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
-import { attachments, attachmentUploads, tasks } from "../../db/schema";
+import { attachments, attachmentUploads, r2PendingDeletions, tasks } from "../../db/schema";
 import type { AppDatabase } from "../../db/client";
 import {
 	ATTACHMENT_PURGE_GRACE_MS,
@@ -264,7 +264,34 @@ export async function requestUpload(
 		confirmedAt: null,
 		createdAt: now.toISOString(),
 	};
-	await db.insert(attachmentUploads).values(row);
+	// 预检之后再用「带条件的单条 INSERT」占位：SQLite 单语句是原子的，
+	// 并发请求同时通过预检时，只有额度内的那几条能真正插进去。
+	await db.run(sql`
+		insert into attachment_uploads
+			(id, user_id, task_id, r2_key, kind, filename, mime, size, status, attachment_id, expires_at, confirmed_at, created_at)
+		select ${row.id}, ${userId}, ${taskId}, ${row.r2Key}, ${kind}, ${row.filename}, ${mime}, ${row.size},
+			'pending', null, ${row.expiresAt}, null, ${row.createdAt}
+		where
+			(select count(*) from attachments where user_id = ${userId} and task_id = ${taskId} and deleted_at is null)
+			+ (select count(*) from attachment_uploads where user_id = ${userId} and task_id = ${taskId} and status = 'pending' and expires_at > ${row.createdAt})
+				< ${MAX_ATTACHMENTS_PER_TASK}
+			and (select count(*) from attachments where user_id = ${userId} and deleted_at is null)
+			+ (select count(*) from attachment_uploads where user_id = ${userId} and status = 'pending' and expires_at > ${row.createdAt})
+				< ${MAX_USER_ATTACHMENT_COUNT}
+			and (select coalesce(sum(size), 0) from attachments where user_id = ${userId} and deleted_at is null)
+			+ (select coalesce(sum(size), 0) from attachment_uploads where user_id = ${userId} and status = 'pending' and expires_at > ${row.createdAt})
+			+ ${row.size} <= ${MAX_USER_ATTACHMENT_BYTES}
+	`);
+	const inserted = await db
+		.select({ id: attachmentUploads.id })
+		.from(attachmentUploads)
+		.where(eq(attachmentUploads.id, uploadId))
+		.limit(1);
+	if (!inserted[0]) {
+		// 输掉了并发：重跑一次预检拿到准确文案，兜底给通用提示。
+		await assertQuota(db, userId, taskId, input.size, now);
+		throw conflict("附件额度已满，请稍后再试", "user_quota_exceeded");
+	}
 
 	return {
 		uploadId,
@@ -396,6 +423,7 @@ export async function confirmUpload(
 	taskId: string,
 	uploadId: string,
 	source: TaskSource,
+	options: { now?: Date } = {},
 ): Promise<AttachmentRow> {
 	const upload = await loadUpload(db, userId, uploadId);
 	// 跨任务 confirm 写库前就拦（D1 没有事务，落库后再回滚不了）。
@@ -412,6 +440,18 @@ export async function confirmUpload(
 	}
 	if (upload.status !== "pending") {
 		throw conflict("该上传已失效，请重新上传", "upload_expired");
+	}
+	// 过期的上传占位不能再 confirm：作废、清掉可能已写入的对象。
+	if (upload.expiresAt <= (options.now ?? new Date()).toISOString()) {
+		await markUpload(db, upload.id, "expired");
+		try {
+			await bucket.delete(upload.r2Key);
+		} catch (error) {
+			// cron 第 1 段只扫 pending；这里删失败就记进待删清单。
+			await recordPendingDeletions(db, userId, [upload.r2Key], "upload_expired");
+			console.error("expired upload r2 delete failed", upload.id, error);
+		}
+		throw conflict("上传已过期（超过 15 分钟），请重新上传", "upload_expired");
 	}
 
 	const head = await bucket.head(upload.r2Key);
@@ -444,7 +484,21 @@ export async function confirmUpload(
 		deletedAt: null,
 	};
 	try {
-		await db.insert(attachments).values(row);
+		// 落库时再按「已就绪附件」原子地复核一次额度（单条带条件的 INSERT），
+		// 挡住 request 阶段的并发漏网：超额就不插入。
+		await db.run(sql`
+			insert into attachments
+				(id, user_id, task_id, kind, status, r2_key, filename, mime, size, url, created_at, updated_at, deleted_at)
+			select ${row.id}, ${userId}, ${row.taskId}, ${kind}, 'ready', ${row.r2Key}, ${row.filename}, ${realMime}, ${row.size},
+				null, ${now}, ${now}, null
+			where
+				(select count(*) from attachments where user_id = ${userId} and task_id = ${row.taskId} and deleted_at is null)
+					< ${MAX_ATTACHMENTS_PER_TASK}
+				and (select count(*) from attachments where user_id = ${userId} and deleted_at is null)
+					< ${MAX_USER_ATTACHMENT_COUNT}
+				and (select coalesce(sum(size), 0) from attachments where user_id = ${userId} and deleted_at is null)
+					+ ${row.size} <= ${MAX_USER_ATTACHMENT_BYTES}
+		`);
 	} catch (error) {
 		// 并发 confirm：UNIQUE(r2_key) 抢输的一方读回赢家那行，保持幂等。
 		const existing = await db
@@ -454,6 +508,24 @@ export async function confirmUpload(
 			.limit(1);
 		if (existing[0]) return existing[0];
 		throw error;
+	}
+	const inserted = await db
+		.select({ id: attachments.id })
+		.from(attachments)
+		.where(eq(attachments.id, row.id))
+		.limit(1);
+	if (!inserted[0]) {
+		await markUpload(db, upload.id, "failed");
+		try {
+			await bucket.delete(upload.r2Key);
+		} catch {
+			await recordPendingDeletions(db, userId, [upload.r2Key], "quota_rejected");
+		}
+		const perTask = await countTaskAttachments(db, userId, upload.taskId);
+		if (perTask >= MAX_ATTACHMENTS_PER_TASK) {
+			throw conflict(`单个任务最多 ${MAX_ATTACHMENTS_PER_TASK} 个附件`, "task_attachment_limit");
+		}
+		throw conflict("附件额度已满，文件未保存", "user_quota_exceeded");
 	}
 	await db
 		.update(attachmentUploads)
@@ -568,6 +640,9 @@ export type PurgeAttachmentsResult = {
 	expiredTaskAttachments: number;
 	/** 终态 upload 行（超过保留期删行）。 */
 	uploadRecords: number;
+	/** 待删清单（项目删除等）本轮删掉 / 仍失败的 R2 key 数。 */
+	pendingDeleted: number;
+	pendingFailed: number;
 	/** R2 删失败的 key 数（下一轮重试）。 */
 	failed: number;
 	/**
@@ -579,6 +654,7 @@ export type PurgeAttachmentsResult = {
 
 /**
  * 每日 cron（挂在现有 `scheduled` 上，不新增 trigger）：
+ *  0) 重试 r2_pending_deletions 里的 key（项目删除等硬删路径留下的）；
  *  1) 过期的 pending 上传 → 删 R2 里可能已写入的对象，占位置为 expired；
  *  2) deleted_at 非空的附件（删除时 R2 删失败）→ 重试删 R2 + 删行；
  *  3) 所属任务在回收站超过保留期（与 purgeExpiredDeleted 同一 cutoff）→ 删 R2 + 删附件行 / 上传行；
@@ -603,9 +679,16 @@ export async function purgeAttachments(
 		deletedAttachments: 0,
 		expiredTaskAttachments: 0,
 		uploadRecords: 0,
+		pendingDeleted: 0,
+		pendingFailed: 0,
 		failed: 0,
 		blockTaskPurge: false,
 	};
+
+	// 0) 待删清单（项目删除 / 过期 confirm 等路径没删掉的 R2 对象）。
+	const pending = await drainPendingDeletions(db, bucket, { now });
+	result.pendingDeleted = pending.deleted;
+	result.pendingFailed = pending.failed;
 
 	async function deleteKeys(keys: string[]): Promise<boolean> {
 		if (keys.length === 0) return true;
@@ -707,4 +790,151 @@ export async function purgeAttachments(
 	result.uploadRecords = terminalIds.length;
 
 	return result;
+}
+
+/* ------------------------------------------------------------------------------------------
+ * R2 待删清单（r2_pending_deletions）：给「附件行会被 cascade 带走」的硬删路径用。
+ * 流程：先记清单（持久意图）→ 删 DB → 删 R2 → 成功的从清单移除；失败的留给 cron 重试。
+ * ---------------------------------------------------------------------------------------- */
+
+/** 新记进清单的 key 在这段时间内 cron 不碰，避免和正在进行的「记清单 → 删库」撞车。 */
+export const PENDING_DELETION_GRACE_MS = 5 * 60 * 1000;
+const PENDING_DELETION_BATCH = 500;
+
+export async function recordPendingDeletions(
+	db: AppDatabase,
+	userId: string,
+	keys: string[],
+	reason: string,
+) {
+	const now = nowIso();
+	// 每行 7 个参数，D1 单语句上限 100 个参数 → 每批 10 行。
+	for (const part of chunk([...new Set(keys)], 10)) {
+		await db
+			.insert(r2PendingDeletions)
+			.values(part.map((r2Key) => ({ r2Key, userId, reason, attempts: 0, lastError: null, createdAt: now, updatedAt: now })))
+			.onConflictDoNothing();
+	}
+}
+
+/** 仍被活着的附件 / 上传行引用的 key：不能删 R2（说明对应的硬删没真正发生）。 */
+async function referencedKeys(db: AppDatabase, keys: string[]): Promise<Set<string>> {
+	const referenced = new Set<string>();
+	for (const part of chunk(keys, ID_BATCH)) {
+		const a = await db
+			.select({ key: attachments.r2Key })
+			.from(attachments)
+			.where(inArray(attachments.r2Key, part));
+		const u = await db
+			.select({ key: attachmentUploads.r2Key })
+			.from(attachmentUploads)
+			.where(inArray(attachmentUploads.r2Key, part));
+		for (const row of [...a, ...u]) if (row.key) referenced.add(row.key);
+	}
+	return referenced;
+}
+
+/**
+ * 处理清单里的一批 key：仍被引用的直接从清单移除（不删 R2）；其余删 R2，
+ * 成功的移出清单，失败的 attempts+1 记下错误，等下次 cron。
+ */
+export async function flushPendingDeletions(
+	db: AppDatabase,
+	bucket: AttachmentBucket | undefined | null,
+	keys: string[],
+): Promise<{ deleted: number; failed: number; skipped: number }> {
+	const unique = [...new Set(keys)];
+	if (unique.length === 0) return { deleted: 0, failed: 0, skipped: 0 };
+	const referenced = await referencedKeys(db, unique);
+	const skipped = unique.filter((key) => referenced.has(key));
+	for (const part of chunk(skipped, ID_BATCH)) {
+		await db.delete(r2PendingDeletions).where(inArray(r2PendingDeletions.r2Key, part));
+	}
+	const toDelete = unique.filter((key) => !referenced.has(key));
+	let deleted = 0;
+	let failed = 0;
+	for (const part of chunk(toDelete, ID_BATCH)) {
+		try {
+			if (!bucket || typeof bucket.delete !== "function") {
+				throw new Error("r2_binding_missing");
+			}
+			await bucket.delete(part);
+			await db.delete(r2PendingDeletions).where(inArray(r2PendingDeletions.r2Key, part));
+			deleted += part.length;
+		} catch (error) {
+			failed += part.length;
+			await db
+				.update(r2PendingDeletions)
+				.set({
+					attempts: sql`${r2PendingDeletions.attempts} + 1`,
+					lastError: String(error instanceof Error ? error.message : error).slice(0, 500),
+					updatedAt: nowIso(),
+				})
+				.where(inArray(r2PendingDeletions.r2Key, part));
+		}
+	}
+	return { deleted, failed, skipped: skipped.length };
+}
+
+/** cron：重试清单里超过宽限期的 key。 */
+export async function drainPendingDeletions(
+	db: AppDatabase,
+	bucket: AttachmentBucket | undefined | null,
+	options: { now?: Date } = {},
+) {
+	const now = options.now ?? new Date();
+	const cutoff = new Date(now.getTime() - PENDING_DELETION_GRACE_MS).toISOString();
+	const rows = await db
+		.select({ key: r2PendingDeletions.r2Key })
+		.from(r2PendingDeletions)
+		.where(lt(r2PendingDeletions.createdAt, cutoff))
+		.orderBy(asc(r2PendingDeletions.createdAt))
+		.limit(PENDING_DELETION_BATCH);
+	return flushPendingDeletions(
+		db,
+		bucket,
+		rows.map((row) => row.key),
+	);
+}
+
+/**
+ * 删除项目前的第一步：找出该项目下（含回收站里）所有任务的附件 / 上传对象，
+ * 记进待删清单，再显式删掉附件 / 上传行（不只依赖 FK cascade）。返回要删的 R2 key。
+ * 调用方删完项目后再调 flushPendingDeletions。
+ */
+export async function detachProjectAttachments(
+	db: AppDatabase,
+	userId: string,
+	projectId: string,
+): Promise<string[]> {
+	const taskRows = await db
+		.select({ id: tasks.id })
+		.from(tasks)
+		.where(and(eq(tasks.userId, userId), eq(tasks.projectId, projectId)));
+	const taskIds = taskRows.map((row) => row.id);
+	const keys: string[] = [];
+	for (const ids of chunk(taskIds, ID_BATCH)) {
+		const a = await db
+			.select({ key: attachments.r2Key })
+			.from(attachments)
+			.where(and(eq(attachments.userId, userId), inArray(attachments.taskId, ids)));
+		const u = await db
+			.select({ key: attachmentUploads.r2Key })
+			.from(attachmentUploads)
+			.where(and(eq(attachmentUploads.userId, userId), inArray(attachmentUploads.taskId, ids)));
+		for (const row of [...a, ...u]) if (row.key) keys.push(row.key);
+	}
+	const unique = [...new Set(keys)];
+	if (unique.length === 0) return [];
+	// 先记清单（持久意图），再删行：中途失败也不会丢 key。
+	await recordPendingDeletions(db, userId, unique, "project_delete");
+	for (const ids of chunk(taskIds, ID_BATCH)) {
+		await db
+			.delete(attachmentUploads)
+			.where(and(eq(attachmentUploads.userId, userId), inArray(attachmentUploads.taskId, ids)));
+		await db
+			.delete(attachments)
+			.where(and(eq(attachments.userId, userId), inArray(attachments.taskId, ids)));
+	}
+	return unique;
 }

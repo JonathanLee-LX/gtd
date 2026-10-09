@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeSkeletonCount } from "../lib/skeleton";
@@ -36,12 +36,22 @@ function mount() {
 	);
 }
 
-/** 每张卡片里的骨架行数，按卡片顺序：通行密钥、API Token、回收站。 */
+const CARDS = ["通行密钥", "API Token", "回收站"] as const;
+
+/** 按卡片标题找到卡片容器（只在卡片内查，不数整页 —— 页面上还有别的骨架，如已归档项目）。 */
+function card(title: (typeof CARDS)[number]): HTMLElement {
+	const heading = screen.getByText(title, { selector: '[data-slot="card-title"]' });
+	const container = heading.closest<HTMLElement>('[data-slot="card"]');
+	if (!container) throw new Error(`card「${title}」not found`);
+	return container;
+}
+
+/** 三张卡片里各自的骨架（标签 + 行数），按 通行密钥、API Token、回收站 顺序。 */
 function rowsPerCard() {
-	return screen.getAllByTestId("skeleton-list").map((list) => ({
-		label: list.getAttribute("aria-label"),
-		rows: list.querySelectorAll("[data-skeleton]").length,
-	}));
+	return CARDS.map((title) => {
+		const list = within(card(title)).getByTestId("skeleton-list");
+		return { card: title, label: list.getAttribute("aria-label"), rows: list.querySelectorAll("[data-skeleton]").length };
+	});
 }
 
 beforeEach(() => {
@@ -62,9 +72,9 @@ describe("settings card skeletons (#99)", () => {
 		mount();
 		await wait(200);
 		expect(rowsPerCard()).toEqual([
-			{ label: "正在加载通行密钥", rows: 1 },
-			{ label: "正在加载 Token", rows: 1 },
-			{ label: "正在加载回收站", rows: 1 },
+			{ card: "通行密钥", label: "正在加载通行密钥", rows: 1 },
+			{ card: "API Token", label: "正在加载 Token", rows: 1 },
+			{ card: "回收站", label: "正在加载回收站", rows: 1 },
 		]);
 	});
 

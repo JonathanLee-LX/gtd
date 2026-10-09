@@ -12,6 +12,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { api } from "../api";
 import { useShellContext } from "../hooks/use-shell-data";
 import { readInboxHint, writeInboxHint } from "../lib/inbox-hint";
+import { readSkeletonCount, writeSkeletonCount } from "../lib/skeleton";
 import { createAppQueryClient } from "../query-client";
 import { Shell } from "./Shell";
 
@@ -234,8 +235,10 @@ describe("Shell cold start (#101)", () => {
 		expect(fetchCalls.sort()).toEqual(["/api/me", "/api/projects", "/api/tasks/focus"]);
 	});
 
-	it("401 clears the client session (query cache + inbox id hint) via clearClientSession", async () => {
+	it("401 clears the client session (query cache + inbox id hint + skeleton counts) via clearClientSession", async () => {
 		writeInboxHint("inbox");
+		writeSkeletonCount(["settings", "tokens"], 3);
+		localStorage.setItem("theme", "dark");
 		const client = makeClient();
 		client.setQueryData(["tasks", "list", { projectId: "inbox" }], { items: [], nextCursor: null });
 		renderShell(client);
@@ -243,12 +246,16 @@ describe("Shell cold start (#101)", () => {
 		await respond(() => true, { status: 401, body: { error: "unauthorized" } });
 		await waitFor(() => expect(loginMounts).toBe(1));
 		expect(readInboxHint()).toBeNull();
+		expect(readSkeletonCount(["settings", "tokens"])).toBeNull();
+		expect(localStorage.getItem("theme")).toBe("dark");
 		expect(client.getQueryData(["tasks", "list", { projectId: "inbox" }])).toBeUndefined();
 		expect(client.getQueryData(["me"])).toBeUndefined();
 	});
 
-	it("sign-out clears the client session (query cache + inbox id hint)", async () => {
+	it("sign-out clears the client session (query cache + inbox id hint + skeleton counts)", async () => {
 		writeInboxHint("inbox");
+		writeSkeletonCount(["settings", "deleted-tasks"], 7);
+		localStorage.setItem("theme", "dark");
 		const client = makeClient();
 		client.setQueryData(["me"], ME);
 		client.setQueryData(["projects"], PROJECTS);
@@ -271,6 +278,8 @@ describe("Shell cold start (#101)", () => {
 		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
 		expect(fetchCalls).toContain("/api/auth/sign-out");
 		expect(readInboxHint()).toBeNull();
+		expect(readSkeletonCount(["settings", "deleted-tasks"])).toBeNull();
+		expect(localStorage.getItem("theme")).toBe("dark");
 		expect(client.getQueryData(["me"])).toBeUndefined();
 		expect(client.getQueryData(["projects"])).toBeUndefined();
 	});

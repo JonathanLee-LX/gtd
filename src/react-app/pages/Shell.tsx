@@ -389,7 +389,7 @@ export function Shell() {
 				onNewProject={() => setProjectOpen(true)}
 				onSignOut={() => void signOut()}
 			/>
-			<MobileQuickCollect />
+			<MobileQuickCollect projects={projects} />
 			<Dialog open={projectOpen} onOpenChange={setProjectOpen}>
 				<DialogContent>
 					<form onSubmit={addProject} className="flex flex-col gap-4">

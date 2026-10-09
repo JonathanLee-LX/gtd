@@ -40,7 +40,7 @@ export function ProjectPage() {
 		{ projectId: id },
 		{ enabled: Boolean(id) },
 	);
-	const createTask = useCreateTask();
+	const createTask = useCreateTask(projects);
 	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
@@ -154,7 +154,8 @@ export function ProjectPage() {
 				await deleteTask.mutateAsync(taskId);
 			}}
 			onReload={async () => {
-				await silentInvalidateTasks(queryClient);
+				// 后台刷新不阻塞界面（#90）。
+				void silentInvalidateTasks(queryClient);
 			}}
 		/>
 	);

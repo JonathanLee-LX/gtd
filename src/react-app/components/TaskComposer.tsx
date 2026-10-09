@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createFailedMessage, restoreFailedDraft } from "../lib/draft-restore";
 import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import {
 	InputGroup,
@@ -21,33 +22,22 @@ export function TaskComposer({
 	parsing?: boolean;
 }) {
 	const [title, setTitle] = useState("");
-	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [notice, setNotice] = useState<string | null>(null);
 
-	async function submit(event: React.FormEvent) {
+	/**
+	 * #90：乐观新建——提交当帧就清空输入框、任务已出现在列表里，可以接着输下一条；
+	 * 不再等服务端返回（没有 busy / 转圈）。失败时把这条文字放回输入框（若用户还没输新内容），不丢输入。
+	 */
+	function submit(event: React.FormEvent) {
 		event.preventDefault();
 		const value = title.trim();
 		if (!value) return;
-		if (busy) {
-			// 上一次提交尚未返回：给用户明确反馈，而不是静默吞掉回车
-			//（注意：提交按钮在 busy 时不能 disabled，否则浏览器不会触发表单隐式提交）
-			setNotice("正在添加，请稍候…");
-			return;
-		}
-		setBusy(true);
+		setTitle("");
 		setError(null);
-		setNotice(null);
-		try {
-			await onCreate(value);
-			setTitle("");
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "创建失败");
-		} finally {
-			setBusy(false);
-			// 提交结束（无论成功失败），“请稍候”提示已过期，直接清除
-			setNotice(null);
-		}
+		void onCreate(value).catch((err: unknown) => {
+			setTitle((current) => restoreFailedDraft(current, value));
+			setError(createFailedMessage(value, err));
+		});
 	}
 
 	return (
@@ -60,10 +50,7 @@ export function TaskComposer({
 					<InputGroupInput
 						id="task-title"
 						value={title}
-						onChange={(event) => {
-							setTitle(event.target.value);
-							setNotice(null);
-						}}
+						onChange={(event) => setTitle(event.target.value)}
 						placeholder={placeholder}
 						aria-invalid={Boolean(error)}
 					/>
@@ -73,11 +60,11 @@ export function TaskComposer({
 								type="button"
 								variant="outline"
 								size="sm"
-								disabled={busy || parsing}
+								disabled={parsing}
 								aria-label="AI 解析"
 								onClick={() => {
 									const value = title.trim();
-									if (!value || busy || parsing) return;
+									if (!value || parsing) return;
 									void onParse(value)
 										.then(() => setTitle(""))
 										.catch((err: unknown) => {
@@ -94,15 +81,12 @@ export function TaskComposer({
 							</InputGroupButton>
 						) : null}
 						<InputGroupButton type="submit" variant="default" size="sm" aria-label="添加">
-							{busy ? <Spinner data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}
+							<PlusIcon data-icon="inline-start" />
 							<span className="max-sm:hidden">添加</span>
 						</InputGroupButton>
 					</InputGroupAddon>
 				</InputGroup>
 				{error ? <FieldError>{error}</FieldError> : null}
-				{!error && notice ? (
-					<p className="text-xs text-muted-foreground">{notice}</p>
-				) : null}
 			</Field>
 		</form>
 	);

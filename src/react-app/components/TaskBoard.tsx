@@ -44,6 +44,7 @@ import {
 	type ExitingTaskEntry,
 } from "../lib/merge-exiting-tasks";
 import { TASK_MUTATION_KEY } from "../lib/task-mutation-lock";
+import { isTempTaskId, realIdFor } from "../lib/pending-creates";
 import {
 	InboxProcessActions,
 	type InboxProcessAction,
@@ -166,6 +167,12 @@ export function TaskBoard({
 		if (!selectedId) return;
 		if (tasks.some((task) => task.id === selectedId)) return;
 		if (exiting.has(selectedId)) return;
+		// #90：刚新建的任务从临时 id 换成了真实 id —— 详情跟着换，不关闭。
+		const realId = isTempTaskId(selectedId) ? realIdFor(selectedId) : undefined;
+		if (realId && tasks.some((task) => task.id === realId)) {
+			setSelectedId(realId);
+			return;
+		}
 		closeDetail();
 	}, [tasks, selectedId, closeDetail, exiting]);
 

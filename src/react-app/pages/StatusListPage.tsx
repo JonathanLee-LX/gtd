@@ -47,7 +47,7 @@ export function StatusListPage({ status }: { status: "next" | "waiting" | "sched
 	const copy = LIST_COPY[status];
 	const title = TASK_STATUS_LABELS[status as TaskStatus];
 	const { data, error, isPending } = useTaskList({ status });
-	const createTask = useCreateTask();
+	const createTask = useCreateTask(projects);
 	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
@@ -94,7 +94,8 @@ export function StatusListPage({ status }: { status: "next" | "waiting" | "sched
 				await deleteTask.mutateAsync(id);
 			}}
 			onReload={async () => {
-				await silentInvalidateTasks(queryClient);
+				// 后台刷新不阻塞界面（#90）。
+				void silentInvalidateTasks(queryClient);
 			}}
 		/>
 	);

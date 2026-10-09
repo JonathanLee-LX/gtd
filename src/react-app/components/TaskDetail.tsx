@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -31,9 +31,22 @@ import { CONTEXT_TAG_EXAMPLES, TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "
 import type { TaskPriority, TaskStatus } from "../../shared/schemas";
 import { api, type Activity, type Project, type Tag, type Task } from "../api";
 import { activityTimeLabel, sourceLabel } from "../lib/format";
+import { isTempTaskId } from "../lib/pending-creates";
 import { TaskAttachments } from "./TaskAttachments";
 
 const NONE_PARENT = "__none__";
+
+type Draft = {
+	title: string;
+	notes: string;
+	status: TaskStatus;
+	priority: TaskPriority;
+	dueAt: string;
+	projectId: string;
+	parentId: string;
+	waitingOn: string;
+	tags: Tag[];
+};
 
 const statusItems = Object.entries(TASK_STATUS_LABELS).map(([value, label]) => ({
 	value,
@@ -79,8 +92,10 @@ export function TaskDetail({
 	const [tagDraft, setTagDraft] = useState("");
 	const [localTags, setLocalTags] = useState<Tag[]>(task.tags);
 	const [error, setError] = useState<string | null>(null);
-	const [busy, setBusy] = useState(false);
 	const [deleting, setDeleting] = useState(false);
+	/** #90：保存失败（已回滚）时保留用户填写的内容，直到再次保存或切换任务。 */
+	const failedDraftRef = useRef<{ taskId: string; draft: Draft } | null>(null);
+	const pendingCreate = isTempTaskId(task.id);
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const projectItems = projects.map((project) => ({
 		value: project.id,
@@ -112,7 +127,28 @@ export function TaskDetail({
 		return items;
 	}, [tasks, task.id, task.parentId]);
 
+	function applyDraft(draft: Draft) {
+		setTitle(draft.title);
+		setNotes(draft.notes);
+		setStatus(draft.status);
+		setPriority(draft.priority);
+		setDueAt(draft.dueAt);
+		setProjectId(draft.projectId);
+		setParentId(draft.parentId);
+		setWaitingOn(draft.waitingOn);
+		setLocalTags(draft.tags);
+	}
+
 	useEffect(() => {
+		const failed = failedDraftRef.current;
+		if (failed && failed.taskId !== task.id) failedDraftRef.current = null;
+		setTagDraft("");
+		setConfirmOpen(false);
+		if (failedDraftRef.current) {
+			// 回滚把 task 改回了原值：表单仍显示用户刚才填的内容，可直接再点保存。
+			applyDraft(failedDraftRef.current.draft);
+			return;
+		}
 		setTitle(task.title);
 		setNotes(task.notes ?? "");
 		setStatus(task.status);
@@ -122,32 +158,36 @@ export function TaskDetail({
 		setParentId(task.parentId ?? NONE_PARENT);
 		setWaitingOn(task.waitingOn ?? "");
 		setLocalTags(task.tags);
-		setTagDraft("");
 		setError(null);
-		setConfirmOpen(false);
 	}, [task]);
 
-	async function save(event: React.FormEvent) {
+	/**
+	 * #90：乐观保存——列表 / 详情当帧就是新值，不再转圈等服务端。
+	 * 失败时 useUpdateTask 回滚缓存并 toast；这里把用户填写的内容留在表单里并提示。
+	 */
+	function save(event: React.FormEvent) {
 		event.preventDefault();
-		setBusy(true);
 		setError(null);
-		try {
-			await onSave({
-				title,
-				notes: notes || null,
-				status,
-				priority,
-				dueAt: dueAt || null,
-				projectId,
-				parentId: parentId === NONE_PARENT ? null : parentId,
-				waitingOn: waitingOn || null,
-				tagIds: localTags.map((tag) => tag.id),
-			});
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "保存失败");
-		} finally {
-			setBusy(false);
-		}
+		failedDraftRef.current = null;
+		const draft: Draft = { title, notes, status, priority, dueAt, projectId, parentId, waitingOn, tags: localTags };
+		const taskId = task.id;
+		onSave({
+			title,
+			notes: notes || null,
+			status,
+			priority,
+			dueAt: dueAt || null,
+			projectId,
+			parentId: parentId === NONE_PARENT ? null : parentId,
+			waitingOn: waitingOn || null,
+			tagIds: localTags.map((tag) => tag.id),
+		}).catch((err: unknown) => {
+			failedDraftRef.current = { taskId, draft };
+			applyDraft(draft);
+			setError(
+				`保存失败，已恢复原值；你填写的内容还在，可以再点保存。${err instanceof Error && err.message ? `（${err.message}）` : ""}`,
+			);
+		});
 	}
 
 
@@ -201,7 +241,12 @@ export function TaskDetail({
 						rows={6}
 					/>
 				</Field>
-				<TaskAttachments taskId={task.id} />
+				{pendingCreate ? (
+					// 临时 id 还没换成真实 id：附件接口会 404，等新建返回后再显示。
+					<p className="text-xs text-muted-foreground">正在保存到服务器，稍后可添加附件。</p>
+				) : (
+					<TaskAttachments taskId={task.id} />
+				)}
 				<Field>
 					<FieldLabel>状态</FieldLabel>
 					<Select
@@ -357,7 +402,7 @@ export function TaskDetail({
 				</Field>
 			</FieldGroup>
 			<Badge variant="outline">来源：{sourceLabel(task.source)}</Badge>
-			<TaskActivityList taskId={task.id} updatedAt={task.updatedAt} />
+			{pendingCreate ? null : <TaskActivityList taskId={task.id} updatedAt={task.updatedAt} />}
 			{error ? <FieldError>{error}</FieldError> : null}
 			</div>
 			<div
@@ -370,10 +415,9 @@ export function TaskDetail({
 			>
 				<Button
 					type="submit"
-					disabled={busy || deleting || mutationPending || completing}
+					disabled={deleting || mutationPending || completing}
 					className={layout === "mobile" ? "min-h-11 flex-1" : undefined}
 				>
-					{busy ? <Spinner data-icon="inline-start" /> : null}
 					保存
 				</Button>
 				<Button

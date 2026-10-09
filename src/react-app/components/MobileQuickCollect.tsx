@@ -9,61 +9,67 @@ import {
 	SheetHeader,
 	SheetTitle,
 } from "@/components/ui/sheet";
-import { Spinner } from "@/components/ui/spinner";
 import { useVisualViewportBottomInset } from "@/hooks/use-visual-viewport-bottom";
 import { PlusIcon } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { api } from "../api";
-import { silentInvalidateTasks, upsertTaskInCaches } from "../lib/task-cache";
+import type { Project } from "../api";
+import { useCreateTask } from "../hooks/use-task-mutations";
+import { createFailedMessage, restoreFailedDraft } from "../lib/draft-restore";
 
 type MobileQuickCollectProps = {
+	/** Shell 的项目列表：给乐观插入的临时行补上收件箱 id，立刻出现在收件箱列表里。 */
+	projects?: readonly Project[];
 	/** Called after a task is created so inbox (and similar) can refresh. */
 	onCreated?: () => void;
 };
 
 /**
  * Mobile one-tap capture: FAB above the bottom nav opens a bottom sheet to
- * add an inbox task via the existing create-task API (source=human).
+ * add an inbox task via the shared optimistic create hook (source=human).
  * Sheet bottom tracks visualViewport so the submit control stays above the keyboard.
+ *
+ * #90：提交当帧清空输入框、保持面板打开和键盘焦点，可以接着记下一条；
+ * 任务先乐观出现在收件箱，失败时撤回并把文字放回输入框（必要时重新打开面板），不丢输入。
  */
-export function MobileQuickCollect({ onCreated }: MobileQuickCollectProps) {
+export function MobileQuickCollect({ projects, onCreated }: MobileQuickCollectProps) {
 	const [open, setOpen] = useState(false);
 	const [title, setTitle] = useState("");
-	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const titleId = useId();
 	const keyboardInset = useVisualViewportBottomInset();
-	const queryClient = useQueryClient();
+	const createTask = useCreateTask(projects);
 
 	useEffect(() => {
 		if (!open) {
 			setTitle("");
+			setError(null);
 			return;
 		}
 		const timer = window.setTimeout(() => inputRef.current?.focus(), 50);
 		return () => window.clearTimeout(timer);
 	}, [open]);
 
-	async function submit(event: React.FormEvent) {
+	function submit(event: React.FormEvent) {
 		event.preventDefault();
 		const value = title.trim();
-		if (!value || busy) return;
-		setBusy(true);
-		try {
-			// Same path as InboxPage: web session → source=human; default project is inbox.
-			const { task } = await api.createTask({ title: value, status: "inbox" });
-			upsertTaskInCaches(queryClient, task);
-			void silentInvalidateTasks(queryClient);
-			setTitle("");
-			setOpen(false);
-			toast.success("已加入收件箱");
-			onCreated?.();
-		} catch (err) {
-			toast.error(err instanceof Error ? err.message : "加入收件箱失败");
-		} finally {
-			setBusy(false);
-		}
+		if (!value) return;
+		setTitle("");
+		setError(null);
+		inputRef.current?.focus();
+		// Same path as InboxPage: web session → source=human; default project is inbox.
+		createTask
+			.mutateAsync({ title: value, status: "inbox" })
+			.then(() => {
+				toast.success("已加入收件箱", { id: "quick-collect-ok", duration: 1500 });
+				onCreated?.();
+			})
+			.catch((err: unknown) => {
+				// 撤回 + toast 由 useCreateTask 处理；这里只负责不丢输入。
+				setTitle((current) => restoreFailedDraft(current, value));
+				setError(createFailedMessage(value, err, "没有加入收件箱"));
+				setOpen(true);
+			});
 	}
 
 	return (
@@ -108,26 +114,30 @@ export function MobileQuickCollect({ onCreated }: MobileQuickCollectProps) {
 								onChange={(event) => setTitle(event.target.value)}
 								placeholder="随便记一条…"
 								autoComplete="off"
-								enterKeyHint="done"
-								disabled={busy}
+								enterKeyHint="send"
+								aria-invalid={Boolean(error)}
 							/>
+							{error ? (
+								<p className="text-xs text-destructive" role="alert">
+									{error}
+								</p>
+							) : null}
 						</Field>
 						<div className="flex gap-2">
 							<Button
 								type="button"
 								variant="outline"
 								className="flex-1"
-								disabled={busy}
 								onClick={() => setOpen(false)}
 							>
-								取消
+								关闭
 							</Button>
 							<Button
 								type="submit"
 								className="flex-1"
-								disabled={busy || !title.trim()}
+								disabled={!title.trim()}
 							>
-								{busy ? <Spinner data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}
+								<PlusIcon data-icon="inline-start" />
 								加入收件箱
 							</Button>
 						</div>

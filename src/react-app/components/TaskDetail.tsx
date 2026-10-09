@@ -32,9 +32,38 @@ import type { TaskPriority, TaskStatus } from "../../shared/schemas";
 import { api, type Activity, type Project, type Tag, type Task } from "../api";
 import { activityTimeLabel, sourceLabel } from "../lib/format";
 import { isTempTaskId } from "../lib/pending-creates";
+import { sameTask } from "../lib/task-mutation-lock";
 import { TaskAttachments } from "./TaskAttachments";
 
 const NONE_PARENT = "__none__";
+
+function draftFromTask(task: Task): Draft {
+	return {
+		title: task.title,
+		notes: task.notes ?? "",
+		status: task.status,
+		priority: task.priority,
+		dueAt: task.dueAt ?? "",
+		projectId: task.projectId,
+		parentId: task.parentId ?? NONE_PARENT,
+		waitingOn: task.waitingOn ?? "",
+		tags: task.tags,
+	};
+}
+
+function sameDraft(a: Draft, b: Draft): boolean {
+	return (
+		a.title === b.title &&
+		a.notes === b.notes &&
+		a.status === b.status &&
+		a.priority === b.priority &&
+		a.dueAt === b.dueAt &&
+		a.projectId === b.projectId &&
+		a.parentId === b.parentId &&
+		a.waitingOn === b.waitingOn &&
+		a.tags.map((tag) => tag.id).join(",") === b.tags.map((tag) => tag.id).join(",")
+	);
+}
 
 type Draft = {
 	title: string;
@@ -93,8 +122,13 @@ export function TaskDetail({
 	const [localTags, setLocalTags] = useState<Tag[]>(task.tags);
 	const [error, setError] = useState<string | null>(null);
 	const [deleting, setDeleting] = useState(false);
-	/** #90：保存失败（已回滚）时保留用户填写的内容，直到再次保存或切换任务。 */
-	const failedDraftRef = useRef<{ taskId: string; draft: Draft } | null>(null);
+	/**
+	 * #90：表单只在「换了一条任务」或「表单没有未保存修改」时跟随 task 变化。
+	 * baseline = 表单上次同步 / 提交的值；null = 保存失败后强制视为有修改（保留用户输入）。
+	 */
+	const baselineRef = useRef<Draft | null>(draftFromTask(task));
+	const syncedTaskIdRef = useRef(task.id);
+	const savingRef = useRef(0);
 	const pendingCreate = isTempTaskId(task.id);
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const projectItems = projects.map((project) => ({
@@ -140,37 +174,37 @@ export function TaskDetail({
 	}
 
 	useEffect(() => {
-		const failed = failedDraftRef.current;
-		if (failed && failed.taskId !== task.id) failedDraftRef.current = null;
-		setTagDraft("");
-		setConfirmOpen(false);
-		if (failedDraftRef.current) {
-			// 回滚把 task 改回了原值：表单仍显示用户刚才填的内容，可直接再点保存。
-			applyDraft(failedDraftRef.current.draft);
+		const previousId = syncedTaskIdRef.current;
+		syncedTaskIdRef.current = task.id;
+		const next = draftFromTask(task);
+		if (!sameTask(previousId, task.id)) {
+			// 真的换了一条任务：整体重置。临时 id → 真实 id 不算换任务。
+			applyDraft(next);
+			baselineRef.current = next;
+			setTagDraft("");
+			setError(null);
+			setConfirmOpen(false);
 			return;
 		}
-		setTitle(task.title);
-		setNotes(task.notes ?? "");
-		setStatus(task.status);
-		setPriority(task.priority);
-		setDueAt(task.dueAt ?? "");
-		setProjectId(task.projectId);
-		setParentId(task.parentId ?? NONE_PARENT);
-		setWaitingOn(task.waitingOn ?? "");
-		setLocalTags(task.tags);
-		setError(null);
+		const form: Draft = { title, notes, status, priority, dueAt, projectId, parentId, waitingOn, tags: localTags };
+		const dirty =
+			savingRef.current > 0 || baselineRef.current === null || !sameDraft(form, baselineRef.current);
+		if (dirty) return; // 保存中 / 有未保存的输入：不覆盖用户正在填的内容
+		applyDraft(next);
+		baselineRef.current = next;
+		// 只在 task 变化时同步；表单值只用来判断是否有未保存修改。
 	}, [task]);
 
 	/**
 	 * #90：乐观保存——列表 / 详情当帧就是新值，不再转圈等服务端。
-	 * 失败时 useUpdateTask 回滚缓存并 toast；这里把用户填写的内容留在表单里并提示。
+	 * 失败时 useUpdateTask 回滚缓存并 toast；表单保留当前内容（包括点保存之后又输入的），可直接再保存。
 	 */
 	function save(event: React.FormEvent) {
 		event.preventDefault();
 		setError(null);
-		failedDraftRef.current = null;
-		const draft: Draft = { title, notes, status, priority, dueAt, projectId, parentId, waitingOn, tags: localTags };
-		const taskId = task.id;
+		const submitted: Draft = { title, notes, status, priority, dueAt, projectId, parentId, waitingOn, tags: localTags };
+		baselineRef.current = submitted;
+		savingRef.current += 1;
 		onSave({
 			title,
 			notes: notes || null,
@@ -181,15 +215,17 @@ export function TaskDetail({
 			parentId: parentId === NONE_PARENT ? null : parentId,
 			waitingOn: waitingOn || null,
 			tagIds: localTags.map((tag) => tag.id),
-		}).catch((err: unknown) => {
-			failedDraftRef.current = { taskId, draft };
-			applyDraft(draft);
-			setError(
-				`保存失败，已恢复原值；你填写的内容还在，可以再点保存。${err instanceof Error && err.message ? `（${err.message}）` : ""}`,
-			);
-		});
+		})
+			.catch((err: unknown) => {
+				baselineRef.current = null;
+				setError(
+					`保存失败，已恢复原值；你填写的内容还在，可以再点保存。${err instanceof Error && err.message ? `（${err.message}）` : ""}`,
+				);
+			})
+			.finally(() => {
+				savingRef.current -= 1;
+			});
 	}
-
 
 	async function confirmDelete() {
 		setDeleting(true);
@@ -401,7 +437,7 @@ export function TaskDetail({
 					</p>
 				</Field>
 			</FieldGroup>
-			<Badge variant="outline">来源：{sourceLabel(task.source)}</Badge>
+			{task.source ? <Badge variant="outline">来源：{sourceLabel(task.source)}</Badge> : null}
 			{pendingCreate ? null : <TaskActivityList taskId={task.id} updatedAt={task.updatedAt} />}
 			{error ? <FieldError>{error}</FieldError> : null}
 			</div>

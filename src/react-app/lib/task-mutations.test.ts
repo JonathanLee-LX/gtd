@@ -109,7 +109,7 @@ describe("optimistic create (#90)", () => {
 		expect(titles()).toEqual(["买牛奶", "旧任务"]);
 		const temp = items()[0]!;
 		expect(isTempTaskId(temp.id)).toBe(true);
-		expect(temp).toMatchObject({ projectId: "inbox", projectName: "收件箱", status: "inbox", source: "human" });
+		expect(temp).toMatchObject({ projectId: "inbox", projectName: "收件箱", status: "inbox", source: null });
 		// 请求体不带 source / 临时 id
 		await flush();
 		expect(api.createTask).toHaveBeenCalledWith({ title: "买牛奶", status: "inbox" });

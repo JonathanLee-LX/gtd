@@ -27,29 +27,30 @@ import {
 	findCachedTask,
 	removeTaskFromCaches,
 	replaceTaskInCaches,
-	restoreTaskQueries,
+	restoreTask,
 	silentInvalidateTasks,
-	snapshotTaskQueries,
+	snapshotTask,
 	stripSourceFromBody,
 	upsertTaskInCaches,
+	type TaskSnapshot,
 } from "./task-cache";
-import { TASK_MUTATION_KEY, TASK_MUTATION_SCOPE } from "./task-mutation-lock";
+import { TASK_MUTATION_KEY } from "./task-mutation-lock";
 
 export function mutationErrorMessage(err: unknown, fallback: string) {
 	if (err instanceof TypeError) return `${fallback}：网络连接失败，请检查网络后重试`;
 	return err instanceof Error && err.message ? err.message : fallback;
 }
 
+/**
+ * 不再用全局 scope 串行：每个操作只快照 / 回滚自己那条任务，不同任务之间互不影响；
+ * 同一条任务的并发由 hooks 里的按任务锁挡住。
+ */
 const optimisticMutationOptions = {
 	mutationKey: TASK_MUTATION_KEY,
-	scope: TASK_MUTATION_SCOPE,
 } as const;
 
-type Snapshot = ReturnType<typeof snapshotTaskQueries>;
-
 /**
- * 快照回滚后，快照里可能还留着已有结果的临时行：换成真实记录或删掉。
- * 也是新建失败 / 成功与其它回滚交错时，保证不重复、不留幽灵行的兜底。
+ * 快照回滚后（或任何时候），缓存里残留的、已有结果的临时行：换成真实记录或删掉。
  */
 export function reconcileSettledCreates(queryClient: QueryClient) {
 	for (const entry of listSettledCreates()) {
@@ -62,9 +63,30 @@ export function reconcileSettledCreates(queryClient: QueryClient) {
 	}
 }
 
-function rollback(queryClient: QueryClient, snapshot: Snapshot | undefined) {
-	if (snapshot) restoreTaskQueries(queryClient, snapshot);
-	reconcileSettledCreates(queryClient);
+/**
+ * #90 Review：只回滚这一条任务（不整表恢复，期间完成的其它新建 / 修改不受影响），
+ * 然后后台刷新一次，以服务端为准。
+ */
+export function rollbackTask(queryClient: QueryClient, snapshot: TaskSnapshot | undefined) {
+	if (snapshot) {
+		const entry = isTempTaskId(snapshot.id) ? getPendingCreate(snapshot.id) : undefined;
+		if (entry?.state === "failed") {
+			// 新建都没成功：这条整体撤回（新建那边已提示）。
+			removeTaskFromCaches(queryClient, snapshot.id);
+		} else if (entry?.state === "created" && entry.created) {
+			// 临时 id 期间已换成真实 id：按快照里的旧值恢复，但用真实 id。
+			const created = entry.created;
+			restoreTask(queryClient, snapshot, created.id, (task) => ({
+				...task,
+				id: created.id,
+				source: created.source,
+				createdAt: created.createdAt,
+			}));
+		} else {
+			restoreTask(queryClient, snapshot);
+		}
+	}
+	void silentInvalidateTasks(queryClient);
 }
 
 /** 排在失败的新建后面的操作：新建已提示过，这里静默。 */
@@ -102,7 +124,8 @@ export function buildOptimisticTask(
 		projectId,
 		projectName: project?.name ?? "",
 		parentId: str(body.parentId),
-		source: "human",
+		// 来源由服务端按入口写入；临时行不猜，详情页在拿到真实记录前不显示来源。
+		source: null,
 		createdAt: now,
 		updatedAt: now,
 		completedAt: null,
@@ -159,13 +182,14 @@ export function createTaskMutationOptions(
 				rejectPendingCreate(ctx.tempId);
 			}
 			toast.error(mutationErrorMessage(err, "创建失败，已撤回"));
+			void silentInvalidateTasks(queryClient);
 		},
 	};
 }
 
 // ---------------------------------------------------------------- complete / update / delete
 
-type SnapshotContext = { snapshot: Snapshot };
+type SnapshotContext = { snapshot: TaskSnapshot };
 
 export function completeTaskMutationOptions(
 	queryClient: QueryClient,
@@ -175,13 +199,13 @@ export function completeTaskMutationOptions(
 		mutationFn: async (id) => api.completeTask(await resolveTaskId(id)),
 		onMutate: async (id) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
-			const snapshot = snapshotTaskQueries(queryClient);
+			const snapshot = snapshotTask(queryClient, id);
 			if (isTempTaskId(id)) touchPendingCreate(id, { removed: true });
 			removeTaskFromCaches(queryClient, id);
 			return { snapshot };
 		},
 		onError: (err, _id, ctx) => {
-			rollback(queryClient, ctx?.snapshot);
+			rollbackTask(queryClient, ctx?.snapshot);
 			toastUnlessCreateFailed(err, "完成失败");
 		},
 		onSuccess: ({ task }, id) => {
@@ -205,13 +229,13 @@ export function updateTaskMutationOptions(
 			api.updateTask(await resolveTaskId(id), stripSourceFromBody(patch)),
 		onMutate: async ({ id, patch }) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
-			const snapshot = snapshotTaskQueries(queryClient);
+			const snapshot = snapshotTask(queryClient, id);
 			if (isTempTaskId(id)) touchPendingCreate(id);
 			applyOptimisticTaskPatch(queryClient, id, patch);
 			return { snapshot };
 		},
 		onError: (err, _vars, ctx) => {
-			rollback(queryClient, ctx?.snapshot);
+			rollbackTask(queryClient, ctx?.snapshot);
 			toastUnlessCreateFailed(err, "保存失败，已恢复原值");
 		},
 		onSuccess: ({ task }, { id }) => {
@@ -233,13 +257,13 @@ export function deleteTaskMutationOptions(
 		mutationFn: async (id) => api.deleteTask(await resolveTaskId(id)),
 		onMutate: async (id) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
-			const snapshot = snapshotTaskQueries(queryClient);
+			const snapshot = snapshotTask(queryClient, id);
 			if (isTempTaskId(id)) touchPendingCreate(id, { removed: true });
 			removeTaskFromCaches(queryClient, id);
 			return { snapshot };
 		},
 		onError: (err, _id, ctx) => {
-			rollback(queryClient, ctx?.snapshot);
+			rollbackTask(queryClient, ctx?.snapshot);
 			toastUnlessCreateFailed(err, "删除失败");
 		},
 		onSuccess: (_data, id) => {
@@ -266,7 +290,7 @@ export function processInboxMutationOptions(
 		mutationFn: async ({ id, body }) => api.processInbox(await resolveTaskId(id), body),
 		onMutate: async ({ id, body }) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
-			const snapshot = snapshotTaskQueries(queryClient);
+			const snapshot = snapshotTask(queryClient, id);
 			const current = findCachedTask(queryClient, id);
 			if (isTempTaskId(id)) touchPendingCreate(id, { removed: body.action === "discard" || !current });
 			if (body.action === "discard") {
@@ -284,7 +308,7 @@ export function processInboxMutationOptions(
 			return { snapshot };
 		},
 		onError: (err, _vars, ctx) => {
-			rollback(queryClient, ctx?.snapshot);
+			rollbackTask(queryClient, ctx?.snapshot);
 			toastUnlessCreateFailed(err, "处理失败");
 		},
 		onSuccess: ({ task }, { id, body }) => {

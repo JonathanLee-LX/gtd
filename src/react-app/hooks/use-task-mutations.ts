@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import { api, type Project, type Task } from "../api";
@@ -13,23 +13,28 @@ import {
 import { silentInvalidateTasks, upsertTaskInCaches } from "../lib/task-cache";
 import {
 	releaseTaskMutationLock,
+	TASK_MUTATION_KEY,
+	taskIdFromVariables,
 	tryAcquireTaskMutationLock,
 } from "../lib/task-mutation-lock";
 
 /**
- * Run mutateAsync only if no other optimistic task mutation is in flight.
+ * Run mutateAsync only if no other optimistic mutation is in flight **for the same task**.
  * Sync lock covers the double-click-before-paint gap that isPending cannot.
+ * Other tasks stay actionable — including while a create waits for its real id (#90).
  */
 function useGuardedMutateAsync<TVariables, TData>(
 	mutateAsync: (variables: TVariables) => Promise<TData>,
 ): (variables: TVariables) => Promise<TData | undefined> {
 	return useCallback(
 		async (variables: TVariables) => {
-			if (!tryAcquireTaskMutationLock()) return undefined;
+			const id = taskIdFromVariables(variables);
+			if (!id) return mutateAsync(variables);
+			if (!tryAcquireTaskMutationLock(id)) return undefined;
 			try {
 				return await mutateAsync(variables);
 			} finally {
-				releaseTaskMutationLock();
+				releaseTaskMutationLock(id);
 			}
 		},
 		[mutateAsync],
@@ -44,6 +49,15 @@ function useGuarded<T extends { mutateAsync: (v: never) => Promise<unknown>; isP
 		() => ({ ...mutation, mutateAsync, isPending: mutation.isPending }),
 		[mutation, mutateAsync],
 	);
+}
+
+/** Ids of tasks with an optimistic mutation in flight (for per-row disabled state). */
+export function usePendingTaskIds(): string[] {
+	const ids = useMutationState({
+		filters: { mutationKey: [...TASK_MUTATION_KEY], status: "pending" },
+		select: (mutation) => taskIdFromVariables(mutation.state.variables) ?? "",
+	});
+	return useMemo(() => ids.filter(Boolean), [ids]);
 }
 
 export function useCompleteTask() {

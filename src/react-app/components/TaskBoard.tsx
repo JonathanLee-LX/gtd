@@ -32,8 +32,11 @@ import type { TaskDraft } from "../../shared/schemas";
 import { orderTasksWithDepth } from "../../shared/task-tree";
 import { TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
 import { api, type Project, type Task } from "../api";
-import { useIsMutating } from "@tanstack/react-query";
-import { useCommitAiDraft, useProcessInboxTask } from "../hooks/use-task-mutations";
+import {
+	useCommitAiDraft,
+	usePendingTaskIds,
+	useProcessInboxTask,
+} from "../hooks/use-task-mutations";
 import {
 	prefersReducedMotion,
 	pulseCompleteHaptic,
@@ -43,7 +46,7 @@ import {
 	mergeOrderedWithExiting,
 	type ExitingTaskEntry,
 } from "../lib/merge-exiting-tasks";
-import { TASK_MUTATION_KEY } from "../lib/task-mutation-lock";
+import { isTaskIdPending } from "../lib/task-mutation-lock";
 import { isTempTaskId, realIdFor } from "../lib/pending-creates";
 import {
 	InboxProcessActions,
@@ -97,8 +100,12 @@ export function TaskBoard({
 	const [exiting, setExiting] = useState<Map<string, ExitingTaskEntry>>(() => new Map());
 	const processInbox = useProcessInboxTask();
 	const commitAi = useCommitAiDraft();
-	const taskMutationPending =
-		useIsMutating({ mutationKey: [...TASK_MUTATION_KEY] }) > 0;
+	// #90：只禁用正在提交的那条任务；其它任务照常可点。
+	const pendingTaskIds = usePendingTaskIds();
+	const isPending = useCallback(
+		(id: string) => isTaskIdPending(pendingTaskIds, id),
+		[pendingTaskIds],
+	);
 	const selectedIdRef = useRef<string | null>(null);
 	selectedIdRef.current = selectedId;
 	const cancelFeedbackRef = useRef<Map<string, () => void>>(new Map());
@@ -109,8 +116,11 @@ export function TaskBoard({
 		[ordered, exiting],
 	);
 	/** Prefer live task; fall back to exiting snapshot so detail stays mounted through feedback. */
+	// #90：临时 id 换成真实 id 的那一帧也要找得到（否则详情会闪一下被卸载、表单丢失）。
+	const selectedRealId = isTempTaskId(selectedId) && selectedId ? realIdFor(selectedId) : undefined;
 	const selected =
 		tasks.find((task) => task.id === selectedId) ??
+		(selectedRealId ? tasks.find((task) => task.id === selectedRealId) : undefined) ??
 		(selectedId ? (exiting.get(selectedId)?.task ?? null) : null);
 	const selectedCompleting = Boolean(selectedId && exiting.has(selectedId));
 	const listRef = useRef<HTMLDivElement>(null);
@@ -204,7 +214,7 @@ export function TaskBoard({
 	 */
 	const beginComplete = useCallback(
 		(id: string) => {
-			if (taskMutationPending || exiting.has(id) || cancelFeedbackRef.current.has(id)) return;
+			if (isPending(id) || exiting.has(id) || cancelFeedbackRef.current.has(id)) return;
 			const orderedIndex = ordered.findIndex((row) => row.task.id === id);
 			const live = ordered[orderedIndex]?.task ?? tasks.find((task) => task.id === id);
 			if (!live) return;
@@ -264,7 +274,7 @@ export function TaskBoard({
 				}
 			})();
 		},
-		[taskMutationPending, exiting, ordered, tasks, onComplete, clearExiting, closeDetail],
+		[isPending, exiting, ordered, tasks, onComplete, clearExiting, closeDetail],
 	);
 
 	async function handleInboxProcess(
@@ -272,7 +282,7 @@ export function TaskBoard({
 		action: InboxProcessAction,
 		waitingOn?: string,
 	) {
-		if (taskMutationPending || processBusy) return;
+		if (isPending(taskId) || processBusy === taskId) return;
 		setProcessBusy(taskId);
 		try {
 			await processInbox.mutateAsync({ id: taskId, body: { action, waitingOn } });
@@ -298,7 +308,7 @@ export function TaskBoard({
 			projects={projects}
 			tasks={tasks}
 			layout={isMobile ? "mobile" : "aside"}
-			mutationPending={taskMutationPending}
+			mutationPending={isPending(selected.id)}
 			completing={selectedCompleting}
 			onSave={(patch) => onSave(selected.id, patch)}
 			onComplete={async () => {
@@ -362,9 +372,9 @@ export function TaskBoard({
 									completing={Boolean(exitEntry)}
 									completePhase={exitEntry?.phase ?? null}
 									onOpen={() => openTask(task.id)}
-									completeDisabled={taskMutationPending || Boolean(exitEntry)}
+									completeDisabled={isPending(task.id) || Boolean(exitEntry)}
 									onComplete={() => {
-										if (taskMutationPending || exitEntry) return;
+										if (isPending(task.id) || exitEntry) return;
 										beginComplete(task.id);
 									}}
 								/>
@@ -374,7 +384,7 @@ export function TaskBoard({
 										style={{ paddingLeft: `${40 + depth * 20}px` }}
 									>
 										<InboxProcessActions
-											disabled={taskMutationPending || processBusy === task.id}
+											disabled={isPending(task.id) || processBusy === task.id}
 											onProcess={(action, waitingOn) =>
 												handleInboxProcess(task.id, action, waitingOn)
 											}

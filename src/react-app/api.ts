@@ -26,7 +26,8 @@ export type Task = {
 	projectId: string;
 	projectName: string;
 	parentId: string | null;
-	source: string;
+	/** 服务端按入口写入；乐观新建的临时行为 null（#90）。 */
+	source: string | null;
 	createdAt: string;
 	updatedAt: string;
 	completedAt: string | null;

@@ -13,6 +13,8 @@ import { taskRoutes } from "./routes/tasks";
 import { tokenRoutes } from "./routes/tokens";
 import { aiRoutes } from "./routes/ai";
 import { attachmentRoutes } from "./routes/attachments";
+// TEMP #89 diagnostics — remove after root cause found
+import { clientDiagnosticsRoutes } from "./routes/client-diagnostics";
 import type { AppEnv } from "./lib/storage";
 import { runDailyCleanup } from "./services/cleanup";
 
@@ -59,6 +61,8 @@ app.route("/api/tasks", taskRoutes);
 app.route("/api/tags", tagRoutes);
 app.route("/api/tokens", tokenRoutes);
 app.route("/api/ai", aiRoutes);
+// TEMP #89 diagnostics — remove after root cause found
+app.route("/api/client-diagnostics", clientDiagnosticsRoutes);
 
 app.all("/mcp", (c) => handleMcp(c.req.raw, c.env));
 app.all("/mcp/*", (c) => handleMcp(c.req.raw, c.env));

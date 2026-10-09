@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -33,6 +33,8 @@ import {
 } from "../../shared/limits";
 import type { Attachment } from "../api";
 import { attachmentKeys, attachmentService } from "../lib/attachment-service";
+// TEMP #89 diagnostics — remove after root cause found
+import { startPickerWatch, watchInterceptedClicks, type PickerWatch } from "../lib/picker-diagnostics";
 
 type UploadItem = {
 	key: string;
@@ -70,6 +72,25 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 	const [brokenImages, setBrokenImages] = useState<Set<string>>(() => new Set());
 	const markBroken = (id: string) =>
 		setBrokenImages((current) => (current.has(id) ? current : new Set(current).add(id)));
+
+	// TEMP #89 diagnostics — remove after root cause found
+	const pickerLabelRef = useRef<HTMLLabelElement>(null);
+	const pickerInputRef = useRef<HTMLInputElement>(null);
+	const pickerWatchRef = useRef<PickerWatch | null>(null);
+	const isTempTaskRef = useRef(taskId.startsWith("tmp-"));
+	isTempTaskRef.current = taskId.startsWith("tmp-");
+	useEffect(() => {
+		const stopIntercept = watchInterceptedClicks({
+			getLabel: () => pickerLabelRef.current,
+			getInput: () => pickerInputRef.current,
+			isTempTask: () => isTempTaskRef.current,
+		});
+		return () => {
+			stopIntercept();
+			pickerWatchRef.current?.stop();
+			pickerWatchRef.current = null;
+		};
+	}, []);
 
 	const query = useQuery({
 		queryKey: attachmentKeys.task(taskId),
@@ -175,7 +196,22 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 				  各浏览器、WebView 行为一致。input 只做视觉隐藏（sr-only），不用 display:none / hidden。
 				*/}
 				<label
+					ref={pickerLabelRef}
 					data-testid="attachment-picker"
+					onClick={(event) => {
+						// TEMP #89 diagnostics — remove after root cause found
+						const input = pickerInputRef.current;
+						if (!input) return;
+						// label 激活会再派发一次 click 到 input 并冒泡回来：已有观察就交给它记 inputClicked。
+						if (event.target === input && pickerWatchRef.current?.active) return;
+						pickerWatchRef.current?.stop();
+						pickerWatchRef.current = startPickerWatch({
+							label: event.currentTarget,
+							input,
+							click: event.nativeEvent,
+							isTempTask: isTempTaskRef.current,
+						});
+					}}
 					aria-disabled={pickerDisabled || undefined}
 					className={cn(
 						buttonVariants({ variant: "outline", size: "sm" }),
@@ -186,6 +222,7 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 					{uploading ? <Spinner data-icon="inline-start" /> : <PaperclipIcon data-icon="inline-start" />}
 					添加附件
 					<input
+						ref={pickerInputRef}
 						type="file"
 						accept={ATTACHMENT_INPUT_ACCEPT}
 						multiple

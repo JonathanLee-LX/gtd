@@ -27,6 +27,12 @@
 			"migrations_dir": "drizzle"
 		}
 	],
+	"r2_buckets": [
+		{
+			"binding": "UPLOADS",
+			"bucket_name": "gtd-uploads"
+		}
+	],
 	"ai": {
 		"binding": "AI"
 	}

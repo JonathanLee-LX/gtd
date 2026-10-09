@@ -39,6 +39,40 @@ export type Activity = {
 	createdAt: string;
 };
 
+export type Attachment = {
+	id: string;
+	taskId: string;
+	kind: "image" | "file";
+	fileName: string | null;
+	mime: string | null;
+	size: number | null;
+	/** 同源代理地址：`<img src>` / 新标签打开；加 `?download=1` 强制下载。 */
+	contentUrl: string;
+	createdAt: string;
+};
+
+export type AttachmentUsage = { count: number; bytes: number };
+
+export type AttachmentUploadTicket = {
+	uploadId: string;
+	uploadUrl: string;
+	headers: Record<string, string>;
+	kind: "image" | "file";
+	expiresAt: string;
+};
+
+/** 服务端错误：保留 HTTP 状态和 code，前端可按 code 出文案。 */
+export class ApiError extends Error {
+	constructor(
+		message: string,
+		public readonly status: number,
+		public readonly code?: string,
+	) {
+		super(message);
+		this.name = "ApiError";
+	}
+}
+
 export type Me = { user: { id: string; email: string; name: string }; source: string };
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -52,7 +86,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 		error?: string;
 	};
 	if (!response.ok) {
-		throw new Error(data.message || data.error || `请求失败 (${response.status})`);
+		throw new ApiError(
+			data.message || data.error || `请求失败 (${response.status})`,
+			response.status,
+			data.error,
+		);
 	}
 	return data;
 }
@@ -121,6 +159,28 @@ export const api = {
 	deletedTasks: () => request<{ items: Task[] }>("/api/tasks/deleted"),
 	restoreTask: (id: string) =>
 		request<{ task: Task }>(`/api/tasks/${id}/restore`, { method: "POST" }),
+	taskAttachments: (taskId: string) =>
+		request<{ items: Attachment[]; usage: AttachmentUsage }>(
+			`/api/tasks/${encodeURIComponent(taskId)}/attachments`,
+		),
+	requestAttachmentUpload: (
+		taskId: string,
+		body: { fileName: string; size: number; mime: string },
+	) =>
+		request<AttachmentUploadTicket>(
+			`/api/tasks/${encodeURIComponent(taskId)}/attachments/uploads`,
+			{ method: "POST", body: JSON.stringify(body) },
+		),
+	confirmAttachmentUpload: (taskId: string, uploadId: string) =>
+		request<{ attachment: Attachment }>(
+			`/api/tasks/${encodeURIComponent(taskId)}/attachments/uploads/${encodeURIComponent(uploadId)}/confirm`,
+			{ method: "POST" },
+		),
+	deleteAttachment: (taskId: string, attachmentId: string) =>
+		request<{ ok: true }>(
+			`/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}`,
+			{ method: "DELETE" },
+		),
 	tags: () => request<{ items: Tag[] }>("/api/tags"),
 	createTag: (name: string) =>
 		request<{ tag: Tag }>("/api/tags", {

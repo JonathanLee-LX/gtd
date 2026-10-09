@@ -237,10 +237,83 @@ export const activityLog = sqliteTable(
 	(table) => [index("activity_user_created_idx").on(table.userId, table.createdAt)],
 );
 
+/**
+ * #68 任务附件（从 gtd-attach-exp 迁移）：D1 只存元数据，二进制在 R2（绑定 UPLOADS）。
+ * v1 只有 image / file(PDF) 两种 kind；`url` 列为将来的「链接附件」预留，v1 不写。
+ * deleted_at 非空 = 已删除、等 R2 对象清理（删除时立即尝试删 R2，失败由 cron 兜底）。
+ * 任务进回收站时附件行不动，靠「任务未删除」过滤隐藏；恢复任务即回来。
+ */
+export const attachments = sqliteTable(
+	"attachments",
+	{
+		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		taskId: text("task_id")
+			.notNull()
+			.references(() => tasks.id, { onDelete: "cascade" }),
+		kind: text("kind").default("file").notNull(),
+		status: text("status").default("ready").notNull(),
+		r2Key: text("r2_key"),
+		filename: text("filename"),
+		mime: text("mime"),
+		size: integer("size"),
+		url: text("url"),
+		createdAt: text("created_at").notNull(),
+		updatedAt: text("updated_at").notNull(),
+		deletedAt: text("deleted_at"),
+	},
+	(table) => [
+		index("attachments_user_task_idx").on(table.userId, table.taskId),
+		index("attachments_user_deleted_idx").on(table.userId, table.deletedAt),
+		uniqueIndex("attachments_r2_key_unique").on(table.r2Key),
+	],
+);
+
+/**
+ * 两段式上传的中间态：request 建行（pending），confirm 校验 R2 后转成 attachments 行。
+ * 一个 r2_key 只允许一条 upload 记录，confirm 幂等靠 attachment_id 回填。
+ */
+export const attachmentUploads = sqliteTable(
+	"attachment_uploads",
+	{
+		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		taskId: text("task_id")
+			.notNull()
+			.references(() => tasks.id, { onDelete: "cascade" }),
+		r2Key: text("r2_key").notNull(),
+		kind: text("kind").default("file").notNull(),
+		filename: text("filename").notNull(),
+		mime: text("mime").notNull(),
+		size: integer("size").notNull(),
+		status: text("status").default("pending").notNull(),
+		attachmentId: text("attachment_id").references(() => attachments.id, {
+			onDelete: "set null",
+		}),
+		expiresAt: text("expires_at").notNull(),
+		confirmedAt: text("confirmed_at"),
+		createdAt: text("created_at").notNull(),
+	},
+	(table) => [
+		uniqueIndex("attachment_uploads_r2_key_unique").on(table.r2Key),
+		index("attachment_uploads_user_status_idx").on(
+			table.userId,
+			table.status,
+			table.expiresAt,
+		),
+		index("attachment_uploads_task_idx").on(table.taskId),
+	],
+);
+
 export const userRelations = relations(user, ({ many }) => ({
 	sessions: many(session),
 	projects: many(projects),
 	tasks: many(tasks),
+	attachments: many(attachments),
 }));
 
 export const projectRelations = relations(projects, ({ one, many }) => ({
@@ -252,6 +325,12 @@ export const taskRelations = relations(tasks, ({ one, many }) => ({
 	user: one(user, { fields: [tasks.userId], references: [user.id] }),
 	project: one(projects, { fields: [tasks.projectId], references: [projects.id] }),
 	tagLinks: many(taskTags),
+	attachments: many(attachments),
+}));
+
+export const attachmentRelations = relations(attachments, ({ one }) => ({
+	user: one(user, { fields: [attachments.userId], references: [user.id] }),
+	task: one(tasks, { fields: [attachments.taskId], references: [tasks.id] }),
 }));
 
 export const schema = {
@@ -266,4 +345,6 @@ export const schema = {
 	taskTags,
 	apiTokens,
 	activityLog,
+	attachments,
+	attachmentUploads,
 };

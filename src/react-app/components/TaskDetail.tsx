@@ -31,6 +31,7 @@ import { CONTEXT_TAG_EXAMPLES, TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "
 import type { TaskPriority, TaskStatus } from "../../shared/schemas";
 import { api, type Activity, type Project, type Tag, type Task } from "../api";
 import { activityTimeLabel, sourceLabel } from "../lib/format";
+import { TaskAttachments } from "./TaskAttachments";
 
 const NONE_PARENT = "__none__";
 
@@ -200,6 +201,7 @@ export function TaskDetail({
 						rows={6}
 					/>
 				</Field>
+				<TaskAttachments taskId={task.id} />
 				<Field>
 					<FieldLabel>状态</FieldLabel>
 					<Select

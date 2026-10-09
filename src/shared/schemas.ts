@@ -83,6 +83,15 @@ export const todayFocusQuery = z.object({
 	tz: z.string().max(64).optional(),
 });
 
+/** #68 附件上传第一步（request）。size/mime 是客户端声明，服务端在 PUT/confirm 用真实字节回验。 */
+export const requestAttachmentUploadInput = z.object({
+	fileName: z.string().trim().min(1).max(255),
+	size: z.number().int().positive(),
+	mime: z.string().trim().max(200),
+});
+
+export type RequestAttachmentUploadInput = z.infer<typeof requestAttachmentUploadInput>;
+
 export const parseAiInput = z.object({
 	text: z.string().trim().min(1).max(2000),
 	tz: z.string().max(64).optional(),

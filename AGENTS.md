@@ -29,6 +29,7 @@ pnpm build
 - 不要引入 `McpAgent` / Durable Objects 做 CRUD。
 - 密钥只放 `.dev.vars` 和 Worker secrets。
 - 不要让模型直接写 SQL。
+- 附件（#68）：二进制只进 R2（绑定 `UPLOADS`，生产桶 `gtd-uploads`），上传 / 下载都经 Worker 代理，不发 R2 凭据或预签名 URL。额度与类型白名单在 `src/shared/limits.ts`（前后端共用）。附件清理挂在现有每日 cron 上，必须先于回收站任务硬删。
 
 ## 任务状态
 

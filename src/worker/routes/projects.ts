@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { createDb } from "../../db/client";
 import { createProjectInput, updateProjectInput } from "../../shared/schemas";
-import type { WorkerEnv } from "../lib/auth";
+import type { AppEnv } from "../lib/storage";
 import { handleRoute } from "../lib/route-utils";
 import { requireUser, type AppVariables } from "../middleware/require-user";
 import {
@@ -14,7 +14,7 @@ import {
 } from "../services/projects";
 
 export const projectRoutes = new Hono<{
-	Bindings: WorkerEnv;
+	Bindings: AppEnv;
 	Variables: AppVariables;
 }>()
 	.use("*", requireUser)
@@ -70,6 +70,7 @@ export const projectRoutes = new Hono<{
 				c.get("user").id,
 				c.req.param("id"),
 				c.get("source"),
+				c.env.UPLOADS,
 			),
 		),
 	);

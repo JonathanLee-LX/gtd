@@ -1,8 +1,9 @@
-import { useEffect, useMemo, type ReactNode } from "react";
+import { isValidElement, useEffect, useMemo, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { useLoadState } from "../hooks/use-load-state";
 import { defaultCountOf, loadErrorMessage, type LoadableQuery } from "../lib/load-state";
-import { skeletonCountFor, writeSkeletonCount } from "../lib/skeleton";
+import { skeletonPlanFor, writeSkeletonCount } from "../lib/skeleton";
+import { EmptyLine } from "./EmptyLine";
 
 export type QueryViewProps<T> = {
 	query: LoadableQuery<T>;
@@ -19,7 +20,7 @@ export type QueryViewProps<T> = {
 	skeletonLabel?: string;
 	/** 骨架最多几行（一屏）。 */
 	maxCount?: number;
-	/** 没有记录时的行数，默认 5。 */
+	/** 没有记录时的行数，默认 5。0 = 没记录时按「上次为空」画空状态骨架（需要 emptySkeleton / EmptyLine）。 */
 	fallbackCount?: number;
 	/** 数据 → 记住的条数，默认 items.length。 */
 	countOf?: (data: T) => number;
@@ -27,6 +28,11 @@ export type QueryViewProps<T> = {
 	isEmpty?: (data: T) => boolean;
 	/** 空状态（只在拿到数据且确实为空、或查询被禁用时出现）。 */
 	empty: ReactNode;
+	/**
+	 * 上次加载是空的（记住的条数为 0）时画的骨架，高度要和 `empty` 一样。
+	 * `empty` 是 `<EmptyLine>` 时自动用 `<EmptyLine.Skeleton />`；都没有时退回 1 行骨架。
+	 */
+	emptySkeleton?: ReactNode;
 	/** 错误（没有任何数据时）；不传用默认红字。 */
 	error?: (error: unknown) => ReactNode;
 	children: (data: T) => ReactNode;
@@ -51,6 +57,7 @@ export function QueryView<T>({
 	countOf = defaultCountOf as (data: T) => number,
 	isEmpty,
 	empty,
+	emptySkeleton,
 	error,
 	children,
 }: QueryViewProps<T>) {
@@ -60,13 +67,15 @@ export function QueryView<T>({
 
 	// 只在 skeleton 状态（或 key 变化时）读 localStorage，渲染数据时一次都不读。
 	// loadKey 每次渲染可能是新数组，用它的 JSON 作依赖（存储 key 本来就按 JSON 归一化）。
-	const count = useMemo(
+	const plan = useMemo(
 		() =>
 			inSkeleton
-				? skeletonCountFor(JSON.parse(keyString) as unknown[], { max: maxCount, fallback: fallbackCount })
-				: 0,
+				? skeletonPlanFor(JSON.parse(keyString) as unknown[], { max: maxCount, fallback: fallbackCount })
+				: null,
 		[inSkeleton, keyString, maxCount, fallbackCount],
 	);
+	const emptyPlaceholder =
+		emptySkeleton ?? (isValidElement(empty) && empty.type === EmptyLine ? <EmptyLine.Skeleton /> : null);
 
 	const loadedCount = state.fetched && state.data !== undefined ? countOf(state.data) : null;
 	useEffect(() => {
@@ -83,10 +92,13 @@ export function QueryView<T>({
 				aria-busy="true"
 				aria-label={skeletonLabel}
 				data-testid="skeleton-list"
+				data-skeleton-variant={plan?.lastEmpty && emptyPlaceholder ? "empty" : "rows"}
 				data-shimmer={state.reducedMotion ? undefined : ""}
 				className={cn(skeletonClassName, !state.reducedMotion && "skeleton-shimmer")}
 			>
-				{Array.from({ length: Math.max(1, count) }, (_, index) => skeleton(index))}
+				{plan?.lastEmpty && emptyPlaceholder
+					? emptyPlaceholder
+					: Array.from({ length: Math.max(1, plan?.count ?? 1) }, (_, index) => skeleton(index))}
 			</Tag>
 		);
 	}

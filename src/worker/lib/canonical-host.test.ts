@@ -37,7 +37,7 @@ describe("canonicalOrigin", () => {
 
 describe("legacyHostRedirect", () => {
 	it("307s (temporary, not cached long-term) page navigations to gtd.livs.top keeping path + query", () => {
-		for (const path of ["/", "/today", "/projects/abc?tab=1&x=%E4%B8%AD", "/login", "/vite.svg"]) {
+		for (const path of ["/", "/today", "/projects/abc?tab=1&x=%E4%B8%AD", "/login", "/favicon.svg"]) {
 			const res = redirectOf(`${LEGACY}${path}`);
 			expect(res?.status).toBe(307);
 			expect(res?.headers.get("Location")).toBe(`${CANONICAL}${path}`);

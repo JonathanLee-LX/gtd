@@ -360,3 +360,31 @@ describe("Shell cold start (#101)", () => {
 		expect(screen.queryByLabelText("正在加载项目")).toBeNull();
 	});
 });
+
+describe("Shell sidebar app icon", () => {
+	it("shows icon C (light + dark) instead of the GT text badge, decorative next to the title", async () => {
+		renderShell(makeClient());
+		await act(flush);
+		const badge = screen.getByTestId("sidebar-app-icon");
+		expect(badge.textContent).toBe("");
+		expect(screen.queryByText("GT")).toBeNull();
+		// 尺寸 / 对齐沿用原徽标（size-8 方块，居中），不再自带底色和圆角
+		expect(badge.className).toContain("size-8");
+		expect(badge.className).toContain("aspect-square");
+		expect(badge.className).not.toContain("bg-sidebar-primary");
+		const imgs = Array.from(badge.querySelectorAll("img"));
+		expect(imgs).toHaveLength(2);
+		for (const img of imgs) {
+			expect(img.getAttribute("alt")).toBe("");
+			expect(img.getAttribute("aria-hidden")).toBe("true");
+		}
+		expect(imgs[0].className).toContain("dark:hidden");
+		expect(imgs[1].className).toContain("dark:block");
+		expect(imgs[0].getAttribute("src")).not.toBe(imgs[1].getAttribute("src"));
+		// 文字仍在，链接的可读名称来自「GTD 工作台」
+		const link = badge.closest("a");
+		expect(link?.getAttribute("href")).toBe("/today");
+		expect(link?.textContent).toContain("GTD 工作台");
+		expect(link?.textContent).toContain("个人 + 助手");
+	});
+});

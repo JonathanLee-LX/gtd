@@ -247,8 +247,8 @@ export function SettingsPage() {
 						query={tokensQuery}
 						loadKey={settingsKeys.tokens()}
 						maxCount={10}
-						// #99：没记录时按「空」画一行空状态高度的骨架 —— 多数人这张卡片是空的；每张画 1 整行时，三张空卡片合起来让回收站上移 150px（> 一行）。
-						fallbackCount={0}
+						// #99：没记录时只画 1 行（第一次进设置页，5 行骨架会让下面的卡片大幅跳动）。记住条数为 0 时才画空状态高度的骨架。
+						fallbackCount={1}
 						skeletonClassName="flex flex-col gap-2"
 						skeletonLabel="正在加载 Token"
 						skeleton={(index) => (
@@ -319,8 +319,8 @@ export function SettingsPage() {
 					<QueryView
 						query={{ data: projectsReady ? { items: archivedProjects } : undefined, error: projectsError }}
 						loadKey={["projects", "archived"]}
-						// #99：没记录时按「空」画一行空状态高度的骨架 —— 多数人这张卡片是空的；每张画 1 整行时，三张空卡片合起来让回收站上移 150px（> 一行）。
-						fallbackCount={0}
+						// #99：没记录时只画 1 行（第一次进设置页，5 行骨架会让下面的卡片大幅跳动）。记住条数为 0 时才画空状态高度的骨架。
+						fallbackCount={1}
 						maxCount={10}
 						skeletonClassName="flex flex-col gap-2"
 						skeletonLabel="正在加载已归档项目"

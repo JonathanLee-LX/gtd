@@ -2,7 +2,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	SKELETON_DEFAULT_COUNT,
+	clearSkeletonCounts,
 	readSkeletonCount,
+	skeletonPlanFor,
 	resolveSkeletonCount,
 	rowsThatFit,
 	skeletonCountFor,
@@ -69,5 +71,27 @@ describe("skeleton count (#99)", () => {
 		writeSkeletonCount(taskKeys.focus(), Number.NaN);
 		expect(skeletonCountFor(taskKeys.focus())).toBe(5);
 		expect(resolveSkeletonCount(null, { fallback: 1 })).toBe(1);
+	});
+
+	it("skeletonPlanFor: lastEmpty only when stored 0, or no record with fallback 0 (#99)", () => {
+		const k = ["settings", "plan"];
+		expect(skeletonPlanFor(k, { fallback: 1 })).toEqual({ count: 1, lastEmpty: false });
+		expect(skeletonPlanFor(k, { fallback: 0 })).toEqual({ count: 1, lastEmpty: true });
+		writeSkeletonCount(k, 0);
+		expect(skeletonPlanFor(k, { fallback: 1 })).toEqual({ count: 1, lastEmpty: true });
+		writeSkeletonCount(k, 4);
+		expect(skeletonPlanFor(k, { fallback: 0, max: 3 })).toEqual({ count: 3, lastEmpty: false });
+	});
+
+	it("clearSkeletonCounts removes only gtd:skeleton-count:* keys", () => {
+		writeSkeletonCount(["a"], 1);
+		writeSkeletonCount(["b"], 0);
+		localStorage.setItem("theme", "dark");
+		localStorage.setItem("gtd:inbox-project-id", "p1");
+		clearSkeletonCounts();
+		expect(readSkeletonCount(["a"])).toBeNull();
+		expect(readSkeletonCount(["b"])).toBeNull();
+		expect(localStorage.getItem("theme")).toBe("dark");
+		expect(localStorage.getItem("gtd:inbox-project-id")).toBe("p1");
 	});
 });

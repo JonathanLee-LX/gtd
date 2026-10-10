@@ -5,6 +5,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readInboxHint, writeInboxHint } from "../lib/inbox-hint";
+import { readSkeletonCount, writeSkeletonCount } from "../lib/skeleton";
 import { LoginPage } from "./LoginPage";
 
 let meStatus = 401;
@@ -55,12 +56,16 @@ describe("LoginPage clears the client session (#101)", () => {
 	it("clears the inbox id hint and the previous user's query cache on mount", async () => {
 		meStatus = 401;
 		writeInboxHint("previous-user-inbox");
+		writeSkeletonCount(["settings", "passkeys"], 2);
+		localStorage.setItem("theme", "dark");
 		const client = new QueryClient();
 		client.setQueryData(["me"], { user: { id: "u1", email: "prev@example.com", name: "Prev" } });
 		client.setQueryData(["tasks", "list", { projectId: "previous-user-inbox" }], { items: [] });
 		renderLogin(client);
 		await act(flush);
 		expect(readInboxHint()).toBeNull();
+		expect(readSkeletonCount(["settings", "passkeys"])).toBeNull();
+		expect(localStorage.getItem("theme")).toBe("dark");
 		expect(client.getQueryData(["me"])).toBeUndefined();
 		expect(client.getQueryData(["tasks", "list", { projectId: "previous-user-inbox" }])).toBeUndefined();
 		expect(screen.queryByText("工作台")).toBeNull();

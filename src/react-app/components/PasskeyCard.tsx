@@ -36,6 +36,7 @@ import {
 } from "../lib/passkey";
 import { settingsKeys } from "../lib/settings-keys";
 import { loadErrorMessage } from "../lib/load-state";
+import { EmptyLine } from "./EmptyLine";
 import { QueryView } from "./QueryView";
 import { SettingsListItem } from "./SettingsListItem";
 
@@ -154,14 +155,14 @@ export function PasskeyCard() {
 					query={listQuery}
 					loadKey={settingsKeys.passkeys()}
 					maxCount={10}
-					// #99：没记录时只画 1 行（第一次进设置页，5 行骨架会让下面的卡片大幅跳动）。
-					fallbackCount={1}
+					// #99：没记录时按「空」画一行空状态高度的骨架 —— 多数人这张卡片是空的；每张画 1 整行时，三张空卡片合起来让回收站上移 150px（> 一行）。
+					fallbackCount={0}
 					skeletonClassName="flex flex-col gap-2"
 					skeletonLabel="正在加载通行密钥"
 					skeleton={(index) => (
 						<SettingsListItem.Skeleton key={index} index={index} leading actionLabel="删除" />
 					)}
-					empty={<p className="text-sm text-muted-foreground">还没有绑定通行密钥。</p>}
+					empty={<EmptyLine>还没有绑定通行密钥。</EmptyLine>}
 					error={(err) => <ErrorAlert message={loadErrorMessage(err, "通行密钥列表加载失败")} />}
 				>
 					{(items) => (

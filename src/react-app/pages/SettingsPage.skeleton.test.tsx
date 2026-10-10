@@ -54,6 +54,9 @@ function rowsPerCard() {
 	});
 }
 
+const variants = () =>
+	CARDS.map((title) => within(card(title)).getByTestId("skeleton-list").dataset.skeletonVariant);
+
 beforeEach(() => {
 	localStorage.clear();
 	vi.stubGlobal(
@@ -68,7 +71,7 @@ afterEach(() => {
 });
 
 describe("settings card skeletons (#99)", () => {
-	it("no saved count → each card shows 1 skeleton row (not the default 5)", async () => {
+	it("no saved count → 通行密钥 / API Token draw one empty-line skeleton, 回收站 1 row (never the default 5)", async () => {
 		mount();
 		await wait(200);
 		expect(rowsPerCard()).toEqual([
@@ -76,6 +79,7 @@ describe("settings card skeletons (#99)", () => {
 			{ card: "API Token", label: "正在加载 Token", rows: 1 },
 			{ card: "回收站", label: "正在加载回收站", rows: 1 },
 		]);
+		expect(variants()).toEqual(["empty", "empty", "rows"]);
 	});
 
 	it("saved counts still win (capped at 10)", async () => {
@@ -85,5 +89,18 @@ describe("settings card skeletons (#99)", () => {
 		mount();
 		await wait(200);
 		expect(rowsPerCard().map((c) => c.rows)).toEqual([2, 3, 10]);
+		expect(variants()).toEqual(["rows", "rows", "rows"]);
+	});
+
+	it("saved count 0 (empty last time) → empty-line skeleton in that card, not a full row", async () => {
+		writeSkeletonCount(settingsKeys.passkeys(), 0);
+		writeSkeletonCount(settingsKeys.tokens(), 0);
+		writeSkeletonCount(settingsKeys.deletedTasks(), 4);
+		mount();
+		await wait(200);
+		expect(variants()).toEqual(["empty", "empty", "rows"]);
+		expect(rowsPerCard().map((c) => c.rows)).toEqual([1, 1, 4]);
+		expect(within(card("通行密钥")).getByTestId("skeleton-list").querySelectorAll("[data-skeleton-empty]")).toHaveLength(1);
+		expect(within(card("API Token")).getByTestId("skeleton-list").querySelectorAll("[data-skeleton-empty]")).toHaveLength(1);
 	});
 });

@@ -38,6 +38,7 @@ import {
 import { toast } from "sonner";
 import { PasskeyCard } from "../components/PasskeyCard";
 import { SettingsListItem } from "../components/SettingsListItem";
+import { EmptyLine } from "../components/EmptyLine";
 import { QueryView } from "../components/QueryView";
 import { loadErrorMessage } from "../lib/load-state";
 import { settingsKeys } from "../lib/settings-keys";
@@ -246,14 +247,14 @@ export function SettingsPage() {
 						query={tokensQuery}
 						loadKey={settingsKeys.tokens()}
 						maxCount={10}
-						// #99：没记录时只画 1 行（第一次进设置页，5 行骨架会让下面的卡片大幅跳动）。
-						fallbackCount={1}
+						// #99：没记录时按「空」画一行空状态高度的骨架 —— 多数人这张卡片是空的；每张画 1 整行时，三张空卡片合起来让回收站上移 150px（> 一行）。
+						fallbackCount={0}
 						skeletonClassName="flex flex-col gap-2"
 						skeletonLabel="正在加载 Token"
 						skeleton={(index) => (
 							<SettingsListItem.Skeleton key={index} index={index} actionLabel="撤销" />
 						)}
-						empty={null}
+						empty={<EmptyLine>还没有 Token。</EmptyLine>}
 						error={(err) => <LoadAlert message={loadErrorMessage(err)} />}
 					>
 						{(data) => (
@@ -318,14 +319,15 @@ export function SettingsPage() {
 					<QueryView
 						query={{ data: projectsReady ? { items: archivedProjects } : undefined, error: projectsError }}
 						loadKey={["projects", "archived"]}
-						fallbackCount={1}
+						// #99：没记录时按「空」画一行空状态高度的骨架 —— 多数人这张卡片是空的；每张画 1 整行时，三张空卡片合起来让回收站上移 150px（> 一行）。
+						fallbackCount={0}
 						maxCount={10}
 						skeletonClassName="flex flex-col gap-2"
 						skeletonLabel="正在加载已归档项目"
 						skeleton={(index) => (
 							<SettingsListItem.Skeleton key={index} index={index} actionLabel="取消归档" />
 						)}
-						empty={<p className="text-sm text-muted-foreground">没有已归档的项目。</p>}
+						empty={<EmptyLine>没有已归档的项目。</EmptyLine>}
 						error={(err) => <LoadAlert message={loadErrorMessage(err)} />}
 					>
 						{(data) => (
@@ -396,7 +398,7 @@ export function SettingsPage() {
 						skeleton={(index) => (
 							<SettingsListItem.Skeleton key={index} index={index} actionLabel="恢复" />
 						)}
-						empty={<p className="text-sm text-muted-foreground">回收站是空的。</p>}
+						empty={<EmptyLine>回收站是空的。</EmptyLine>}
 						error={(err) => <LoadAlert message={loadErrorMessage(err, "回收站加载失败")} />}
 					>
 						{(data) => (

@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import type { Attachment, Project, Task } from "./api";
 import { SettingsListItem } from "./components/SettingsListItem";
+import { EmptyLine } from "./components/EmptyLine";
 import { SidebarProjectItem, SidebarUserButton } from "./components/ShellSidebarItems";
 import { TaskAttachments } from "./components/TaskAttachments";
 import { TaskBoard } from "./components/TaskBoard";
@@ -296,6 +297,25 @@ for (const vp of [
 			const real = rect(view.container.querySelector("[data-real] > div"));
 			const skel = rect(view.container.querySelector("[data-skel] > div"));
 			expect(real.height).toBeGreaterThan(40);
+			expect(Math.abs(real.height - skel.height)).toBeLessThanOrEqual(2);
+		});
+
+		it("empty-line skeleton (stored count 0) matches the empty-state line height (±2px)", () => {
+			const view = render(
+				<Providers>
+					<div style={{ width: Math.min(vp.width, 576) - 48 }} className="flex flex-col gap-4">
+						<div data-real>
+							<EmptyLine>还没有 Token。</EmptyLine>
+						</div>
+						<div data-skel className="skeleton-shimmer">
+							<EmptyLine.Skeleton />
+						</div>
+					</div>
+				</Providers>,
+			);
+			const real = rect(view.container.querySelector("[data-real] > p"));
+			const skel = rect(view.container.querySelector("[data-skel] > p"));
+			expect(real.height).toBeGreaterThan(15); // 真有布局（text-sm 行高 20）
 			expect(Math.abs(real.height - skel.height)).toBeLessThanOrEqual(2);
 		});
 	});

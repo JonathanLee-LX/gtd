@@ -99,3 +99,37 @@ export function skeletonCountFor(
 ): number {
 	return resolveSkeletonCount(readSkeletonCount(queryKey), opts);
 }
+
+/**
+ * 一次读记录，同时给出行数和「上次是不是空的」（记住的条数正好为 0）。
+ * QueryView 用 lastEmpty 决定画空状态高度的骨架，而不是一整行（#99：空 → 空不跳）。
+ * 没记录时 `fallback: 0` 也算 lastEmpty（用于「多数人是空的」的小列表）。
+ */
+export function skeletonPlanFor(
+	queryKey: readonly unknown[] | string,
+	opts: { max?: number; fallback?: number } = {},
+): { count: number; lastEmpty: boolean } {
+	const stored = readSkeletonCount(queryKey);
+	// 没记录且 fallback 明确为 0（调用方声明「通常是空的」）也按「上次为空」处理。
+	const lastEmpty = stored === 0 || (stored === null && opts.fallback === 0);
+	return { count: resolveSkeletonCount(stored, opts), lastEmpty };
+}
+
+/**
+ * 清掉所有骨架行数记录（只删 `gtd:skeleton-count:` 前缀的 key，别的 localStorage 不碰）。
+ * 记录反映的是「上一个登录用户」的列表长度，换人后不该沿用 —— 由 clearClientSession 调用。
+ */
+export function clearSkeletonCounts(): void {
+	const store = storage();
+	if (!store) return;
+	try {
+		const keys: string[] = [];
+		for (let i = 0; i < store.length; i++) {
+			const key = store.key(i);
+			if (key?.startsWith(SKELETON_STORAGE_PREFIX)) keys.push(key);
+		}
+		for (const key of keys) store.removeItem(key);
+	} catch {
+		// 存储不可用：没东西可清
+	}
+}

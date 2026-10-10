@@ -1,13 +1,14 @@
 // @vitest-environment happy-dom
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readSkeletonCount, skeletonCountFor, writeSkeletonCount } from "../lib/skeleton";
+import { readSkeletonCount, skeletonPlanFor, writeSkeletonCount } from "../lib/skeleton";
+import { EmptyLine } from "./EmptyLine";
 import { QueryView } from "./QueryView";
 
-// 包一层 spy，验证 QueryView 只在骨架状态读记录（skeletonCountFor 是唯一的读入口）。
+// 包一层 spy，验证 QueryView 只在骨架状态读记录（skeletonPlanFor 是唯一的读入口）。
 vi.mock("../lib/skeleton", async (orig) => {
 	const real = await orig<typeof import("../lib/skeleton")>();
-	return { ...real, skeletonCountFor: vi.fn(real.skeletonCountFor) };
+	return { ...real, skeletonPlanFor: vi.fn(real.skeletonPlanFor) };
 });
 
 type Data = { items: string[] };
@@ -111,7 +112,7 @@ describe("QueryView count memory (#99)", () => {
 
 	it("reads localStorage only while in the skeleton state, once (not every render)", () => {
 		writeSkeletonCount(["list", "a"], 2);
-		const reads = vi.mocked(skeletonCountFor);
+		const reads = vi.mocked(skeletonPlanFor);
 		reads.mockClear();
 		const view = render(<View data={{ items: ["x"] }} />);
 		view.rerender(<View data={{ items: ["x", "y"] }} />);
@@ -132,5 +133,77 @@ describe("QueryView count memory (#99)", () => {
 		expect(screen.queryByText("空")).toBeNull();
 		view.rerender(<View data={{ items: [] }} />);
 		expect(screen.getByText("空")).not.toBeNull();
+	});
+});
+
+function EmptyLineView({ data, k = ["cards", "x"] }: { data: Data | undefined; k?: unknown[] }) {
+	return (
+		<QueryView
+			query={{ data, error: null }}
+			loadKey={k}
+			fallbackCount={1}
+			skeleton={(i) => <div key={i} data-testid="sk-row" />}
+			empty={<EmptyLine>还没有。</EmptyLine>}
+		>
+			{(d) => <p>{d.items.join(",")}</p>}
+		</QueryView>
+	);
+}
+
+const emptySkeletons = () => document.querySelectorAll("[data-skeleton-empty]").length;
+
+describe("QueryView empty-height skeleton (#99 设置页空卡片)", () => {
+	it("first visit (no record): default fallback rows, not the empty line", () => {
+		render(<EmptyLineView data={undefined} />);
+		past150();
+		expect(rows()).toBe(1);
+		expect(emptySkeletons()).toBe(0);
+		expect(screen.getByTestId("skeleton-list").dataset.skeletonVariant).toBe("rows");
+	});
+
+	it("stored count 0 (empty last time) → one empty-line-height skeleton instead of a full row", () => {
+		const view = render(<EmptyLineView data={undefined} />);
+		past150();
+		view.rerender(<EmptyLineView data={{ items: [] }} />);
+		expect(screen.getByText("还没有。")).not.toBeNull();
+		expect(readSkeletonCount(["cards", "x"])).toBe(0);
+		view.unmount();
+
+		render(<EmptyLineView data={undefined} />);
+		past150();
+		expect(rows()).toBe(0);
+		expect(emptySkeletons()).toBe(1);
+		expect(screen.getByTestId("skeleton-list").dataset.skeletonVariant).toBe("empty");
+	});
+
+	it("stored count > 0 still draws that many rows", () => {
+		writeSkeletonCount(["cards", "x"], 3);
+		render(<EmptyLineView data={undefined} />);
+		past150();
+		expect(rows()).toBe(3);
+		expect(emptySkeletons()).toBe(0);
+	});
+
+	it("explicit emptySkeleton wins; plain (non-EmptyLine) empty without it keeps 1 row", () => {
+		writeSkeletonCount(["list", "a"], 0);
+		const plain = render(<View data={undefined} />);
+		past150();
+		expect(rows()).toBe(1);
+		plain.unmount();
+
+		render(
+			<QueryView
+				query={{ data: undefined as Data | undefined, error: null }}
+				loadKey={["list", "a"]}
+				skeleton={(i) => <div key={i} data-testid="sk-row" />}
+				empty={<p>空</p>}
+				emptySkeleton={<div data-testid="custom-empty-sk" />}
+			>
+				{() => null}
+			</QueryView>,
+		);
+		past150();
+		expect(rows()).toBe(0);
+		expect(screen.getByTestId("custom-empty-sk")).not.toBeNull();
 	});
 });

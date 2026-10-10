@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 describe("settings card skeletons (#99)", () => {
-	it("no saved count → 通行密钥 / API Token draw one empty-line skeleton, 回收站 1 row (never the default 5)", async () => {
+	it("no saved count → each card shows 1 skeleton row (not the default 5, not the empty line)", async () => {
 		mount();
 		await wait(200);
 		expect(rowsPerCard()).toEqual([
@@ -79,7 +79,7 @@ describe("settings card skeletons (#99)", () => {
 			{ card: "API Token", label: "正在加载 Token", rows: 1 },
 			{ card: "回收站", label: "正在加载回收站", rows: 1 },
 		]);
-		expect(variants()).toEqual(["empty", "empty", "rows"]);
+		expect(variants()).toEqual(["rows", "rows", "rows"]);
 	});
 
 	it("saved counts still win (capped at 10)", async () => {

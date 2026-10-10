@@ -65,6 +65,8 @@ import { clearClientSession } from "../lib/client-session";
 import { createLoginRedirectOnce, loadErrorMessage, shellLoadOutcome } from "../lib/session";
 import { MobileBottomNav } from "../components/MobileBottomNav";
 import { MobileQuickCollect } from "../components/MobileQuickCollect";
+import appIconDark from "../assets/app-icon-dark.svg";
+import appIcon from "../assets/app-icon.svg";
 
 const SIDEBAR_MENU_CLASS = "flex w-full min-w-0 flex-col gap-0";
 
@@ -176,8 +178,16 @@ export function Shell() {
 					<SidebarMenu>
 						<SidebarMenuItem>
 							<SidebarMenuButton size="lg" render={<NavLink to="/today" />}>
-								<div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-									GT
+								{/* App icon 方案 C：尺寸 / 位置沿用原 GT 徽标，圆角与描边用图标自带的；旁边有文字，图标只做装饰。 */}
+								<div data-testid="sidebar-app-icon" className="flex aspect-square size-8 items-center justify-center">
+									<img src={appIcon} alt="" aria-hidden="true" draggable={false} className="size-full dark:hidden" />
+									<img
+										src={appIconDark}
+										alt=""
+										aria-hidden="true"
+										draggable={false}
+										className="hidden size-full dark:block"
+									/>
 								</div>
 								<div className="grid flex-1 text-left text-sm leading-tight">
 									<span className="truncate font-medium">GTD 工作台</span>

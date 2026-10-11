@@ -42,6 +42,7 @@ import { EmptyLine } from "../components/EmptyLine";
 import { QueryView } from "../components/QueryView";
 import { loadErrorMessage } from "../lib/load-state";
 import { settingsKeys } from "../lib/settings-keys";
+import { invalidateTaskActivity } from "../lib/task-activity";
 import { SOFT_DELETE_RETENTION_DAYS } from "../../shared/constants";
 import { statusLabel } from "../lib/format";
 import { api, type Task } from "../api";
@@ -125,6 +126,7 @@ export function SettingsPage() {
 		setRestoringId(id);
 		try {
 			await api.restoreTask(id);
+			void invalidateTaskActivity(queryClient, id);
 			queryClient.setQueryData<{ items: Task[] }>(settingsKeys.deletedTasks(), (current) =>
 				current ? { ...current, items: current.items.filter((item) => item.id !== id) } : current,
 			);

@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Project, Task } from "../api";
@@ -58,13 +59,15 @@ const type = (el: HTMLElement, value: string) => fireEvent.change(el, { target: 
 const clickSave = () => fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
 function mount(current: Task, onSave: (patch: Record<string, unknown>) => Promise<void>) {
-	const view = render(
-		<TaskDetail task={current} projects={projects} tasks={[current]} onSave={onSave} onComplete={noop} onDelete={noop} />,
+	// #111：活动列表走 TanStack Query，详情需要 QueryClientProvider。
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	const ui = (t: Task) => (
+		<QueryClientProvider client={client}>
+			<TaskDetail task={t} projects={projects} tasks={[t]} onSave={onSave} onComplete={noop} onDelete={noop} />
+		</QueryClientProvider>
 	);
-	return (next: Task) =>
-		view.rerender(
-			<TaskDetail task={next} projects={projects} tasks={[next]} onSave={onSave} onComplete={noop} onDelete={noop} />,
-		);
+	const view = render(ui(current));
+	return (next: Task) => view.rerender(ui(next));
 }
 
 beforeEach(() => resetPendingCreatesForTests());

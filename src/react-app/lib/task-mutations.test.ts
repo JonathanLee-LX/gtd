@@ -20,6 +20,7 @@ import {
 	completeTaskMutationOptions,
 	createTaskMutationOptions,
 	deleteTaskMutationOptions,
+	processInboxMutationOptions,
 	updateTaskMutationOptions,
 } from "./task-mutations";
 import { taskKeys } from "./task-query-keys";
@@ -271,5 +272,49 @@ describe("optimistic update rollback", () => {
 		expect((await updated).ok).toBe(false);
 		expect(titles()).toEqual(["旧任务"]);
 		expect(toast.error).toHaveBeenCalledWith("服务器出错了");
+	});
+});
+
+describe("task activity invalidation (#111)", () => {
+	const activityKey = (id: string) => ["task-activity", id] as const;
+	function seedActivity() {
+		qc.setQueryData(activityKey("old"), { items: [] });
+		qc.setQueryData(activityKey("other"), { items: [] });
+	}
+	const stale = (key: readonly unknown[]) => qc.getQueryState(key)?.isInvalidated ?? false;
+
+	it("save success invalidates only [task-activity, id] — not other tasks' activity", async () => {
+		seedActivity();
+		api.updateTask.mockResolvedValue({ task: serverTask({ id: "old", title: "新标题" }) });
+		const spy = vi.spyOn(qc, "invalidateQueries");
+		expect((await run(updateTaskMutationOptions(qc), { id: "old", patch: { title: "新标题" } })).ok).toBe(true);
+		expect(stale(activityKey("old"))).toBe(true);
+		expect(stale(activityKey("other"))).toBe(false);
+		expect(spy).toHaveBeenCalledWith({ queryKey: ["task-activity", "old"], exact: true });
+		// 没有一次把整个 ["task-activity"] 前缀 / 不带 exact 的活动失效
+		expect(spy).not.toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["task-activity"] }));
+	});
+
+	it("save failure does not invalidate activity", async () => {
+		seedActivity();
+		api.updateTask.mockRejectedValue(new Error("服务器出错了"));
+		await run(updateTaskMutationOptions(qc), { id: "old", patch: { title: "新标题" } });
+		expect(stale(activityKey("old"))).toBe(false);
+	});
+
+	it("complete success invalidates that task's activity", async () => {
+		seedActivity();
+		api.completeTask.mockResolvedValue({ task: serverTask({ id: "old", status: "completed" }) });
+		await run(completeTaskMutationOptions(qc), "old");
+		expect(stale(activityKey("old"))).toBe(true);
+		expect(stale(activityKey("other"))).toBe(false);
+	});
+
+	it("inbox process (status change) invalidates that task's activity", async () => {
+		seedActivity();
+		api.processInbox.mockResolvedValue({ task: serverTask({ id: "old", status: "next" }) });
+		await run(processInboxMutationOptions(qc), { id: "old", body: { action: "next" } });
+		expect(stale(activityKey("old"))).toBe(true);
+		expect(stale(activityKey("other"))).toBe(false);
 	});
 });

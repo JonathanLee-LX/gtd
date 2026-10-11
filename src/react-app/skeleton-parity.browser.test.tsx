@@ -9,10 +9,11 @@ import { cleanup, render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
-import type { Attachment, Project, Task } from "./api";
+import type { Activity, Attachment, Project, Task } from "./api";
 import { SettingsListItem } from "./components/SettingsListItem";
 import { EmptyLine } from "./components/EmptyLine";
 import { SidebarProjectItem, SidebarUserButton } from "./components/ShellSidebarItems";
+import { TaskActivityList } from "./components/TaskActivityList";
 import { TaskAttachments } from "./components/TaskAttachments";
 import { TaskBoard } from "./components/TaskBoard";
 import { TaskRow } from "./components/TaskRow";
@@ -22,7 +23,7 @@ import { SidebarMenu, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { attachmentKeys } from "./lib/attachment-service";
 import { writeSkeletonCount } from "./lib/skeleton";
-import { taskKeys } from "./lib/task-query-keys";
+import { taskActivityKeys, taskKeys } from "./lib/task-query-keys";
 
 const projects: Project[] = [
 	{ id: "inbox", name: "收件箱", color: null, isInbox: true, archivedAt: null, sortOrder: 0 },
@@ -51,6 +52,50 @@ function makeTask(i: number, overrides: Partial<Task> = {}): Task {
 		tags: [],
 		...overrides,
 	};
+}
+
+function makeActivities(n: number): Activity[] {
+	return Array.from({ length: n }, (_, i) => ({
+		id: `a${i}`,
+		actorType: i % 2 ? "mcp" : "human",
+		action: "task.update",
+		summary: "更新了任务",
+		createdAt: new Date(Date.UTC(2026, 9, 9, 12, 0) - i * 60_000).toISOString(),
+	}));
+}
+
+/** #111：活动列表 —— 真实（缓存命中）或骨架（请求挂起），返回列表区（骨架容器 / 真实列表外层）的几何。 */
+async function measureActivity(opts: { loading: boolean; count: number; taskId: string }) {
+	const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+	if (!opts.loading) client.setQueryData(taskActivityKeys.task(opts.taskId), { items: makeActivities(opts.count) });
+	else vi.stubGlobal("fetch", () => new Promise(() => {}));
+	const view = render(
+		<Providers client={client}>
+			<div style={{ width: 360 }}>
+				<TaskActivityList taskId={opts.taskId} />
+			</div>
+		</Providers>,
+	);
+	if (opts.loading) await sleep(250);
+	const section = view.container.querySelector('[data-testid="task-activity"]');
+	const area = opts.loading
+		? view.container.querySelector('[data-testid="skeleton-list"]')
+		: view.container.querySelector('[data-testid="task-activity-list"]')?.parentElement ?? null;
+	const firstRow = opts.loading
+		? area?.querySelector("[data-skeleton]")
+		: area?.querySelector('[data-testid="task-activity-item"]');
+	const result = {
+		sectionHeight: rect(section).height,
+		areaTop: rect(area).top,
+		areaHeight: rect(area).height,
+		rowHeight: rect(firstRow ?? null).height,
+		toggleHeight: opts.loading
+			? rect(area?.lastElementChild ?? null).height
+			: rect(view.container.querySelector('[data-testid="task-activity-toggle"]') ?? area?.lastElementChild ?? null).height,
+	};
+	view.unmount();
+	vi.unstubAllGlobals();
+	return result;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -212,6 +257,69 @@ for (const vp of [
 			const skelRow = rect(skelView.container.querySelector('[data-testid="skeleton-list"] li'));
 			expect(realRow.height).toBeGreaterThan(40);
 			expect(Math.abs(realRow.height - skelRow.height)).toBeLessThanOrEqual(2);
+		});
+
+		it("activity: default 3-row skeleton matches a collapsed list of 3 real rows (±2px) (#111)", async () => {
+			const skel = await measureActivity({ loading: true, count: 0, taskId: "act-new" });
+			const real = await measureActivity({ loading: false, count: 3, taskId: "act-3" });
+			expect(real.rowHeight).toBeGreaterThan(40); // 真有布局
+			expect(Math.abs(real.rowHeight - skel.rowHeight)).toBeLessThanOrEqual(2);
+			expect(Math.abs(real.areaHeight - skel.areaHeight)).toBeLessThanOrEqual(2);
+			expect(skel.areaTop).toBe(real.areaTop); // 标题下的列表起点不动
+			console.info(`[activity parity ${vp.name} 3]`, JSON.stringify({ skel, real }));
+		});
+
+		it("activity: remembered >3 → skeleton (3 rows + toggle) matches collapsed 10-item list with button (±2px) (#111)", async () => {
+			writeSkeletonCount(taskActivityKeys.task("act-10"), 4);
+			const skel = await measureActivity({ loading: true, count: 0, taskId: "act-10" });
+			const real = await measureActivity({ loading: false, count: 10, taskId: "act-10" });
+			expect(real.toggleHeight).toBeGreaterThan(20);
+			expect(Math.abs(real.toggleHeight - skel.toggleHeight)).toBeLessThanOrEqual(2);
+			expect(Math.abs(real.areaHeight - skel.areaHeight)).toBeLessThanOrEqual(2);
+			expect(Math.abs(real.sectionHeight - skel.sectionHeight)).toBeLessThanOrEqual(2);
+			console.info(`[activity parity ${vp.name} 10]`, JSON.stringify({ skel, real }));
+		});
+
+		it("activity: collapsing with the heading scrolled above the panel brings it back; otherwise no jump (#111)", async () => {
+			const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
+			client.setQueryData(taskActivityKeys.task("act-scroll"), { items: makeActivities(30) });
+			const view = render(
+				<Providers client={client}>
+					<div data-scroller style={{ height: 400, width: 360, overflowY: "auto" }}>
+						<div style={{ height: 300 }}>表单字段</div>
+						<TaskActivityList taskId="act-scroll" />
+						<div style={{ height: 200 }}>底部</div>
+					</div>
+				</Providers>,
+			);
+			const scroller = view.container.querySelector<HTMLElement>("[data-scroller]")!;
+			const toggleBtn = () => view.container.querySelector<HTMLButtonElement>('[data-testid="task-activity-toggle"]')!;
+			const headingEl = () => {
+				const id = view.container.querySelector('[data-testid="task-activity"]')!.getAttribute("aria-labelledby")!;
+				return document.getElementById(id)!;
+			};
+
+			// 标题可见时展开 / 收起：滚动位置不变（不跳回顶部）
+			scroller.scrollTop = 150;
+			toggleBtn().click();
+			await sleep(30);
+			expect(scroller.scrollTop).toBe(150);
+			toggleBtn().click();
+			await sleep(30);
+			expect(scroller.scrollTop).toBe(150);
+
+			// 展开后滚到底部（标题已滚出顶部）再收起：标题回到可视区顶部附近，按钮也在可视区内
+			toggleBtn().click();
+			await sleep(30);
+			scroller.scrollTop = scroller.scrollHeight;
+			await sleep(30);
+			expect(rect(headingEl()).top).toBeLessThan(rect(scroller).top);
+			toggleBtn().click();
+			await sleep(30);
+			const box = rect(scroller);
+			expect(Math.abs(rect(headingEl()).top - box.top)).toBeLessThanOrEqual(2);
+			expect(rect(toggleBtn()).bottom).toBeLessThanOrEqual(box.bottom);
+			expect(document.activeElement === toggleBtn() || document.activeElement === document.body).toBe(true);
 		});
 
 		it("sidebar project item skeleton matches a real item (±2px) (#101)", () => {

@@ -36,6 +36,7 @@ import {
 	type TaskSnapshot,
 } from "./task-cache";
 import { TASK_MUTATION_KEY } from "./task-mutation-lock";
+import { invalidateTaskActivity } from "./task-activity";
 import { INBOX_NAME } from "../../shared/constants";
 
 export function mutationErrorMessage(err: unknown, fallback: string) {
@@ -219,6 +220,8 @@ export function completeTaskMutationOptions(
 			removeTaskFromCaches(queryClient, task.id);
 			if (id !== task.id) removeTaskFromCaches(queryClient, id);
 			void silentInvalidateTasks(queryClient);
+			// #111：完成会写一条活动；只让这条任务的活动失效（不再靠 updatedAt 变化触发重拉）。
+			void invalidateTaskActivity(queryClient, task.id);
 			toastTaskCompleted();
 		},
 	};
@@ -255,6 +258,8 @@ export function updateTaskMutationOptions(
 				upsertTaskInCaches(queryClient, task);
 			}
 			void silentInvalidateTasks(queryClient);
+			// #111：保存成功 → 只失效 ["task-activity", id]，详情里新活动出现在最上面。
+			void invalidateTaskActivity(queryClient, task.id);
 		},
 	};
 }
@@ -341,6 +346,7 @@ export function processInboxMutationOptions(
 				upsertTaskInCaches(queryClient, task);
 			}
 			void silentInvalidateTasks(queryClient);
+			void invalidateTaskActivity(queryClient, task.id);
 		},
 	};
 }

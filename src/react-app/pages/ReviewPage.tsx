@@ -30,6 +30,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, type Task } from "../api";
 import { silentInvalidateTasks } from "../lib/task-cache";
+import { invalidateTaskActivity } from "../lib/task-activity";
 import {
 	InboxProcessActions,
 	type InboxProcessAction,
@@ -123,6 +124,7 @@ export function ReviewPage() {
 			await api.updateTask(id, body);
 			await load();
 			void silentInvalidateTasks(queryClient);
+			void invalidateTaskActivity(queryClient, id);
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : "更新失败");
 		} finally {
@@ -144,6 +146,7 @@ export function ReviewPage() {
 			});
 			await load();
 			void silentInvalidateTasks(queryClient);
+			void invalidateTaskActivity(queryClient, id);
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : "处理失败");
 		} finally {
@@ -175,6 +178,8 @@ export function ReviewPage() {
 			toast.success(`已生成下一步「${created.title}」`);
 			await load();
 			void silentInvalidateTasks(queryClient);
+			// 催促把活动记在等待的那条任务上。
+			void invalidateTaskActivity(queryClient, task.id);
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : "催促失败");
 		} finally {

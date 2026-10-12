@@ -10,6 +10,9 @@
 	"triggers": {
 		"crons": ["0 3 * * *"]
 	},
+	"placement": {
+		"mode": "smart"
+	},
 	"observability": {
 		"enabled": true
 	},

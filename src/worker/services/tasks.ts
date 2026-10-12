@@ -23,7 +23,7 @@ import { latestTaskActivityQuery, logActivity, taskUpdateActivityWrite } from ".
 import { getInbox } from "./ensure-inbox";
 import { getProject } from "./projects";
 import { replaceTaskTags, tagsForTasks } from "./tags";
-import { runBatch } from "../lib/batch";
+import { chunks, D1_MAX_BOUND_PARAMS, runBatch } from "../lib/batch";
 
 export type TaskRow = typeof tasks.$inferSelect;
 
@@ -39,10 +39,16 @@ async function hydrate(
 ): Promise<TaskView[]> {
 	if (rows.length === 0) return [];
 	const projectIds = [...new Set(rows.map((row) => row.projectId))];
-	const projectRows = await db
-		.select()
-		.from(projects)
-		.where(and(eq(projects.userId, userId), inArray(projects.id, projectIds)));
+	// D1 每条语句最多 100 个绑定参数：userId 占 1 个，IN (...) 每块最多 99 个，同一个 batch。
+	const projectQueries = chunks(projectIds, D1_MAX_BOUND_PARAMS - 1).map((part) =>
+		db
+			.select({ id: projects.id, name: projects.name })
+			.from(projects)
+			.where(and(eq(projects.userId, userId), inArray(projects.id, part))),
+	);
+	const projectRows = (
+		await runBatch(db, projectQueries as [(typeof projectQueries)[number], ...typeof projectQueries])
+	).flat();
 	const projectMap = new Map(projectRows.map((row) => [row.id, row.name]));
 	const tagMap = await tagsForTasks(
 		db,
@@ -237,8 +243,9 @@ export async function updateTask(
 		const filtered = input.tagIds.filter((tagId) => owned.has(tagId));
 		nextTags = filtered.map((tagId) => ({ id: tagId, name: owned.get(tagId)! }));
 		tagWrites.push(db.delete(taskTags).where(eq(taskTags.taskId, id)));
-		if (filtered.length > 0) {
-			tagWrites.push(db.insert(taskTags).values(filtered.map((tagId) => ({ taskId: id, tagId }))));
+		// D1 每条语句最多 100 个绑定参数，每行 2 个：每条 INSERT 最多 49 行，都在同一个写 batch 里。
+		for (const part of chunks(filtered, 49)) {
+			tagWrites.push(db.insert(taskTags).values(part.map((tagId) => ({ taskId: id, tagId }))));
 		}
 	}
 

@@ -29,3 +29,14 @@ export async function runBatch<T extends readonly [Query, ...Query[]]>(
 		throw error;
 	}
 }
+
+/** D1 每条语句最多 100 个绑定参数。 */
+export const D1_MAX_BOUND_PARAMS = 100;
+
+/** 把 IN (...) 的值切成每块不超过 `size` 个（size = 100 − 这条语句里其它参数的个数）。 */
+export function chunks<T>(items: readonly T[], size: number): T[][] {
+	if (size < 1) throw new Error("chunk size must be >= 1");
+	const out: T[][] = [];
+	for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+	return out;
+}

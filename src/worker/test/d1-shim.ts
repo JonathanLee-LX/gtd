@@ -9,8 +9,14 @@ import type { AppDatabase } from "../../db/client";
  */
 export function createCountingD1(sqlite: BetterSqlite3.Database) {
 	const counter = { roundTrips: 0, statements: 0 };
+	/** 测试用：batch 执行前的钩子（可 await，用来模拟两个请求交错）。 */
+	const hooks: { beforeBatch?: (info: { writes: boolean }) => Promise<void> | void } = {};
 	type Bound = { sql: string; params: unknown[] };
+	const checkParams = (b: Bound) => {
+		if (b.params.length > 100) throw new Error(`D1_ERROR: too many SQL variables (${b.params.length} > 100)`);
+	};
 	const exec = (b: Bound) => {
+		checkParams(b);
 		counter.statements++;
 		const stmt = sqlite.prepare(b.sql);
 		const params = b.params.map((p) => (typeof p === "boolean" ? (p ? 1 : 0) : p));
@@ -19,6 +25,7 @@ export function createCountingD1(sqlite: BetterSqlite3.Database) {
 		return { results: [], success: true, meta: { changes: info.changes, last_row_id: Number(info.lastInsertRowid) } };
 	};
 	const rawOf = (b: Bound) => {
+		checkParams(b);
 		counter.statements++;
 		const stmt = sqlite.prepare(b.sql);
 		const params = b.params.map((p) => (typeof p === "boolean" ? (p ? 1 : 0) : p));
@@ -52,6 +59,8 @@ export function createCountingD1(sqlite: BetterSqlite3.Database) {
 		prepare: (sql: string) => statement(sql),
 		async batch(stmts: { __bound: Bound }[]) {
 			counter.roundTrips++;
+			const writes = stmts.some((s) => !/^\s*(select|with)\b/i.test(s.__bound.sql));
+			await hooks.beforeBatch?.({ writes });
 			// D1 的 batch 是一个隐式事务：全部成功或全部回滚。
 			return sqlite.transaction(() => stmts.map((s) => exec(s.__bound)))();
 		},
@@ -60,6 +69,7 @@ export function createCountingD1(sqlite: BetterSqlite3.Database) {
 	return {
 		db,
 		counter,
+		hooks,
 		reset() {
 			counter.roundTrips = 0;
 			counter.statements = 0;

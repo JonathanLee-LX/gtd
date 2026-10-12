@@ -1,5 +1,5 @@
 import { and, desc, eq, exists, inArray, isNotNull, isNull, like, lt, or, sql } from "drizzle-orm";
-import { activityLog, projects, taskTags, tasks, user } from "../../db/schema";
+import { activityLog, projects, tags, taskTags, tasks, user } from "../../db/schema";
 import type { AppDatabase } from "../../db/client";
 import {
 	DEFAULT_PAGE_SIZE,
@@ -19,10 +19,11 @@ import { createsParentCycle } from "../../shared/task-tree";
 import { ymdInZone } from "../../shared/today";
 import { badRequest, notFound } from "../lib/errors";
 import { newId, nowIso } from "../lib/ids";
-import { logActivity, logTaskUpdateActivity } from "./activity";
+import { latestTaskActivityQuery, logActivity, taskUpdateActivityWrite } from "./activity";
 import { getInbox } from "./ensure-inbox";
 import { getProject } from "./projects";
 import { replaceTaskTags, tagsForTasks } from "./tags";
+import { runBatch } from "../lib/batch";
 
 export type TaskRow = typeof tasks.$inferSelect;
 
@@ -54,18 +55,37 @@ async function hydrate(
 	}));
 }
 
-export async function getTask(db: AppDatabase, userId: string, id: string) {
-	const rows = await db
-		.select()
+/** #119：任务行 + 项目名（子查询，一条语句）。 */
+function taskWithProjectQuery(db: AppDatabase, userId: string, id: string) {
+	return db
+		.select({
+			task: tasks,
+			projectName: sql<string | null>`(select ${projects.name} from ${projects} where ${projects.id} = ${tasks.projectId} and ${projects.userId} = ${userId})`,
+		})
 		.from(tasks)
 		.where(and(eq(tasks.id, id), eq(tasks.userId, userId), isNull(tasks.deletedAt)))
 		.limit(1);
-	const task = rows[0];
-	if (!task) throw notFound("任务");
-	const [view] = await hydrate(db, userId, [task]);
-	return view;
 }
 
+/** #119：一条任务的标签（只读这条任务的 task_tags，不扫全表）。 */
+function taskTagsQuery(db: AppDatabase, userId: string, id: string) {
+	return db
+		.select({ id: tags.id, name: tags.name })
+		.from(taskTags)
+		.innerJoin(tags, eq(taskTags.tagId, tags.id))
+		.where(and(eq(taskTags.taskId, id), eq(tags.userId, userId)));
+}
+
+/** GET /api/tasks/:id：任务 + 项目名 + 标签，一次 D1 往返（之前 3 次）。 */
+export async function getTask(db: AppDatabase, userId: string, id: string): Promise<TaskView> {
+	const [rows, tagRows] = await runBatch(db, [
+		taskWithProjectQuery(db, userId, id),
+		taskTagsQuery(db, userId, id),
+	] as const);
+	const row = rows[0];
+	if (!row) throw notFound("任务");
+	return { ...row.task, projectName: row.projectName ?? "", tags: tagRows };
+}
 
 async function resolveParentId(
 	db: AppDatabase,
@@ -153,17 +173,41 @@ export async function createTask(
 	return getTask(db, userId, row.id);
 }
 
+/**
+ * PATCH /api/tasks/:id（网页和 MCP 同一路径）。#119：D1 往返压到 2 次（改父任务时另加校验读）。
+ *  1) 一个只读 batch：当前任务 + 项目名、标签、这条任务最新一条活动（合并判断必须在写之前读），
+ *     按需加上目标项目、本人的标签。
+ *  2) 一个写 batch（原子）：UPDATE … RETURNING、（换标签时）删 / 插 task_tags、活动合并或新插。
+ *     返回值直接用 RETURNING 的行拼出来，不再回读。
+ */
 export async function updateTask(
 	db: AppDatabase,
 	userId: string,
 	id: string,
 	input: UpdateTaskInput,
 	source: TaskSource,
-) {
-	const current = await getTask(db, userId, id);
-	if (input.projectId) {
-		await getProject(db, userId, input.projectId);
-	}
+): Promise<TaskView> {
+	const wantTags = input.tagIds !== undefined && input.tagIds.length > 0;
+	const [currentRows, currentTags, latestActivity, projectRows, ownedTags] = await runBatch(db, [
+		taskWithProjectQuery(db, userId, id),
+		taskTagsQuery(db, userId, id),
+		latestTaskActivityQuery(db, userId, id),
+		input.projectId
+			? db
+					.select({ id: projects.id, name: projects.name })
+					.from(projects)
+					.where(and(eq(projects.id, input.projectId), eq(projects.userId, userId)))
+					.limit(1)
+			: db.select({ id: projects.id, name: projects.name }).from(projects).where(sql`0`),
+		wantTags
+			? db.select({ id: tags.id, name: tags.name }).from(tags).where(eq(tags.userId, userId))
+			: db.select({ id: tags.id, name: tags.name }).from(tags).where(sql`0`),
+	] as const);
+	const currentRow = currentRows[0];
+	if (!currentRow) throw notFound("任务");
+	const current = currentRow.task;
+	if (input.projectId && !projectRows[0]) throw notFound("项目");
+
 	const now = nowIso();
 	const nextStatus = input.status ?? current.status;
 	const patch: Partial<TaskRow> = { updatedAt: now };
@@ -184,26 +228,53 @@ export async function updateTask(
 	if (nextStatus !== "completed") {
 		patch.completedAt = null;
 	}
-	await db
-		.update(tasks)
-		.set(patch)
-		.where(and(eq(tasks.id, id), eq(tasks.userId, userId)));
-	if (input.tagIds) {
-		await replaceTaskTags(db, userId, id, input.tagIds);
+
+	// 标签：只保留本人的（同 replaceTaskTags），顺序按传入顺序。
+	let nextTags = currentTags;
+	const tagWrites = [];
+	if (input.tagIds !== undefined) {
+		const owned = new Map<string, string>(ownedTags.map((tag: { id: string; name: string }) => [tag.id, tag.name]));
+		const filtered = input.tagIds.filter((tagId) => owned.has(tagId));
+		nextTags = filtered.map((tagId) => ({ id: tagId, name: owned.get(tagId)! }));
+		tagWrites.push(db.delete(taskTags).where(eq(taskTags.taskId, id)));
+		if (filtered.length > 0) {
+			tagWrites.push(db.insert(taskTags).values(filtered.map((tagId) => ({ taskId: id, tagId }))));
+		}
 	}
+
 	// #115：只改内容字段的连续编辑合并成一条活动；状态 / 项目 / 父任务真的变了就另起一条。
 	const structural =
 		(patch.status !== undefined && patch.status !== current.status) ||
 		(patch.projectId !== undefined && patch.projectId !== current.projectId) ||
 		(patch.parentId !== undefined && patch.parentId !== current.parentId);
-	await logTaskUpdateActivity(db, {
-		userId,
-		source,
-		taskId: id,
-		summary: `更新任务「${input.title ?? current.title}」`,
-		coalescible: !structural,
-	});
-	return getTask(db, userId, id);
+	const activity = taskUpdateActivityWrite(
+		db,
+		{
+			userId,
+			source,
+			taskId: id,
+			summary: `更新任务「${input.title ?? current.title}」`,
+			coalescible: !structural,
+		},
+		latestActivity[0],
+		now,
+	);
+	const [updatedRows] = await runBatch(db, [
+		db
+			.update(tasks)
+			.set(patch)
+			.where(and(eq(tasks.id, id), eq(tasks.userId, userId)))
+			.returning(),
+		...tagWrites,
+		activity.query,
+	] as const);
+	const updated = updatedRows[0];
+	if (!updated) throw notFound("任务");
+	return {
+		...updated,
+		projectName: input.projectId ? projectRows[0]!.name : (currentRow.projectName ?? ""),
+		tags: nextTags,
+	};
 }
 
 export async function completeTask(

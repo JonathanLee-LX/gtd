@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { tags, taskTags } from "../../db/schema";
 import type { AppDatabase } from "../../db/client";
 import type { TaskSource } from "../../shared/schemas";
@@ -67,7 +67,9 @@ export async function tagsForTasks(db: AppDatabase, taskIds: string[]) {
 			name: tags.name,
 		})
 		.from(taskTags)
-		.innerJoin(tags, eq(taskTags.tagId, tags.id));
+		.innerJoin(tags, eq(taskTags.tagId, tags.id))
+		// #119：只读这些任务的 task_tags（之前没有 where，扫全表再在内存里过滤）。
+		.where(inArray(taskTags.taskId, taskIds));
 	const map = new Map<string, { id: string; name: string }[]>();
 	for (const row of rows) {
 		if (!taskIds.includes(row.taskId)) continue;

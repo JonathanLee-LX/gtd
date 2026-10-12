@@ -42,68 +42,80 @@ export async function logActivity(
 	});
 }
 
+export type LatestTaskActivity = {
+	id: string;
+	action: string;
+	actorType: string;
+	createdAt: string;
+	runStartedAt: string | null;
+};
+
+/** #119：这条任务最新的一条活动（合并判断用）。返回查询构造器，可放进 batch；必须在写之前读。 */
+export function latestTaskActivityQuery(db: AppDatabase, userId: string, taskId: string) {
+	return db
+		.select({
+			id: activityLog.id,
+			action: activityLog.action,
+			actorType: activityLog.actorType,
+			createdAt: activityLog.createdAt,
+			runStartedAt: activityLog.runStartedAt,
+		})
+		.from(activityLog)
+		.where(
+			and(
+				eq(activityLog.userId, userId),
+				eq(activityLog.entityType, "task"),
+				eq(activityLog.entityId, taskId),
+			),
+		)
+		.orderBy(desc(activityLog.createdAt), desc(activityLog.id))
+		.limit(1);
+}
+
 /**
- * #115：记一条「更新任务」。自动保存会频繁提交，连续的内容编辑合并成一条：
- * 这条任务最新的一条活动也是 task.update、来源相同、可合并（run_started_at 非空）、
- * 距它不到 2 分钟（滑动），且这段编辑从第一次起不超过 10 分钟 —— 就原地更新它的
- * summary 和 created_at（列表里它会浮到最上面），否则插入新的一条。
+ * #115 / #119：记一条「更新任务」的写语句。自动保存会频繁提交，连续的内容编辑合并成一条：
+ * 写之前读到的最新一条活动 `prev` 也是 task.update、来源相同、可合并（run_started_at 非空）、
+ * 距它不到 2 分钟（滑动），且这段编辑从第一次起不超过 10 分钟 —— 就原地更新它的 summary 和
+ * created_at（列表里它会浮到最上面），否则插入新的一条。
  *
  * `coalescible`：这次只改了内容字段（标题 / 备注 / 优先级 / 日期 / 标签 / 等待谁）。
- * 状态 / 项目 / 父任务变更传 false：总是新插一条，且它自己也不会被后面的编辑合并。
+ * 状态 / 项目 / 父任务变更传 false：总是新插一条，且它自己（run_started_at 为 NULL）也不会被后面的编辑合并。
+ *
+ * 返回查询构造器：updateTask 把它和任务 UPDATE 放进同一个 batch，原子提交。
  */
-export async function logTaskUpdateActivity(
+export function taskUpdateActivityWrite(
 	db: AppDatabase,
-	input: {
-		userId: string;
-		source: TaskSource;
-		taskId: string;
-		summary: string;
-		coalescible: boolean;
-	},
+	input: { userId: string; source: TaskSource; taskId: string; summary: string; coalescible: boolean },
+	prev: LatestTaskActivity | undefined,
+	now: string,
 ) {
-	const now = nowIso();
-	if (input.coalescible) {
-		const latest = await db
-			.select({
-				id: activityLog.id,
-				action: activityLog.action,
-				actorType: activityLog.actorType,
-				createdAt: activityLog.createdAt,
-				runStartedAt: activityLog.runStartedAt,
-			})
-			.from(activityLog)
-			.where(
-				and(
-					eq(activityLog.userId, input.userId),
-					eq(activityLog.entityType, "task"),
-					eq(activityLog.entityId, input.taskId),
-				),
-			)
-			.orderBy(desc(activityLog.createdAt), desc(activityLog.id))
-			.limit(1);
-		const prev = latest[0];
-		if (prev && canCoalesce(prev, input.source, now)) {
-			await db
+	if (input.coalescible && prev && canCoalesce(prev, input.source, now)) {
+		return {
+			coalesced: true as const,
+			id: prev.id,
+			query: db
 				.update(activityLog)
 				.set({ summary: input.summary, createdAt: now })
-				.where(and(eq(activityLog.id, prev.id), eq(activityLog.userId, input.userId)));
-			return { coalesced: true as const, id: prev.id };
-		}
+				.where(and(eq(activityLog.id, prev.id), eq(activityLog.userId, input.userId))),
+		};
 	}
 	const id = newId();
-	await db.insert(activityLog).values({
+	return {
+		coalesced: false as const,
 		id,
-		userId: input.userId,
-		actorType: input.source,
-		actorId: input.userId,
-		action: "task.update",
-		entityType: "task",
-		entityId: input.taskId,
-		summary: input.summary,
-		createdAt: now,
-		runStartedAt: input.coalescible ? now : null,
-	});
-	return { coalesced: false as const, id };
+		query: db.insert(activityLog).values({
+			id,
+			userId: input.userId,
+			actorType: input.source,
+			actorId: input.userId,
+			action: "task.update",
+			entityType: "task",
+			entityId: input.taskId,
+			summary: input.summary,
+			createdAt: now,
+			runStartedAt: input.coalescible ? now : null,
+		}),
+	};
 }
 
 function canCoalesce(

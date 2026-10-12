@@ -6,7 +6,6 @@ import {
 	useCompleteTask,
 	useCreateTask,
 	useDeleteTask,
-	useUpdateTask,
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
@@ -45,7 +44,6 @@ export function StatusListPage({ status }: { status: "next" | "waiting" | "sched
 	const title = TASK_STATUS_LABELS[status as TaskStatus];
 	const query = useTaskList({ status });
 	const createTask = useCreateTask(projects);
-	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
 
@@ -61,9 +59,6 @@ export function StatusListPage({ status }: { status: "next" | "waiting" | "sched
 			emptyText={copy.emptyText}
 			onCreate={async (titleText) => {
 				await createTask.mutateAsync({ title: titleText, status });
-			}}
-			onSave={async (id, patch) => {
-				await updateTask.mutateAsync({ id, patch });
 			}}
 			onComplete={async (id) => {
 				await completeTask.mutateAsync(id);

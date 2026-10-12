@@ -9,6 +9,8 @@ vi.mock("../api", () => ({
 		taskActivity: vi.fn(() => new Promise(() => {})),
 		createTag: vi.fn(),
 		parseAi: vi.fn(),
+		// #115：详情改动自动保存；这里不关心结果，请求一直挂着。
+		updateTask: vi.fn(() => new Promise(() => {})),
 	},
 }));
 vi.mock("./TaskAttachments", () => ({
@@ -95,7 +97,6 @@ function mountBoard() {
 				projects={projects}
 				emptyText="空"
 				onCreate={async () => {}}
-				onSave={async () => {}}
 				onComplete={async () => {}}
 				onDelete={async () => {}}
 			/>
@@ -139,10 +140,13 @@ describe("TaskBoard detail presentation (#94)", () => {
 		mountBoard();
 		openTask();
 		fireEvent.change(screen.getByLabelText("标题"), { target: { value: "没保存的标题" } });
+		// #115：保存状态在面板标题旁。
+		expect(aside()!.querySelector("[data-save-status]")?.textContent).toBe("保存中…");
 
 		setWidth(800);
-		await screen.findByRole("dialog", { name: "任务详情" });
+		const dialog = await screen.findByRole("dialog", { name: "任务详情" });
 		expect(aside()).toBeNull();
+		expect(dialog.querySelector("[data-save-status]")?.textContent).toBe("保存中…");
 		expect(screen.getAllByLabelText("标题")).toHaveLength(1);
 		expect(screen.getByLabelText("标题")).toHaveProperty("value", "没保存的标题");
 

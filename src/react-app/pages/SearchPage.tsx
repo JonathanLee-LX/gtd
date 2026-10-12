@@ -13,7 +13,6 @@ import {
 	useCompleteTask,
 	useCreateTask,
 	useDeleteTask,
-	useUpdateTask,
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
@@ -39,7 +38,6 @@ export function SearchPage() {
 		queryFn: () => api.tags(),
 	});
 	const createTask = useCreateTask(projects);
-	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
 
@@ -119,9 +117,6 @@ export function SearchPage() {
 			emptyText={emptyText}
 			onCreate={async (titleText) => {
 				await createTask.mutateAsync({ title: titleText, status: "next" });
-			}}
-			onSave={async (id, patch) => {
-				await updateTask.mutateAsync({ id, patch });
 			}}
 			onComplete={async (id) => {
 				await completeTask.mutateAsync(id);

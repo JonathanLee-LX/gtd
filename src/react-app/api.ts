@@ -129,10 +129,12 @@ export const api = {
 		request<{ items: Activity[] }>(`/api/tasks/${id}/activity`),
 	createTask: (body: Record<string, unknown>) =>
 		request<{ task: Task }>("/api/tasks", { method: "POST", body: JSON.stringify(body) }),
-	updateTask: (id: string, body: Record<string, unknown>) =>
+	/** #115：`keepalive` 用于 pagehide / 切到后台时提交未保存的改动（页面关掉请求也会发完）。 */
+	updateTask: (id: string, body: Record<string, unknown>, opts?: { keepalive?: boolean }) =>
 		request<{ task: Task }>(`/api/tasks/${id}`, {
 			method: "PATCH",
 			body: JSON.stringify(body),
+			...(opts?.keepalive ? { keepalive: true } : {}),
 		}),
 	completeTask: (id: string) =>
 		request<{ task: Task }>(`/api/tasks/${id}/complete`, { method: "POST" }),

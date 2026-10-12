@@ -126,7 +126,6 @@ async function measureBoard(opts: { loading: boolean; tasks: Task[]; inbox: bool
 					emptyText="空"
 					enableInboxProcess={opts.inbox}
 					onCreate={async () => {}}
-					onSave={async () => {}}
 					onComplete={async () => {}}
 					onDelete={async () => {}}
 				/>

@@ -7,6 +7,7 @@ import type { Activity, Project, Task } from "../api";
 const api = vi.hoisted(() => ({
 	taskActivity: vi.fn(),
 	createTag: vi.fn(),
+	updateTask: vi.fn(),
 }));
 vi.mock("../api", () => ({ api }));
 vi.mock("./TaskAttachments", () => ({ TaskAttachments: () => null }));
@@ -62,10 +63,8 @@ function wrap(node: React.ReactNode) {
 	return <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
 }
 const noop = async () => {};
-function detail(current: Task, onSave: (patch: Record<string, unknown>) => Promise<void> = noop) {
-	return wrap(
-		<TaskDetail task={current} projects={projects} tasks={[current]} onSave={onSave} onComplete={noop} onDelete={noop} />,
-	);
+function detail(current: Task) {
+	return wrap(<TaskDetail task={current} projects={projects} tasks={[current]} onComplete={noop} onDelete={noop} />);
 }
 
 const items = () => screen.queryAllByTestId("task-activity-item");
@@ -206,11 +205,10 @@ describe("TaskDetail activity state (#111)", () => {
 
 	it("toggle inside the detail form does not submit (no save)", async () => {
 		byTask.set("t1", activities(5));
-		const onSave = vi.fn(noop);
-		render(detail(task(), onSave));
+		render(detail(task()));
 		await loaded(3);
 		fireEvent.click(toggle()!);
-		expect(onSave).not.toHaveBeenCalled();
+		expect(api.updateTask).not.toHaveBeenCalled();
 	});
 
 	it("updatedAt change alone no longer refetches; invalidation after save does, new item on top, expanded kept", async () => {

@@ -21,6 +21,7 @@ import {
 	enqueueTaskAction,
 	resolvePendingCreate,
 	SKIPPED_BY_DELETE,
+	takePendingCreateFold,
 	touchPendingCreate,
 } from "./pending-creates";
 import {
@@ -138,17 +139,26 @@ export function buildOptimisticTask(
 	};
 }
 
+/** 新建请求体 → 临时 id（mutationFn 拿不到 onMutate 的 context；同一次 mutate 的 variables 是同一个对象）。 */
+const tempIdByCreateBody = new WeakMap<object, string>();
+
 export function createTaskMutationOptions(
 	queryClient: QueryClient,
 	getProjects: () => readonly Project[] = () => [],
 ): MutationOptions<{ task: Task }, Error, CreateTaskVariables, CreateContext> {
 	return {
-		mutationFn: (body) => api.createTask(stripSourceFromBody(body)),
+		// #115：离线暂停过的新建，发出前把期间详情里自动保存的改动并进请求体（只发 1 个 POST）。
+		mutationFn: (body) => {
+			const tempId = tempIdByCreateBody.get(body);
+			const fold = tempId ? takePendingCreateFold(tempId) : {};
+			return api.createTask(stripSourceFromBody({ ...body, ...fold }));
+		},
 		// 同步插入：不 await cancelQueries，点下去当帧就能看到。进行中的刷新由 withPendingCreates 补齐。
 		onMutate: (body) => {
 			// #101：项目列表没回来时临时行 projectId 为 ''（不用记住的收件箱 id）；请求体不带 projectId，以服务端为准。
 			const task = buildOptimisticTask(body, getProjects());
 			registerPendingCreate(task);
+			tempIdByCreateBody.set(body, task.id);
 			upsertTaskInCaches(queryClient, task);
 			return { tempId: task.id };
 		},

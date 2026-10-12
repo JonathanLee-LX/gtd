@@ -10,6 +10,9 @@
  *   状态「保存失败 · 重试」；重试 / 下一次改动重发所有和服务端还不一样的字段。
  * - 队列清空且都成功时才让 ["task-activity", id] 失效（活动在服务端已合并成一条）。
  * - pagehide / 切到后台：用 fetch keepalive 把没发的改动发出去；beforeunload 只在保存失败或还有发不出去的改动时提示。
+ *   keepalive 请求体有 64KB 上限（同一页面所有在飞的 keepalive 共用）：本次请求体（UTF-8 字节）加上我们在飞的
+ *   keepalive 超过 KEEPALIVE_BODY_BUDGET，或 keepalive fetch 本身抛错 / 失败，就不带 keepalive 再发一次，
+ *   并把这条任务标成「有未确认的改动」，beforeunload 会拦，直到一次非 keepalive 的发送成功。
  */
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -35,6 +38,16 @@ import {
 } from "./task-cache";
 import { invalidateTaskActivity } from "./task-activity";
 import { mutationErrorMessage } from "./task-mutations";
+import { ApiError } from "./session";
+import { shellKeys } from "./shell-keys";
+
+/** keepalive 请求体预算（浏览器上限 64KB，留出余量）。按 UTF-8 字节算。 */
+export const KEEPALIVE_BODY_BUDGET = 60 * 1024;
+
+const encoder = new TextEncoder();
+export function utf8ByteLength(text: string): number {
+	return encoder.encode(text).length;
+}
 
 /** 文本字段停止输入多久后保存。 */
 export const AUTOSAVE_DEBOUNCE_MS = 800;
@@ -103,9 +116,34 @@ export function toApiPatch(values: Partial_): Record<string, unknown> {
 	return out;
 }
 
-export type AutosaveStatus = "idle" | "saving" | "saved" | "error";
-export type AutosaveSnapshot = { status: AutosaveStatus; error: string | null };
-const IDLE: AutosaveSnapshot = { status: "idle", error: null };
+/**
+ * - error：网络 / 5xx / 401，可以重试（「保存失败」+「重试」）；
+ * - rejected：4xx 校验错误（400 / 422…），重试也没用，显示服务端给的原因，不再自动重发、beforeunload 不拦。
+ */
+export type AutosaveStatus = "idle" | "saving" | "saved" | "error" | "rejected";
+export type AutosaveSnapshot = {
+	status: AutosaveStatus;
+	error: string | null;
+	/** 标题被清空（不保存标题）：状态显示「标题未保存」。 */
+	titleInvalid: boolean;
+};
+const IDLE: AutosaveSnapshot = { status: "idle", error: null, titleInvalid: false };
+
+/** 401 时暂存到本机、重新登录后补发的一条（每个字段带上当时最后一次服务端确认的值）。 */
+export type UnsavedRecord = {
+	taskId: string;
+	fields: Partial<Record<AutosaveField, { value: unknown; base: unknown }>>;
+};
+
+/** 这些 4xx 是请求本身不对（校验失败等），重发没用。401 / 404 / 408 / 429 另外处理。 */
+function isRejection(err: unknown): err is ApiError {
+	return (
+		err instanceof ApiError &&
+		err.status >= 400 &&
+		err.status < 500 &&
+		![401, 404, 408, 429].includes(err.status)
+	);
+}
 
 type Entry = {
 	/** 当前用来发请求 / 查缓存的 id（临时 id 换成真实 id 后跟着换）。 */
@@ -124,6 +162,15 @@ type Entry = {
 	timer: ReturnType<typeof setTimeout> | null;
 	snapshot: AutosaveSnapshot;
 	discarded: boolean;
+	/**
+	 * keepalive 发不了（太大 / 失败）而改用普通请求时记下的序号：页面关掉时这个普通请求可能被取消，
+	 * 所以 beforeunload 要拦。之后开始的某次非 keepalive 发送成功就清掉。
+	 */
+	guardSeq: number | null;
+	/** 被服务端以 4xx 拒绝的改动：不再发，但表单保留（isDirty），用户再改这个字段才重新排队。 */
+	rejected: Partial_;
+	rejectedMessage: string | null;
+	titleInvalid: boolean;
 };
 
 type Listener = () => void;
@@ -131,6 +178,15 @@ type Listener = () => void;
 export class TaskAutosaveQueue {
 	private entries = new Map<string, Entry>();
 	private listeners = new Map<string, Set<Listener>>();
+	/** 我们发出、还没结束的 keepalive 请求体字节数（64KB 上限是整页共用的）。 */
+	private keepaliveInflightBytes = 0;
+	private seq = 0;
+	private disposed = false;
+	/**
+	 * 401 时没能把改动暂存到本机（localStorage 满了等）：队列先留着、不再发请求，beforeunload 一直拦，
+	 * 重新登录后（同一用户）再补发。`userId` 是当时的用户（不知道就是 null，重新登录后不补发）。
+	 */
+	private heldFor: { userId: string | null } | null = null;
 	private disposeLifecycle: (() => void) | null = null;
 
 	constructor(
@@ -187,6 +243,10 @@ export class TaskAutosaveQueue {
 			timer: null,
 			snapshot: IDLE,
 			discarded: false,
+			guardSeq: null,
+			rejected: {},
+			rejectedMessage: null,
+			titleInvalid: false,
 		};
 		this.entries.set(task.id, entry);
 		return entry;
@@ -235,9 +295,23 @@ export class TaskAutosaveQueue {
 	}
 
 	private setStatus(entry: Entry, status: AutosaveStatus, error: string | null = null) {
-		if (entry.snapshot.status === status && entry.snapshot.error === error) return;
-		entry.snapshot = { status, error };
+		if (
+			entry.snapshot.status === status &&
+			entry.snapshot.error === error &&
+			entry.snapshot.titleInvalid === entry.titleInvalid
+		) {
+			return;
+		}
+		entry.snapshot = { status, error, titleInvalid: entry.titleInvalid };
 		this.notify(entry);
+	}
+
+	/** 标题清空 / 恢复（TaskDetail 调用）。 */
+	setTitleInvalid(task: Task, invalid: boolean) {
+		const entry = invalid ? this.ensure(task) : this.lookup(task.id);
+		if (!entry || entry.titleInvalid === invalid) return;
+		entry.titleInvalid = invalid;
+		this.setStatus(entry, entry.snapshot.status, entry.snapshot.error);
 	}
 
 	private notify(entry: Entry) {
@@ -253,14 +327,19 @@ export class TaskAutosaveQueue {
 	isDirty(id: string, field: AutosaveField): boolean {
 		const entry = this.lookup(id);
 		if (!entry) return false;
-		return field in entry.edits || Boolean(entry.sending && field in entry.sending) || field in entry.folded;
+		return (
+			field in entry.edits ||
+			Boolean(entry.sending && field in entry.sending) ||
+			field in entry.folded ||
+			field in entry.rejected
+		);
 	}
 
 	/** 待发 + 在飞的值（重新打开详情时盖在服务端值上，表单不丢输入）。 */
 	pendingValues(id: string): Partial_ {
 		const entry = this.lookup(id);
 		if (!entry) return {};
-		return { ...entry.folded, ...(entry.sending ?? {}), ...entry.edits };
+		return { ...entry.rejected, ...entry.folded, ...(entry.sending ?? {}), ...entry.edits };
 	}
 
 	/** 最后一次保存 / 正在保存的值（清空标题失焦后恢复成它）。 */
@@ -275,6 +354,7 @@ export class TaskAutosaveQueue {
 		return (list as Entry[]).some(
 			(entry) =>
 				entry.snapshot.status === "error" ||
+				entry.guardSeq !== null ||
 				this.hasEdits(entry) ||
 				entry.inFlight ||
 				entry.waitingForCreate,
@@ -292,6 +372,11 @@ export class TaskAutosaveQueue {
 		for (const field of FIELDS) {
 			if (!(field in values)) continue;
 			const value = values[field];
+			if (field in entry.rejected) {
+				// 用户在改被拒绝的字段：重新排队（改回服务端值就等于放弃这次改动）。
+				delete entry.rejected[field];
+				if (Object.keys(entry.rejected).length === 0) entry.rejectedMessage = null;
+			}
 			if (sameAutosaveValue(field, value as never, this.baseline(entry, field) as never)) {
 				delete entry.edits[field];
 			} else {
@@ -318,7 +403,14 @@ export class TaskAutosaveQueue {
 		if (!entry || entry.waitingForCreate || isTempTaskId(task.id)) return;
 		const server = autosaveValuesFromTask(task);
 		for (const field of FIELDS) {
-			if (field in entry.edits || (entry.sending && field in entry.sending) || field in entry.folded) continue;
+			if (
+				field in entry.edits ||
+				(entry.sending && field in entry.sending) ||
+				field in entry.folded ||
+				field in entry.rejected
+			) {
+				continue;
+			}
 			(entry.confirmed as Record<string, unknown>)[field] = server[field];
 		}
 	}
@@ -369,7 +461,7 @@ export class TaskAutosaveQueue {
 	}
 
 	private flushEntry(entry: Entry, opts: { keepalive?: boolean } = {}) {
-		if (entry.discarded) return;
+		if (entry.discarded || this.disposed || this.heldFor) return;
 		if (entry.timer) {
 			clearTimeout(entry.timer);
 			entry.timer = null;
@@ -384,7 +476,7 @@ export class TaskAutosaveQueue {
 			}
 			// 页面要关了：在飞的那个可能回不来，把剩下的改动用 keepalive 先发出去（重复发同样的值无害）。
 			if (opts.keepalive && !isTempTaskId(entry.key)) {
-				void api.updateTask(entry.key, toApiPatch(entry.edits), { keepalive: true }).catch(() => undefined);
+				void this.request(entry, entry.key, toApiPatch(entry.edits), true).catch(() => undefined);
 			}
 			if (entry.snapshot.status !== "error") this.setStatus(entry, "saving");
 			return;
@@ -393,7 +485,13 @@ export class TaskAutosaveQueue {
 		if (Object.keys(patch).length === 0) {
 			// 改回了原值：没有要发的。
 			entry.edits = {};
-			if (entry.snapshot.status === "saving") this.setStatus(entry, "saved");
+			// 也包括：被拒绝的字段又改回了服务端值 → 不再显示失败原因。
+			if (
+				entry.snapshot.status === "saving" ||
+				(entry.snapshot.status === "rejected" && Object.keys(entry.rejected).length === 0)
+			) {
+				this.settledStatus(entry);
+			}
 			return;
 		}
 		if (entry.tempId && isTempTaskId(entry.key) && canFoldIntoPendingCreate(entry.tempId)) {
@@ -443,11 +541,7 @@ export class TaskAutosaveQueue {
 			for (const field of Object.keys(patch) as AutosaveField[]) delete entry.edits[field];
 			this.maybeRekey(entry);
 			const body = toApiPatch(patch);
-			try {
-				return opts.keepalive ? api.updateTask(realId, body, { keepalive: true }) : api.updateTask(realId, body);
-			} catch (err) {
-				return Promise.reject(err);
-			}
+			return this.request(entry, realId, body, Boolean(opts.keepalive));
 		};
 		// 普通任务 enqueueTaskAction 直接发；临时任务排进 #90 的队列，等真实 id。
 		void enqueueTaskAction(idForQueue, run, { skipIfDeleted: true }).then(
@@ -456,8 +550,60 @@ export class TaskAutosaveQueue {
 		);
 	}
 
+	/**
+	 * 发一次 PATCH。`keepalive`：请求体（UTF-8 字节）加上在飞的 keepalive 超过预算，或 keepalive fetch
+	 * 抛错 / 失败时，不带 keepalive 再发一次，并挂上 beforeunload 保护，直到一次非 keepalive 发送成功。
+	 */
+	private request(
+		entry: Entry,
+		realId: string,
+		body: Record<string, unknown>,
+		keepalive: boolean,
+	): Promise<{ task: Task }> {
+		const plain = () => {
+			const started = ++this.seq;
+			let promise: Promise<{ task: Task }>;
+			try {
+				promise = api.updateTask(realId, body);
+			} catch (err) {
+				promise = Promise.reject(err);
+			}
+			return promise.then((res) => {
+				if (entry.guardSeq !== null && started > entry.guardSeq) entry.guardSeq = null;
+				return res;
+			});
+		};
+		if (!keepalive) return plain();
+		const raiseGuard = () => {
+			entry.guardSeq = ++this.seq;
+		};
+		const bytes = utf8ByteLength(JSON.stringify(body));
+		if (bytes + this.keepaliveInflightBytes > KEEPALIVE_BODY_BUDGET) {
+			raiseGuard();
+			return plain();
+		}
+		this.keepaliveInflightBytes += bytes;
+		let promise: Promise<{ task: Task }>;
+		try {
+			promise = api.updateTask(realId, body, { keepalive: true });
+		} catch (err) {
+			promise = Promise.reject(err);
+		}
+		return promise
+			.finally(() => {
+				this.keepaliveInflightBytes -= bytes;
+			})
+			.catch(() => {
+				// keepalive 失败（含超额被浏览器拒绝）：不带 keepalive 重发一次。
+				raiseGuard();
+				return plain();
+			});
+	}
+
 	private onSuccess(entry: Entry, data: { task: Task } | null | typeof SKIPPED_BY_DELETE) {
 		entry.inFlight = false;
+		// 已退出 / 换了账号：缓存属于下一个人了，别写回去。
+		if (this.disposed) return;
 		if (data === SKIPPED_BY_DELETE) {
 			this.discard(entry.key);
 			return;
@@ -473,6 +619,7 @@ export class TaskAutosaveQueue {
 
 	private onFailure(entry: Entry, err: unknown) {
 		entry.inFlight = false;
+		if (this.disposed) return;
 		if (err instanceof PendingCreateFailedError) {
 			this.dropBecauseCreateFailed(entry);
 			return;
@@ -480,9 +627,19 @@ export class TaskAutosaveQueue {
 		const sent = entry.sending ?? {};
 		entry.sending = null;
 		if (entry.discarded) return;
+		if (err instanceof ApiError && err.status === 404) {
+			// 任务已经不在了（别处删了）：放弃这条的改动。
+			this.discard(entry.key);
+			toast.error("任务已不存在（可能已在别处删除），改动没有保存");
+			return;
+		}
+		const rejected = isRejection(err);
 		// 改动放回队列（用户期间又改过的字段以新值为准），表单不动。
+		// 4xx 校验错误：放进 rejected（不再重发），表单照样保留。
 		for (const field of Object.keys(sent) as AutosaveField[]) {
-			if (!(field in entry.edits)) (entry.edits as Record<string, unknown>)[field] = sent[field];
+			if (field in entry.edits) continue;
+			const target = rejected ? entry.rejected : entry.edits;
+			(target as Record<string, unknown>)[field] = sent[field];
 		}
 		// 列表缓存只把这条任务的这些字段回滚到服务端值。
 		const rollback: Partial_ = {};
@@ -491,6 +648,21 @@ export class TaskAutosaveQueue {
 		}
 		this.applyToCache(entry.key, rollback);
 		const message = mutationErrorMessage(err, "保存失败");
+		if (rejected) {
+			entry.rejectedMessage = message;
+			// 同一批里别的字段（或期间新改的）照常保存。
+			if (Object.keys(this.diff(entry)).length > 0 && !entry.timer) {
+				this.send(entry, {});
+				return;
+			}
+			this.setStatus(entry, "rejected", message);
+			if (!this.watched(entry)) toast.error(`保存失败：${message}`);
+			return;
+		}
+		if (err instanceof ApiError && err.status === 401) {
+			// 登录过期：让外壳重新拉一次 me → 401 → 统一跳登录页（先把改动暂存到本机，见 clearClientSession）。
+			void this.queryClient.invalidateQueries({ queryKey: shellKeys.me });
+		}
 		this.setStatus(entry, "error", message);
 		// 详情已经关了（没人看状态）：用 toast 告诉用户。
 		if (!this.watched(entry)) toast.error(`${message}，改动还没保存，重新打开任务可重试`);
@@ -516,11 +688,48 @@ export class TaskAutosaveQueue {
 		}
 		entry.edits = {};
 		if (ok) {
-			this.setStatus(entry, "saved");
+			this.settledStatus(entry);
 			// 队列清空且都成功：活动只拉一次（服务端已把连续编辑合并成一条）。
 			if (!isTempTaskId(entry.key)) void invalidateTaskActivity(this.queryClient, entry.key);
 			void silentInvalidateTasks(this.queryClient);
 		}
+	}
+
+	/** 队列空了：有被拒绝的改动就继续显示原因，否则「已保存」。 */
+	private settledStatus(entry: Entry) {
+		if (Object.keys(entry.rejected).length > 0) this.setStatus(entry, "rejected", entry.rejectedMessage);
+		else this.setStatus(entry, "saved");
+	}
+
+	// ------------------------------------------------------------------ session (401 / logout)
+
+	/** 还没被服务端确认的改动（不含 4xx 被拒绝的、不含还没有真实 id 的临时任务），附上每个字段的服务端值。 */
+	exportUnsaved(): UnsavedRecord[] {
+		const out: UnsavedRecord[] = [];
+		for (const entry of this.entries.values()) {
+			if (entry.discarded || isTempTaskId(entry.key)) continue;
+			const pending: Partial_ = { ...entry.folded, ...(entry.sending ?? {}), ...entry.edits };
+			const fields: UnsavedRecord["fields"] = {};
+			for (const field of Object.keys(pending) as AutosaveField[]) {
+				if (sameAutosaveValue(field, pending[field] as never, entry.confirmed[field] as never)) continue;
+				fields[field] = { value: pending[field], base: entry.confirmed[field] };
+			}
+			if (Object.keys(fields).length > 0) out.push({ taskId: entry.key, fields });
+		}
+		return out;
+	}
+
+	/** 暂存失败：队列留在内存里、停止发送，beforeunload 一直拦，等同一用户重新登录。 */
+	hold(userId: string | null) {
+		this.heldFor = { userId };
+		for (const entry of this.entries.values()) {
+			if (entry.timer) clearTimeout(entry.timer);
+			entry.timer = null;
+		}
+	}
+
+	heldUserId(): string | null | undefined {
+		return this.heldFor ? this.heldFor.userId : undefined;
 	}
 
 	/** 服务端记录写回缓存；用户还在改的字段保留乐观值。已被完成 / 删除拿掉的不再插回。 */
@@ -560,7 +769,11 @@ export class TaskAutosaveQueue {
 						(this.hasEdits(entry) || entry.inFlight || entry.waitingForCreate)),
 			);
 			onHide();
-			if (!blocked) return;
+			// keepalive 发不了、改用普通请求（页面关掉可能被取消）的：也拦，直到普通请求成功。
+			const guarded =
+				[...this.entries.values()].some((entry) => entry.guardSeq !== null) ||
+				Boolean(this.heldFor && this.exportUnsaved().length > 0);
+			if (!blocked && !guarded) return;
 			event.preventDefault();
 			event.returnValue = "";
 		};
@@ -575,6 +788,8 @@ export class TaskAutosaveQueue {
 	}
 
 	dispose() {
+		this.disposed = true;
+		this.heldFor = null;
 		this.disposeLifecycle?.();
 		this.disposeLifecycle = null;
 		for (const entry of this.entries.values()) if (entry.timer) clearTimeout(entry.timer);
@@ -595,6 +810,20 @@ export function getTaskAutosave(queryClient: QueryClient): TaskAutosaveQueue {
 		allQueues.add(queue);
 	}
 	return queue;
+}
+
+/** 已有的队列（没有就是 undefined，不新建）。 */
+export function peekTaskAutosave(queryClient: QueryClient): TaskAutosaveQueue | undefined {
+	return queues.get(queryClient);
+}
+
+/** 丢掉这个 QueryClient 的队列（退出登录 / 换账号）。下次 getTaskAutosave 会新建一个空的。 */
+export function releaseTaskAutosave(queryClient: QueryClient) {
+	const queue = queues.get(queryClient);
+	if (!queue) return;
+	queue.dispose();
+	queues.delete(queryClient);
+	allQueues.delete(queue);
 }
 
 /** Test helper. */

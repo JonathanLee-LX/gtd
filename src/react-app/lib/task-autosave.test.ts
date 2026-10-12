@@ -117,4 +117,29 @@ describe("TaskAutosaveQueue (#115)", () => {
 		await vi.advanceTimersByTimeAsync(1000);
 		expect(api.updateTask).toHaveBeenCalledTimes(1);
 	});
+
+	it("keepalive 预算按所有在飞的 keepalive 累计：超出的那条不带 keepalive 发，额度释放后恢复", async () => {
+		const pending: (() => void)[] = [];
+		api.updateTask.mockImplementation(
+			(id: string, body: Record<string, unknown>) =>
+				new Promise((resolve) => pending.push(() => resolve({ task: { ...task({ id }), ...body } }))),
+		);
+		qc.setQueryData(taskKeys.list({}), {
+			items: [task(), task({ id: "t2" }), task({ id: "t3" })],
+			nextCursor: null,
+		});
+		const big = "汉".repeat(12000); // 36000 字节；两条加起来超 60KB
+		queue.edit(task(), { notes: big }, { debounce: true });
+		queue.edit(task({ id: "t2" }), { notes: big }, { debounce: true });
+		queue.flushAll({ keepalive: true });
+		const keepaliveFlags = () => api.updateTask.mock.calls.map((call) => Boolean(call[2]?.keepalive));
+		expect(keepaliveFlags()).toEqual([true, false]);
+		expect(queue.hasUnsaved("t2")).toBe(true);
+		// 第一条结束、额度释放：下一条又能走 keepalive。
+		pending.shift()!();
+		await vi.advanceTimersByTimeAsync(0);
+		queue.edit(task({ id: "t3" }), { notes: big }, { debounce: true });
+		queue.flushAll({ keepalive: true });
+		expect(keepaliveFlags()).toEqual([true, false, true]);
+	});
 });

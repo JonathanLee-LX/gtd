@@ -127,6 +127,7 @@ export const api = {
 	focus: () => request<{ today: string; items: Task[] }>("/api/tasks/focus"),
 	taskActivity: (id: string) =>
 		request<{ items: Activity[] }>(`/api/tasks/${id}/activity`),
+	getTask: (id: string) => request<{ task: Task }>(`/api/tasks/${encodeURIComponent(id)}`),
 	createTask: (body: Record<string, unknown>) =>
 		request<{ task: Task }>("/api/tasks", { method: "POST", body: JSON.stringify(body) }),
 	/** #115：`keepalive` 用于 pagehide / 切到后台时提交未保存的改动（页面关掉请求也会发完）。 */

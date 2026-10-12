@@ -223,6 +223,7 @@ export function TaskDetail({
 		if (!sameTask(previousId, task.id)) {
 			// 真的换了一条任务：先把上一条没发的改动提交出去，再整体重置。临时 id → 真实 id 不算换任务。
 			autosave.flush(previousId);
+			autosave.setTitleInvalid({ ...task, id: previousId }, false);
 			focusedRef.current = null;
 			setForm(initialDraft(task));
 			setTagDraft("");
@@ -251,7 +252,10 @@ export function TaskDetail({
 
 	// 关闭详情（卸载）：把没发出去的改动立即提交（队列在组件外，卸载后照样发完）。
 	useEffect(
-		() => () => autosave.flush(syncedTaskIdRef.current),
+		() => () => {
+			autosave.setTitleInvalid({ ...taskRef.current, id: syncedTaskIdRef.current }, false);
+			autosave.flush(syncedTaskIdRef.current);
+		},
 		[autosave],
 	);
 
@@ -260,12 +264,14 @@ export function TaskDetail({
 		const current = taskRef.current;
 		if (field === "title") {
 			if (!(value as string).trim()) {
-				// 标题清空：不保存标题（其它字段照常保存），失焦后恢复原标题。
+				// 标题清空：不保存标题（其它字段照常保存），失焦后恢复原标题。状态显示「标题未保存」。
 				setTitleEmpty(true);
+				autosave.setTitleInvalid(current, true);
 				autosave.dropEdit(current.id, "title");
 				return;
 			}
 			setTitleEmpty(false);
+			autosave.setTitleInvalid(current, false);
 		}
 		autosave.edit(current, toAutosave(field, value), { debounce: TEXT_FIELDS.has(field) });
 	}
@@ -280,6 +286,7 @@ export function TaskDetail({
 				const saved = autosave.savedValue(task.id, "title") ?? task.title;
 				setForm((prev) => ({ ...prev, title: saved }));
 				setTitleEmpty(false);
+				autosave.setTitleInvalid(task, false);
 			}
 			autosave.flush(task.id);
 		},

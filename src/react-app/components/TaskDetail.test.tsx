@@ -25,6 +25,7 @@ import {
 	resetPendingCreatesForTests,
 	resolvePendingCreate,
 } from "../lib/pending-creates";
+import { ApiError } from "../lib/session";
 import { resetTaskAutosaveForTests } from "../lib/task-autosave";
 import { createTaskMutationOptions } from "../lib/task-mutations";
 import { sameTask } from "../lib/task-mutation-lock";
@@ -290,7 +291,7 @@ describe("task detail autosave (#115)", () => {
 		fireEvent.blur(titleInput());
 		expect(cachedTask()?.title).toBe("新标题"); // 乐观
 		await settle();
-		expect(status()).toBe("保存失败 · 重试");
+		expect(status()).toBe("保存失败重试");
 		expect(titleInput().value).toBe("新标题");
 		expect(cachedTask()?.title).toBe("原标题"); // 只回滚 title
 		expect(cachedTask()?.notes).toBe("旧备注");
@@ -300,7 +301,7 @@ describe("task detail autosave (#115)", () => {
 			await qc.invalidateQueries({ queryKey: ["tasks"] });
 		});
 		expect(titleInput().value).toBe("新标题");
-		fireEvent.click(screen.getByRole("button", { name: "保存失败 · 重试" }));
+		fireEvent.click(screen.getByRole("button", { name: "重试" }));
 		expect(calls).toHaveLength(2);
 		expect(calls[1]!.body).toEqual({ title: "新标题" });
 		await settle();
@@ -316,7 +317,7 @@ describe("task detail autosave (#115)", () => {
 		type(titleInput(), "新标题");
 		fireEvent.blur(titleInput());
 		await settle();
-		expect(status()).toBe("保存失败 · 重试");
+		expect(status()).toBe("保存失败重试");
 		type(waitingInput(), "老王");
 		fireEvent.blur(waitingInput());
 		expect(calls[1]!.body).toEqual({ title: "新标题", waitingOn: "老王" });
@@ -337,6 +338,103 @@ describe("task detail autosave (#115)", () => {
 		fireEvent.blur(notesInput());
 		expect(calls).toEqual([{ id: "t1", body: { notes: "备注照常保存" }, keepalive: false }]);
 		expect(server.get("t1")?.title).toBe("原标题");
+	});
+
+	it("4xx 校验错误：不重试，显示「保存失败」+ 服务端原因（没有重试按钮），beforeunload 不拦；别的字段照常保存", async () => {
+		mount([task()]);
+		failNext.push(new ApiError("标题最多 500 个字", 400, "validation_error"));
+		type(titleInput(), "太长的标题");
+		fireEvent.blur(titleInput());
+		await settle();
+		expect(status()).toBe("保存失败标题最多 500 个字");
+		expect(document.querySelector("[data-save-status]")?.getAttribute("data-save-status")).toBe("rejected");
+		expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
+		expect(titleInput().value).toBe("太长的标题"); // 输入保留
+		expect(cachedTask()?.title).toBe("原标题"); // 列表回滚
+		await advance(5000);
+		expect(calls).toHaveLength(1); // 不自动重发
+		const event = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(event);
+		expect(event.defaultPrevented).toBe(false);
+		expect(calls).toHaveLength(1); // pagehide / beforeunload 也不重发
+		// 改别的字段：只发它，被拒绝的标题不跟着发；原因还在。
+		type(notesInput(), "备注照常");
+		fireEvent.blur(notesInput());
+		expect(calls[1]!.body).toEqual({ notes: "备注照常" });
+		await settle();
+		expect(status()).toBe("保存失败标题最多 500 个字");
+		expect(titleInput().value).toBe("太长的标题");
+		// 标题改回原值：不用发，失败原因消失。
+		type(titleInput(), "原标题");
+		fireEvent.blur(titleInput());
+		expect(calls).toHaveLength(2);
+		expect(status()).toBe("已保存");
+		// 用户再改标题：重新排队发送，成功后「已保存」。
+		type(titleInput(), "改短了");
+		fireEvent.blur(titleInput());
+		expect(calls[2]!.body).toEqual({ title: "改短了" });
+		await settle();
+		expect(status()).toBe("已保存");
+	});
+
+	it("5xx 仍然可以重试（「重试」是单独的按钮，可 Tab 聚焦）", async () => {
+		mount([task()]);
+		failNext.push(new ApiError("服务器出错了", 503));
+		type(notesInput(), "x");
+		fireEvent.blur(notesInput());
+		await settle();
+		expect(document.querySelector("[data-save-status]")?.getAttribute("data-save-status")).toBe("error");
+		const retry = screen.getByRole("button", { name: "重试" });
+		expect(retry.tagName).toBe("BUTTON");
+		expect(retry.getAttribute("type")).toBe("button");
+		expect(retry.tabIndex).toBe(0);
+		retry.focus();
+		expect(document.activeElement).toBe(retry);
+		fireEvent.click(retry);
+		await settle();
+		expect(status()).toBe("已保存");
+	});
+
+	it("保存时任务已被删（404）：放弃改动，不再显示失败 / 不拦 beforeunload", async () => {
+		mount([task()]);
+		failNext.push(new ApiError("任务不存在", 404, "not_found"));
+		type(notesInput(), "删了还写");
+		fireEvent.blur(notesInput());
+		await settle();
+		expect(status()).toBeNull();
+		const event = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(event);
+		expect(event.defaultPrevented).toBe(false);
+		expect(calls).toHaveLength(1);
+	});
+
+	it("标题清空期间状态显示「标题未保存」（不是「已保存」），失焦恢复后回到正常", async () => {
+		mount([task()]);
+		type(notesInput(), "先存一下");
+		fireEvent.blur(notesInput());
+		await settle();
+		expect(status()).toBe("已保存");
+		type(titleInput(), "");
+		expect(status()).toBe("标题未保存");
+		expect(document.querySelector("[data-save-status]")?.getAttribute("data-save-status")).toBe("title-invalid");
+		fireEvent.blur(titleInput());
+		expect(titleInput().value).toBe("原标题");
+		expect(status()).toBe("已保存");
+	});
+
+	it("保存中 / 已保存前面有 12px 图标（转圈尊重 reduced-motion）", async () => {
+		mount([task()]);
+		manual = true;
+		type(notesInput(), "a");
+		fireEvent.blur(notesInput());
+		const svg = () => document.querySelector("[data-save-status] svg");
+		expect(svg()?.getAttribute("class")).toContain("size-3");
+		expect(svg()?.getAttribute("class")).toContain("animate-spin");
+		expect(svg()?.getAttribute("class")).toContain("motion-reduce:animate-none");
+		await releaseNext();
+		expect(status()).toBe("已保存");
+		expect(svg()?.getAttribute("class")).toContain("size-3");
+		expect(svg()?.getAttribute("class")).not.toContain("animate-spin");
 	});
 
 	it("标题先改后清空：没发出的那次改动也撤掉", async () => {
@@ -379,6 +477,66 @@ describe("task detail autosave (#115)", () => {
 		await settle();
 		failNext.push(new Error("500"));
 		expect(fire()).toBe(true);
+	});
+
+	const fireBeforeUnload = () => {
+		const event = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(event);
+		return event.defaultPrevented;
+	};
+	const hide = () => {
+		const spy = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+		document.dispatchEvent(new Event("visibilitychange"));
+		spy.mockRestore();
+	};
+
+	it("切到后台时备注很长（UTF-8 > 60KB）：不用 keepalive 发，beforeunload 一直拦到发送成功", async () => {
+		mount([task()]);
+		manual = true;
+		// 21000 个汉字 = 63000 字节：按字符数不到 60K，按字节超了 —— 必须按字节量。
+		const longNotes = "汉".repeat(21000);
+		type(notesInput(), longNotes);
+		hide();
+		expect(calls).toHaveLength(1);
+		expect(calls[0]!.keepalive).toBe(false);
+		expect(calls[0]!.body).toEqual({ notes: longNotes });
+		expect(fireBeforeUnload()).toBe(true); // 普通请求在飞，页面关掉可能被取消
+		expect(calls).toHaveLength(1); // beforeunload 里不重复发
+		await releaseNext();
+		expect(status()).toBe("已保存");
+		expect(fireBeforeUnload()).toBe(false);
+		expect(server.get("t1")?.notes).toBe(longNotes);
+	});
+
+	it("keepalive fetch 失败：立刻不带 keepalive 重发一次，成功前 beforeunload 拦", async () => {
+		mount([task()]);
+		manual = true;
+		failNext.push(new TypeError("Failed to fetch")); // 第一个（keepalive）失败
+		type(notesInput(), "要关标签页了");
+		window.dispatchEvent(new Event("pagehide"));
+		expect(calls).toEqual([{ id: "t1", body: { notes: "要关标签页了" }, keepalive: true }]);
+		await settle();
+		expect(calls).toHaveLength(2);
+		expect(calls[1]).toEqual({ id: "t1", body: { notes: "要关标签页了" }, keepalive: false });
+		expect(status()).toBe("保存中…");
+		expect(fireBeforeUnload()).toBe(true);
+		await releaseNext();
+		expect(status()).toBe("已保存");
+		expect(fireBeforeUnload()).toBe(false);
+		expect(server.get("t1")?.notes).toBe("要关标签页了");
+	});
+
+	it("keepalive 回退的普通请求也失败：显示「保存失败 · 重试」，beforeunload 继续拦", async () => {
+		mount([task()]);
+		failNext.push(new TypeError("Failed to fetch"), new TypeError("Failed to fetch"));
+		type(notesInput(), "两次都没发出去");
+		window.dispatchEvent(new Event("pagehide"));
+		await settle();
+		expect(calls.map((c) => c.keepalive)).toEqual([true, false]);
+		expect(status()).toBe("保存失败重试");
+		expect(notesInput().value).toBe("两次都没发出去");
+		failNext.push(new TypeError("Failed to fetch"), new TypeError("Failed to fetch"));
+		expect(fireBeforeUnload()).toBe(true);
 	});
 
 	it("临时 id：等真实 id 期间 3 次编辑只在真实 id 到了以后发 1 个 PATCH，状态一直是「保存中…」", async () => {

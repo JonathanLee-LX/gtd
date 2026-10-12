@@ -60,3 +60,7 @@ Cursor 全局配置：`~/.cursor/mcp.json`
 ```
 
 本地开发可把 `url` 换成 `http://localhost:5173/mcp`。旧地址 `https://gtd.jonathanleelx.workers.dev/mcp` 仍然照常服务（不跳转，避免客户端丢掉 Authorization 头），已经配好的不用急着改，新配置请用 gtd.livs.top。改完后在 Cursor 里打开 **Settings → MCP**，确认 `gtd` 已启用；必要时 Reload。
+
+### 活动记录合并（#115）
+
+同一任务、同一来源的连续 `update_task` 如果只改标题 / 备注 / 优先级 / 日期 / 标签 / 等待谁，距上一次不到 2 分钟、且这段编辑从第一次起不超过 10 分钟，会合并成一条「更新任务」（时间取最后一次）。改状态 / 项目 / 父任务总是新起一条。网页和 MCP 规则相同，但两者之间互不合并。

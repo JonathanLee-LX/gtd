@@ -2,6 +2,16 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -62,6 +72,8 @@ import {
 	type ShellOutletContext,
 } from "../hooks/use-shell-data";
 import { clearClientSession } from "../lib/client-session";
+import { replayUnsavedAfterLogin } from "../lib/autosave-persist";
+import { peekTaskAutosave } from "../lib/task-autosave";
 import { createLoginRedirectOnce, loadErrorMessage, shellLoadOutcome } from "../lib/session";
 import { MobileBottomNav } from "../components/MobileBottomNav";
 import { MobileQuickCollect } from "../components/MobileQuickCollect";
@@ -85,6 +97,9 @@ export function Shell() {
 	const [creating, setCreating] = useState(false);
 	const [query, setQuery] = useState("");
 	const [retrying, setRetrying] = useState(false);
+	/** #115：退出登录时有未保存的改动，先确认。 */
+	const [confirmSignOut, setConfirmSignOut] = useState(false);
+	const [signingOut, setSigningOut] = useState(false);
 
 	// #82 / #101：任何查询（me、projects、页面列表）401 → 回登录页，且同时多个 401 只跳一次。
 	// 断网、5xx 不跳，原地提示重试。
@@ -94,7 +109,8 @@ export function Shell() {
 		createLoginRedirectOnce(() => {
 			navigateRef.current("/login", { replace: true });
 			// 先跳再清：清缓存不会让还挂着的查询重新请求（Shell 随这次跳转卸载）。
-			clearClientSession(queryClient);
+			// #115：登录过期 —— 详情里没保存的改动先暂存到本机，同一用户重新登录后补发。
+			clearClientSession(queryClient, { persistUnsaved: true });
 		}),
 	);
 	useEffect(
@@ -104,6 +120,12 @@ export function Shell() {
 			}),
 		[queryClient, onQueryError],
 	);
+
+	// #115：登录后补发 401 时暂存的改动（只补发同一用户的；别的用户的暂存全部丢掉）。
+	const userId = meQuery.data?.user.id;
+	useEffect(() => {
+		if (userId) void replayUnsavedAfterLogin(queryClient, userId);
+	}, [queryClient, userId]);
 
 	const projects = projectsQuery.data?.items ?? NO_PROJECTS;
 	const projectsReady = projectsQuery.data !== undefined;
@@ -151,16 +173,30 @@ export function Shell() {
 		}
 	}
 
-	async function signOut() {
+	function signOut() {
+		// #115：详情里还有没保存 / 保存失败的改动：先确认，退出会丢。
+		if (peekTaskAutosave(queryClient)?.hasUnsaved()) {
+			setConfirmSignOut(true);
+			return;
+		}
+		void doSignOut();
+	}
+
+	async function doSignOut() {
+		setSigningOut(true);
 		try {
 			await api.signOut();
 		} catch (err) {
 			// 退出没成功（如断网）就别假装退出：会话还在，登录页会直接把人送回来。
 			toast.error(err instanceof Error ? `退出失败：${err.message}` : "退出失败，请重试");
 			return;
+		} finally {
+			setSigningOut(false);
 		}
+		setConfirmSignOut(false);
 		navigate("/login", { replace: true });
-		clearClientSession(queryClient);
+		// 用户主动退出：未保存的改动按确认丢掉，不暂存。
+		clearClientSession(queryClient, { discardUnsaved: true });
 	}
 
 	const inbox = projects.find((project) => project.isInbox);
@@ -341,13 +377,13 @@ export function Shell() {
 						empty={null}
 						error={() => (
 							<SidebarMenu>
-								<SidebarUserButton user={null} onSignOut={() => void signOut()} />
+								<SidebarUserButton user={null} onSignOut={signOut} />
 							</SidebarMenu>
 						)}
 					>
 						{(data) => (
 							<SidebarMenu>
-								<SidebarUserButton user={data.user} onSignOut={() => void signOut()} />
+								<SidebarUserButton user={data.user} onSignOut={signOut} />
 							</SidebarMenu>
 						)}
 					</QueryView>
@@ -412,9 +448,31 @@ export function Shell() {
 				projects={rest}
 				projectsReady={projectsReady}
 				onNewProject={() => setProjectOpen(true)}
-				onSignOut={() => void signOut()}
+				onSignOut={signOut}
 			/>
 			<MobileQuickCollect projects={projects} />
+			<AlertDialog open={confirmSignOut} onOpenChange={setConfirmSignOut}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>确定退出登录？</AlertDialogTitle>
+						<AlertDialogDescription>有未保存的改动，退出后会丢失。</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel disabled={signingOut}>取消</AlertDialogCancel>
+						<AlertDialogAction
+							variant="destructive"
+							disabled={signingOut}
+							onClick={(event) => {
+								event.preventDefault();
+								void doSignOut();
+							}}
+						>
+							{signingOut ? <Spinner data-icon="inline-start" /> : null}
+							仍然退出
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 			<Dialog open={projectOpen} onOpenChange={setProjectOpen}>
 				<DialogContent>
 					<form onSubmit={addProject} className="flex flex-col gap-4">

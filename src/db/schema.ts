@@ -233,8 +233,22 @@ export const activityLog = sqliteTable(
 		entityId: text("entity_id"),
 		summary: text("summary").notNull(),
 		createdAt: text("created_at").notNull(),
+		/**
+		 * #115：可合并的内容编辑（task.update，只改标题 / 备注 / 优先级 / 日期 / 标签 / 等待谁）
+		 * 所在合并段的第一次编辑时间。合并时只滑动 created_at，这里保持不变，用来卡 10 分钟上限。
+		 * 其它活动（新建、状态 / 项目 / 父任务变更、完成…）为 NULL，不会被合并进去。
+		 */
+		runStartedAt: text("run_started_at"),
 	},
-	(table) => [index("activity_user_created_idx").on(table.userId, table.createdAt)],
+	(table) => [
+		index("activity_user_created_idx").on(table.userId, table.createdAt),
+		index("activity_user_entity_created_idx").on(
+			table.userId,
+			table.entityType,
+			table.entityId,
+			table.createdAt,
+		),
+	],
 );
 
 /**

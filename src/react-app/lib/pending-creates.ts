@@ -49,6 +49,12 @@ type Entry = {
 	tail: Promise<unknown>;
 	/** 队列里还没结束的操作数。 */
 	queued: number;
+	/**
+	 * #115：新建请求是否已经发出。离线时 TanStack 会把新建暂停（mutationFn 还没跑），
+	 * 这期间详情里的自动保存改动直接并进新建请求体（`fold`），不再单独等真实 id 发 PATCH。
+	 */
+	createSent: boolean;
+	fold: Record<string, unknown>;
 	promise: Promise<string>;
 	resolve: (id: string) => void;
 	reject: (error: Error) => void;
@@ -75,6 +81,8 @@ export function registerPendingCreate(task: Task): void {
 		deleted: false,
 		tail: promise.catch(() => undefined),
 		queued: 0,
+		createSent: false,
+		fold: {},
 		promise,
 		resolve,
 		reject,
@@ -171,6 +179,47 @@ export function enqueueTaskAction<T>(
 		entry.queued -= 1;
 	});
 	return result;
+}
+
+/**
+ * #115：新建请求还没发出时，把改动并进新建请求体（后写覆盖先写）。
+ * 已发出 / 已有结果 / 找不到时返回 false，调用方改走 enqueueTaskAction 排队发 PATCH。
+ */
+export function foldIntoPendingCreate(tempId: string, patch: Record<string, unknown>): boolean {
+	const entry = entries.get(tempId);
+	if (!entry || entry.state !== "pending" || entry.createSent) return false;
+	entry.touched = true;
+	Object.assign(entry.fold, patch);
+	return true;
+}
+
+/** 新建请求是否还没发出（可以 fold）。 */
+export function canFoldIntoPendingCreate(tempId: string): boolean {
+	const entry = entries.get(tempId);
+	return Boolean(entry && entry.state === "pending" && !entry.createSent);
+}
+
+/**
+ * 新建 mutationFn 真正发请求前调用：标记已发出，返回要并进请求体的改动。
+ * 新建接口的 notes 不接受 null（默认就是空），null 直接去掉。
+ */
+export function takePendingCreateFold(tempId: string): Record<string, unknown> {
+	const entry = entries.get(tempId);
+	if (!entry) return {};
+	entry.createSent = true;
+	const fold = { ...entry.fold };
+	entry.fold = {};
+	if (fold.notes === null) delete fold.notes;
+	return fold;
+}
+
+/** 等这条新建出结果（成功给真实 id，失败抛 PendingCreateFailedError）。 */
+export function awaitPendingCreate(tempId: string): Promise<string> {
+	const entry = entries.get(tempId);
+	if (!entry) return Promise.reject(new PendingCreateFailedError(tempId));
+	if (entry.state === "created" && entry.created) return Promise.resolve(entry.created.id);
+	if (entry.state === "failed") return Promise.reject(new PendingCreateFailedError(tempId));
+	return entry.promise;
 }
 
 export function resolvePendingCreate(tempId: string, created: Task): void {

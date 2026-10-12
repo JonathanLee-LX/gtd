@@ -56,6 +56,7 @@ import { ResizableSidePanel } from "./ResizableSidePanel";
 import { TaskComposer } from "./TaskComposer";
 import { TaskDetail } from "./TaskDetail";
 import { TaskRow } from "./TaskRow";
+import { TaskSaveStatus } from "./TaskSaveStatus";
 import { LoadErrorRetry } from "./LoadErrorRetry";
 import { QueryView } from "./QueryView";
 import { useTaskDetailLayout } from "../hooks/use-task-detail-layout";
@@ -85,7 +86,6 @@ export function TaskBoard({
 	projects,
 	emptyText,
 	onCreate,
-	onSave,
 	onComplete,
 	onDelete,
 	enableInboxProcess = false,
@@ -107,7 +107,6 @@ export function TaskBoard({
 	projects: Project[];
 	emptyText: string;
 	onCreate: (title: string) => Promise<void>;
-	onSave: (id: string, patch: Record<string, unknown>) => Promise<void>;
 	onComplete: (id: string) => Promise<void>;
 	onDelete: (id: string) => Promise<void>;
 	onReload?: () => Promise<void>;
@@ -355,7 +354,6 @@ export function TaskBoard({
 			layout={isMobile ? "mobile" : "aside"}
 			mutationPending={isTaskMutating(selected.id)}
 			completing={selectedCompleting}
-			onSave={(patch) => onSave(selected.id, patch)}
 			onComplete={async () => {
 				beginComplete(selected.id);
 			}}
@@ -491,8 +489,11 @@ export function TaskBoard({
 								<ChevronLeftIcon className="size-5" />
 							</Button>
 							<div className="min-w-0 flex-1">
-								<SheetTitle>任务详情</SheetTitle>
-								<SheetDescription>改状态、优先级和截止日期。</SheetDescription>
+								<div className="flex min-w-0 items-baseline gap-2">
+									<SheetTitle>任务详情</SheetTitle>
+									{selected ? <TaskSaveStatus taskId={selected.id} /> : null}
+								</div>
+								<SheetDescription>改动会自动保存。</SheetDescription>
 							</div>
 						</SheetHeader>
 						<div
@@ -506,8 +507,9 @@ export function TaskBoard({
 				// #96：左边缘可拖拽调宽，宽度记在 localStorage，所有页面共用这一个边栏组件。
 				<ResizableSidePanel aria-label="任务详情" id="task-detail-panel">
 					<Card className="size-full rounded-none ring-0">
-						<CardHeader>
+						<CardHeader className="flex min-w-0 flex-row items-baseline gap-2">
 							<CardTitle>任务详情</CardTitle>
+							<TaskSaveStatus taskId={selected.id} />
 						</CardHeader>
 						<Separator />
 						<CardContent ref={attachDetailHost} className="flex min-h-0 flex-1 flex-col" />

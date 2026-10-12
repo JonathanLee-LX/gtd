@@ -19,7 +19,7 @@ import { createsParentCycle } from "../../shared/task-tree";
 import { ymdInZone } from "../../shared/today";
 import { badRequest, notFound } from "../lib/errors";
 import { newId, nowIso } from "../lib/ids";
-import { logActivity } from "./activity";
+import { logActivity, logTaskUpdateActivity } from "./activity";
 import { getInbox } from "./ensure-inbox";
 import { getProject } from "./projects";
 import { replaceTaskTags, tagsForTasks } from "./tags";
@@ -191,13 +191,17 @@ export async function updateTask(
 	if (input.tagIds) {
 		await replaceTaskTags(db, userId, id, input.tagIds);
 	}
-	await logActivity(db, {
+	// #115：只改内容字段的连续编辑合并成一条活动；状态 / 项目 / 父任务真的变了就另起一条。
+	const structural =
+		(patch.status !== undefined && patch.status !== current.status) ||
+		(patch.projectId !== undefined && patch.projectId !== current.projectId) ||
+		(patch.parentId !== undefined && patch.parentId !== current.parentId);
+	await logTaskUpdateActivity(db, {
 		userId,
 		source,
-		action: "task.update",
-		entityType: "task",
-		entityId: id,
+		taskId: id,
 		summary: `更新任务「${input.title ?? current.title}」`,
+		coalescible: !structural,
 	});
 	return getTask(db, userId, id);
 }

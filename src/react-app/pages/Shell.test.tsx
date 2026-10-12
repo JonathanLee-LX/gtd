@@ -13,6 +13,8 @@ import { api } from "../api";
 import { useShellContext } from "../hooks/use-shell-data";
 import { readInboxHint, writeInboxHint } from "../lib/inbox-hint";
 import { readSkeletonCount, writeSkeletonCount } from "../lib/skeleton";
+import { listPersistedUnsaved } from "../lib/autosave-persist";
+import { getTaskAutosave, peekTaskAutosave } from "../lib/task-autosave";
 import { createAppQueryClient } from "../query-client";
 import { Shell } from "./Shell";
 
@@ -282,6 +284,56 @@ describe("Shell cold start (#101)", () => {
 		expect(localStorage.getItem("theme")).toBe("dark");
 		expect(client.getQueryData(["me"])).toBeUndefined();
 		expect(client.getQueryData(["projects"])).toBeUndefined();
+	});
+
+	it("#115 sign-out with unsaved autosave changes asks first; cancel keeps them, confirm drops them (no PATCH, nothing persisted)", async () => {
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path) => {
+			if (path === "/api/auth/sign-out") return { status: 200, body: { success: true } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client);
+		await act(flush);
+		const t = {
+			id: "t1", title: "写周报", notes: null, status: "next", priority: "none", dueAt: null, startAt: null,
+			waitingOn: null, projectId: "inbox", projectName: "收件箱", parentId: null, source: "human",
+			createdAt: "2026-10-09T00:00:00.000Z", updatedAt: "2026-10-09T00:00:00.000Z", completedAt: null,
+			deletedAt: null, tags: [],
+		} as const;
+		getTaskAutosave(client).edit({ ...t, tags: [] }, { notes: "还没保存" }, { debounce: true });
+		const openSignOut = async () => {
+			await act(async () => {
+				fireEvent.click(screen.getByText("jon@example.com"));
+				await flush();
+			});
+			await act(async () => {
+				fireEvent.click(await screen.findByRole("menuitem", { name: "退出" }));
+				await flush();
+			});
+		};
+		await openSignOut();
+		expect(await screen.findByText("有未保存的改动，退出后会丢失。")).toBeTruthy();
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "取消" }));
+			await flush();
+		});
+		expect(fetchCalls).not.toContain("/api/auth/sign-out");
+		expect(peekTaskAutosave(client)?.hasUnsaved()).toBe(true);
+
+		await openSignOut();
+		await act(async () => {
+			fireEvent.click(await screen.findByRole("button", { name: "仍然退出" }));
+			await flush();
+		});
+		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
+		expect(fetchCalls).toContain("/api/auth/sign-out");
+		expect(peekTaskAutosave(client)).toBeUndefined();
+		await act(() => new Promise((r) => setTimeout(r, 900))); // 防抖到点也不会发
+		expect(fetchCalls.filter((p) => p.startsWith("/api/tasks/t1"))).toEqual([]);
+		expect(listPersistedUnsaved()).toEqual([]);
 	});
 
 	it("redirects once when the 401s arrive one after another", async () => {

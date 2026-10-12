@@ -23,7 +23,6 @@ import {
 	useCompleteTask,
 	useCreateTask,
 	useDeleteTask,
-	useUpdateTask,
 } from "../hooks/use-task-mutations";
 import { useShellContext } from "../hooks/use-shell-data";
 import { useTaskList } from "../hooks/use-task-queries";
@@ -39,7 +38,6 @@ export function ProjectPage() {
 		{ enabled: Boolean(id) },
 	);
 	const createTask = useCreateTask(projects);
-	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
 	const [archiveBusy, setArchiveBusy] = useState(false);
@@ -59,9 +57,6 @@ export function ProjectPage() {
 				emptyText="这个项目还没有未完成任务。"
 				onCreate={async (title) => {
 					if (id) await createTask.mutateAsync({ title, projectId: id, status: "next" });
-				}}
-				onSave={async (taskId, patch) => {
-					await updateTask.mutateAsync({ id: taskId, patch });
 				}}
 				onComplete={async (taskId) => {
 					await completeTask.mutateAsync(taskId);
@@ -149,9 +144,6 @@ export function ProjectPage() {
 			emptyText="这个项目还没有未完成任务。"
 			onCreate={async (title) => {
 				await createTask.mutateAsync({ title, projectId: project.id, status: "next" });
-			}}
-			onSave={async (taskId, patch) => {
-				await updateTask.mutateAsync({ id: taskId, patch });
 			}}
 			onComplete={async (taskId) => {
 				await completeTask.mutateAsync(taskId);

@@ -4,7 +4,6 @@ import {
 	useCompleteTask,
 	useCreateTask,
 	useDeleteTask,
-	useUpdateTask,
 } from "../hooks/use-task-mutations";
 import { useShellContext } from "../hooks/use-shell-data";
 import { useInboxList } from "../hooks/use-inbox-list";
@@ -17,7 +16,6 @@ export function InboxPage() {
 	const { inbox, display, loadKey } = useInboxList(shell);
 	const queryClient = useQueryClient();
 	const createTask = useCreateTask(projects);
-	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
 
@@ -39,9 +37,6 @@ export function InboxPage() {
 			onCreate={async (title) => {
 				// 收件箱 id 还没确认时不带 projectId，服务端默认放进收件箱。
 				await createTask.mutateAsync({ title, ...(inbox ? { projectId: inbox.id } : {}), status: "inbox" });
-			}}
-			onSave={async (id, patch) => {
-				await updateTask.mutateAsync({ id, patch });
 			}}
 			onComplete={async (id) => {
 				await completeTask.mutateAsync(id);

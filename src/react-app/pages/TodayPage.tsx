@@ -4,7 +4,6 @@ import {
 	useCompleteTask,
 	useCreateTask,
 	useDeleteTask,
-	useUpdateTask,
 } from "../hooks/use-task-mutations";
 import { useFocusTasks } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
@@ -16,7 +15,6 @@ export function TodayPage() {
 	const queryClient = useQueryClient();
 	const query = useFocusTasks();
 	const createTask = useCreateTask(projects);
-	const updateTask = useUpdateTask();
 	const completeTask = useCompleteTask();
 	const deleteTask = useDeleteTask();
 
@@ -35,9 +33,6 @@ export function TodayPage() {
 			emptyText="今天还没有焦点任务。先去收件箱清一轮，或在这里新建。"
 			onCreate={async (title) => {
 				await createTask.mutateAsync({ title, status: "next" });
-			}}
-			onSave={async (id, patch) => {
-				await updateTask.mutateAsync({ id, patch });
 			}}
 			onComplete={async (id) => {
 				await completeTask.mutateAsync(id);

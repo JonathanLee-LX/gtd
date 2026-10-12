@@ -34,6 +34,8 @@ import { sourceLabel } from "../lib/format";
 import { isTempTaskId } from "../lib/pending-creates";
 import { projectPickerItems } from "../lib/project-items";
 import { sameTask } from "../lib/task-mutation-lock";
+import type { AutosaveValues } from "../lib/task-autosave";
+import { useTaskAutosave } from "../hooks/use-task-autosave";
 import { TaskActivityList } from "./TaskActivityList";
 import { TaskAttachments } from "./TaskAttachments";
 
@@ -53,19 +55,70 @@ function draftFromTask(task: Task): Draft {
 	};
 }
 
-function sameDraft(a: Draft, b: Draft): boolean {
-	return (
-		a.title === b.title &&
-		a.notes === b.notes &&
-		a.status === b.status &&
-		a.priority === b.priority &&
-		a.dueAt === b.dueAt &&
-		a.projectId === b.projectId &&
-		a.parentId === b.parentId &&
-		a.waitingOn === b.waitingOn &&
-		a.tags.map((tag) => tag.id).join(",") === b.tags.map((tag) => tag.id).join(",")
-	);
+type DraftField = keyof Draft;
+const DRAFT_FIELDS: DraftField[] = [
+	"title",
+	"notes",
+	"status",
+	"priority",
+	"dueAt",
+	"projectId",
+	"parentId",
+	"waitingOn",
+	"tags",
+];
+/** 停止输入 800ms 后保存、失焦立即保存的文本字段；其余改完立即保存。 */
+const TEXT_FIELDS = new Set<DraftField>(["title", "notes", "waitingOn"]);
+
+function sameDraftValue(field: DraftField, a: Draft[DraftField], b: Draft[DraftField]): boolean {
+	if (field === "tags") {
+		return (a as Tag[]).map((tag) => tag.id).join(",") === (b as Tag[]).map((tag) => tag.id).join(",");
+	}
+	return a === b;
 }
+
+/** 表单值 → 保存队列的值（API 形状：空串 → null，标题 trim）。 */
+function toAutosave(field: DraftField, value: Draft[DraftField]): Partial<AutosaveValues> {
+	switch (field) {
+		case "title":
+			return { title: (value as string).trim() };
+		case "notes":
+		case "dueAt":
+		case "waitingOn":
+			return { [field]: (value as string) || null };
+		case "parentId":
+			return { parentId: value === NONE_PARENT ? null : (value as string) };
+		default:
+			return { [field]: value } as Partial<AutosaveValues>;
+	}
+}
+
+/** 保存队列里还没确认的值 → 表单值（重新打开详情时盖在任务上）。 */
+function fromAutosave(values: Partial<AutosaveValues>): Partial<Draft> {
+	const out: Partial<Draft> = {};
+	if (values.title !== undefined) out.title = values.title;
+	if (values.notes !== undefined) out.notes = values.notes ?? "";
+	if (values.status !== undefined) out.status = values.status;
+	if (values.priority !== undefined) out.priority = values.priority;
+	if (values.dueAt !== undefined) out.dueAt = values.dueAt ?? "";
+	if (values.projectId !== undefined) out.projectId = values.projectId;
+	if (values.parentId !== undefined) out.parentId = values.parentId ?? NONE_PARENT;
+	if (values.waitingOn !== undefined) out.waitingOn = values.waitingOn ?? "";
+	if (values.tags !== undefined) out.tags = values.tags;
+	return out;
+}
+
+const DRAFT_TO_AUTOSAVE: Record<DraftField, keyof AutosaveValues> = {
+	title: "title",
+	notes: "notes",
+	status: "status",
+	priority: "priority",
+	dueAt: "dueAt",
+	projectId: "projectId",
+	parentId: "parentId",
+	waitingOn: "waitingOn",
+	tags: "tags",
+};
 
 type Draft = {
 	title: string;
@@ -93,7 +146,6 @@ export function TaskDetail({
 	projects,
 	tasks,
 	layout = "aside",
-	onSave,
 	onComplete,
 	onDelete,
 	mutationPending = false,
@@ -104,34 +156,36 @@ export function TaskDetail({
 	tasks: Task[];
 	/** Mobile fullscreen chrome: sticky thumb-reach action bar. Desktop aside unchanged. */
 	layout?: "aside" | "mobile";
-	onSave: (patch: Record<string, unknown>) => Promise<void>;
 	onComplete: () => Promise<void>;
 	onDelete: () => Promise<void>;
-	/** Disable save / complete / delete while any optimistic task mutation is in flight. */
+	/** Disable complete / delete while an optimistic task mutation is in flight for this task. */
 	mutationPending?: boolean;
 	/** Complete feedback in progress — show check, block re-entry. */
 	completing?: boolean;
 }) {
-	const [title, setTitle] = useState(task.title);
-	const [notes, setNotes] = useState(task.notes ?? "");
-	const [status, setStatus] = useState<TaskStatus>(task.status);
-	const [priority, setPriority] = useState<TaskPriority>(task.priority);
-	const [dueAt, setDueAt] = useState(task.dueAt ?? "");
-	const [projectId, setProjectId] = useState(task.projectId);
-	const [parentId, setParentId] = useState(task.parentId ?? NONE_PARENT);
-	const [waitingOn, setWaitingOn] = useState(task.waitingOn ?? "");
-	const [tagDraft, setTagDraft] = useState("");
-	const [localTags, setLocalTags] = useState<Tag[]>(task.tags);
-	const [error, setError] = useState<string | null>(null);
-	const [deleting, setDeleting] = useState(false);
 	/**
-	 * #90：表单只在「换了一条任务」或「表单没有未保存修改」时跟随 task 变化。
-	 * 有没有修改 = 表单值和当前显示的这条任务（taskDraftRef，上一次看到的 task）比，
-	 * 不用粘滞标记：保存失败后用户改回原值，就又会跟随服务端 / MCP 的更新。
+	 * #115：自动保存。表单每次改动都交给按任务排队的保存队列（lib/task-autosave），
+	 * 文本字段 800ms 防抖 / 失焦立即，选择类字段立即；关详情、换任务时 flush。
 	 */
-	const taskDraftRef = useRef<Draft>(draftFromTask(task));
+	const autosave = useTaskAutosave();
+	const initialDraft = (current: Task): Draft => ({
+		...draftFromTask(current),
+		...fromAutosave(autosave.pendingValues(current.id)),
+	});
+	const [form, setForm] = useState<Draft>(() => initialDraft(task));
+	const formRef = useRef(form);
+	formRef.current = form;
+	const { title, notes, status, priority, dueAt, projectId, parentId, waitingOn } = form;
+	const localTags = form.tags;
+	const [tagDraft, setTagDraft] = useState("");
+	const [error, setError] = useState<string | null>(null);
+	const [titleEmpty, setTitleEmpty] = useState(false);
+	const [deleting, setDeleting] = useState(false);
+	const taskRef = useRef(task);
+	taskRef.current = task;
 	const syncedTaskIdRef = useRef(task.id);
-	const savingRef = useRef(0);
+	/** 正在输入的字段：后台刷新 / 保存结果都不覆盖它（#90 规则）。 */
+	const focusedRef = useRef<DraftField | null>(null);
 	const pendingCreate = isTempTaskId(task.id);
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	// #101：冷启动时项目列表可能还没回来 —— 先放上当前项目、禁用选择框，不报错。
@@ -163,80 +217,96 @@ export function TaskDetail({
 		return items;
 	}, [tasks, task.id, task.parentId]);
 
-	function applyDraft(draft: Draft) {
-		setTitle(draft.title);
-		setNotes(draft.notes);
-		setStatus(draft.status);
-		setPriority(draft.priority);
-		setDueAt(draft.dueAt);
-		setProjectId(draft.projectId);
-		setParentId(draft.parentId);
-		setWaitingOn(draft.waitingOn);
-		setLocalTags(draft.tags);
-	}
-
 	useEffect(() => {
 		const previousId = syncedTaskIdRef.current;
 		syncedTaskIdRef.current = task.id;
-		const next = draftFromTask(task);
 		if (!sameTask(previousId, task.id)) {
-			// 真的换了一条任务：整体重置。临时 id → 真实 id 不算换任务。
-			applyDraft(next);
-			taskDraftRef.current = next;
+			// 真的换了一条任务：先把上一条没发的改动提交出去，再整体重置。临时 id → 真实 id 不算换任务。
+			autosave.flush(previousId);
+			autosave.setTitleInvalid({ ...task, id: previousId }, false);
+			focusedRef.current = null;
+			setForm(initialDraft(task));
 			setTagDraft("");
 			setError(null);
+			setTitleEmpty(false);
 			setConfirmOpen(false);
 			return;
 		}
-		const form: Draft = { title, notes, status, priority, dueAt, projectId, parentId, waitingOn, tags: localTags };
-		const dirty = savingRef.current > 0 || !sameDraft(form, taskDraftRef.current);
-		taskDraftRef.current = next;
-		if (dirty) return; // 保存中 / 有未保存的输入：不覆盖用户正在填的内容
-		applyDraft(next);
-		// 只在 task 变化时同步；表单值只用来判断是否有未保存修改。
+		// 同一条任务被刷新（保存结果 / 后台刷新 / MCP）：只同步没在改、也没待保存的字段。
+		autosave.observeServer(task);
+		const next = draftFromTask(task);
+		setForm((prev) => {
+			let changed = false;
+			const out = { ...prev };
+			for (const field of DRAFT_FIELDS) {
+				if (focusedRef.current === field) continue;
+				if (autosave.isDirty(task.id, DRAFT_TO_AUTOSAVE[field])) continue;
+				if (sameDraftValue(field, prev[field], next[field])) continue;
+				(out as Record<string, unknown>)[field] = next[field];
+				changed = true;
+			}
+			return changed ? out : prev;
+		});
+		// 只在 task 变化时同步。
 	}, [task]);
 
-	/**
-	 * #90：乐观保存——列表 / 详情当帧就是新值，不再转圈等服务端。
-	 * 失败时 useUpdateTask 回滚缓存并 toast；表单保留当前内容（包括点保存之后又输入的），可直接再保存。
-	 */
-	function save(event: React.FormEvent) {
-		event.preventDefault();
-		setError(null);
-		const submitted: Draft = { title, notes, status, priority, dueAt, projectId, parentId, waitingOn, tags: localTags };
-		// 失败回滚后，task 会回到点保存之前的值；以它为准判断表单是否还有未保存修改。
-		const beforeSave = taskDraftRef.current;
-		taskDraftRef.current = submitted;
-		savingRef.current += 1;
-		onSave({
-			title,
-			notes: notes || null,
-			status,
-			priority,
-			dueAt: dueAt || null,
-			projectId,
-			parentId: parentId === NONE_PARENT ? null : parentId,
-			waitingOn: waitingOn || null,
-			tagIds: localTags.map((tag) => tag.id),
-		})
-			.catch((err: unknown) => {
-				taskDraftRef.current = beforeSave;
-				setError(
-					`保存失败，已恢复原值；你填写的内容还在，可以再点保存。${err instanceof Error && err.message ? `（${err.message}）` : ""}`,
-				);
-			})
-			.finally(() => {
-				savingRef.current -= 1;
-			});
+	// 关闭详情（卸载）：把没发出去的改动立即提交（队列在组件外，卸载后照样发完）。
+	useEffect(
+		() => () => {
+			autosave.setTitleInvalid({ ...taskRef.current, id: syncedTaskIdRef.current }, false);
+			autosave.flush(syncedTaskIdRef.current);
+		},
+		[autosave],
+	);
+
+	function change<F extends DraftField>(field: F, value: Draft[F]) {
+		setForm((prev) => ({ ...prev, [field]: value }));
+		const current = taskRef.current;
+		if (field === "title") {
+			if (!(value as string).trim()) {
+				// 标题清空：不保存标题（其它字段照常保存），失焦后恢复原标题。状态显示「标题未保存」。
+				setTitleEmpty(true);
+				autosave.setTitleInvalid(current, true);
+				autosave.dropEdit(current.id, "title");
+				return;
+			}
+			setTitleEmpty(false);
+			autosave.setTitleInvalid(current, false);
+		}
+		autosave.edit(current, toAutosave(field, value), { debounce: TEXT_FIELDS.has(field) });
 	}
+
+	const textFieldProps = (field: DraftField) => ({
+		onFocus: () => {
+			focusedRef.current = field;
+		},
+		onBlur: () => {
+			if (focusedRef.current === field) focusedRef.current = null;
+			if (field === "title" && !title.trim()) {
+				const saved = autosave.savedValue(task.id, "title") ?? task.title;
+				setForm((prev) => ({ ...prev, title: saved }));
+				setTitleEmpty(false);
+				autosave.setTitleInvalid(task, false);
+			}
+			autosave.flush(task.id);
+		},
+	});
 
 	async function confirmDelete() {
 		setDeleting(true);
 		setError(null);
+		const current = taskRef.current;
+		// 删除就不必再保存：先丢掉这条的保存队列（防抖 / 关详情 flush 都不会再对已删任务发 PATCH）。
+		autosave.discard(current.id);
 		try {
 			await onDelete();
 			setConfirmOpen(false);
 		} catch (err) {
+			// 删除失败：表单里的改动重新排进保存队列。
+			for (const field of DRAFT_FIELDS) {
+				if (field === "title" && !form.title.trim()) continue;
+				autosave.edit(current, toAutosave(field, form[field]));
+			}
 			setError(err instanceof Error ? err.message : "删除失败");
 		} finally {
 			setDeleting(false);
@@ -245,7 +315,11 @@ export function TaskDetail({
 
 	return (
 		<form
-			onSubmit={save}
+			onSubmit={(event) => {
+				// 没有「保存」按钮了；输入框里回车 = 立即保存。
+				event.preventDefault();
+				autosave.flush(task.id);
+			}}
 			className={cn(
 				"flex min-h-0 min-w-0 flex-1 flex-col gap-4",
 				layout === "mobile" && "overflow-hidden",
@@ -267,15 +341,22 @@ export function TaskDetail({
 					<Input
 						id="task-detail-title"
 						value={title}
-						onChange={(event) => setTitle(event.target.value)}
+						aria-invalid={titleEmpty || undefined}
+						aria-describedby={titleEmpty ? "task-detail-title-error" : undefined}
+						onChange={(event) => change("title", event.target.value)}
+						{...textFieldProps("title")}
 					/>
+					{titleEmpty ? (
+						<FieldError id="task-detail-title-error">标题不能为空，失焦后恢复原标题</FieldError>
+					) : null}
 				</Field>
 				<Field>
 					<FieldLabel htmlFor="task-detail-notes">备注</FieldLabel>
 					<Textarea
 						id="task-detail-notes"
 						value={notes}
-						onChange={(event) => setNotes(event.target.value)}
+						onChange={(event) => change("notes", event.target.value)}
+						{...textFieldProps("notes")}
 						placeholder="补充上下文、链接或等待原因"
 						rows={6}
 					/>
@@ -291,7 +372,7 @@ export function TaskDetail({
 					<Select
 						items={statusItems}
 						value={status}
-						onValueChange={(value) => setStatus(value as TaskStatus)}
+						onValueChange={(value) => change("status", value as TaskStatus)}
 					>
 						<SelectTrigger className="w-full">
 							<SelectValue />
@@ -312,7 +393,7 @@ export function TaskDetail({
 					<Select
 						items={priorityItems}
 						value={priority}
-						onValueChange={(value) => setPriority(value as TaskPriority)}
+						onValueChange={(value) => change("priority", value as TaskPriority)}
 					>
 						<SelectTrigger className="w-full">
 							<SelectValue />
@@ -334,7 +415,7 @@ export function TaskDetail({
 						items={projectItems}
 						value={projectId}
 						disabled={projectsLoading}
-						onValueChange={(value) => setProjectId(String(value))}
+						onValueChange={(value) => change("projectId", String(value))}
 					>
 						<SelectTrigger className="w-full">
 							<SelectValue />
@@ -355,7 +436,7 @@ export function TaskDetail({
 					<Select
 						items={parentItems}
 						value={parentId}
-						onValueChange={(value) => setParentId(String(value))}
+						onValueChange={(value) => change("parentId", String(value))}
 					>
 						<SelectTrigger className="w-full">
 							<SelectValue />
@@ -380,7 +461,7 @@ export function TaskDetail({
 						id="task-detail-due"
 						type="date"
 						value={dueAt}
-						onChange={(event) => setDueAt(event.target.value)}
+						onChange={(event) => change("dueAt", event.target.value)}
 					/>
 				</Field>
 				<Field>
@@ -388,7 +469,8 @@ export function TaskDetail({
 					<Input
 						id="task-detail-waiting"
 						value={waitingOn}
-						onChange={(event) => setWaitingOn(event.target.value)}
+						onChange={(event) => change("waitingOn", event.target.value)}
+						{...textFieldProps("waitingOn")}
 					/>
 				</Field>
 				<Field>
@@ -403,7 +485,10 @@ export function TaskDetail({
 									size="icon-xs"
 									aria-label={`移除 ${tag.name}`}
 									onClick={() =>
-										setLocalTags(localTags.filter((item) => item.id !== tag.id))
+										change(
+											"tags",
+											localTags.filter((item) => item.id !== tag.id),
+										)
 									}
 								>
 									<XIcon />
@@ -424,11 +509,8 @@ export function TaskDetail({
 							void api
 								.createTag(name)
 								.then(({ tag }) => {
-									setLocalTags((current) =>
-										current.some((item) => item.id === tag.id)
-											? current
-											: [...current, tag],
-									);
+									const tags = formRef.current.tags;
+									if (!tags.some((item) => item.id === tag.id)) change("tags", [...tags, tag]);
 									setTagDraft("");
 								})
 								.catch((err: unknown) => {
@@ -455,13 +537,6 @@ export function TaskDetail({
 				)}
 			>
 				<Button
-					type="submit"
-					disabled={deleting || mutationPending || completing}
-					className={layout === "mobile" ? "min-h-11 flex-1" : undefined}
-				>
-					保存
-				</Button>
-				<Button
 					type="button"
 					variant="outline"
 					disabled={deleting || mutationPending || completing}
@@ -472,6 +547,8 @@ export function TaskDetail({
 					aria-pressed={completing || undefined}
 					onClick={() => {
 						if (completing || mutationPending || deleting) return;
+						// 先把没发的改动提交出去，再完成。
+						autosave.flush(task.id);
 						void onComplete();
 					}}
 				>

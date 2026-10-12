@@ -34,6 +34,7 @@ import {
 import type { Attachment } from "../api";
 import { attachmentKeys, attachmentService } from "../lib/attachment-service";
 import { loadErrorMessage } from "../lib/load-state";
+import { invalidateTaskActivity } from "../lib/task-activity";
 import { Skeleton } from "@/components/ui/skeleton";
 import { QueryView } from "./QueryView";
 // TEMP #89 diagnostics — remove after root cause found
@@ -277,6 +278,8 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 				});
 				count += 1;
 				setUploads((current) => current.filter((item) => item.key !== key));
+				// #111 / #112 跟进：上传会写一条活动，只让这条任务的活动失效，活动列表立即刷新。
+				void invalidateTaskActivity(queryClient, taskId);
 				await queryClient.invalidateQueries({ queryKey: attachmentKeys.task(taskId) });
 			} catch (err) {
 				const message = err instanceof Error ? err.message : "上传失败";
@@ -293,6 +296,7 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 			await attachmentService.remove(taskId, pendingDelete.id);
 			if (preview?.id === pendingDelete.id) setPreview(null);
 			setPendingDelete(null);
+			void invalidateTaskActivity(queryClient, taskId);
 			await queryClient.invalidateQueries({ queryKey: attachmentKeys.task(taskId) });
 			toast.success("附件已删除");
 		} catch (err) {

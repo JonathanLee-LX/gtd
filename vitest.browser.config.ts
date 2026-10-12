@@ -11,7 +11,6 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
 	plugins: [react(), tailwindcss()],
-	define: { __APP_COMMIT__: JSON.stringify("test") },
 	resolve: {
 		alias: {
 			"@": path.resolve(__dirname, "./src"),

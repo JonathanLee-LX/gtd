@@ -16,6 +16,14 @@ export type WorkerEnv = PasskeyEnv & {
 	BETTER_AUTH_URL?: string;
 	/** Explicitly enable email/password signup. Default off (secure for public workers.dev). */
 	ALLOW_SIGNUP?: string;
+	/**
+	 * Web Push（#123）。公钥是 base64url 的 P-256 未压缩点；私钥是 PKCS8/JWK，只放 Worker secret / .dev.vars。
+	 * 不写进 wrangler.json。生成：`node scripts/generate-vapid.mjs`。
+	 */
+	VAPID_PUBLIC_KEY?: string;
+	VAPID_PRIVATE_KEY?: string;
+	/** `mailto:` 或 `https:` URL，写进 VAPID JWT 的 sub。 */
+	VAPID_SUBJECT?: string;
 };
 
 /** Signup is off unless ALLOW_SIGNUP is explicitly "true" or "1". */

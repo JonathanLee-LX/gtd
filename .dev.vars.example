@@ -7,3 +7,10 @@ BETTER_AUTH_URL=http://localhost:5173
 # PASSKEY_RP_ID=localhost
 # PASSKEY_ORIGIN=http://localhost:5173
 # XAI_API_KEY=  # only needed for in-app AI (phase 5)
+# Web Push VAPID (#123). Generate a pair with: node scripts/generate-vapid.mjs
+# Put BOTH lines here for local `pnpm dev`. Do not commit the private key.
+# Production: `wrangler secret put VAPID_PUBLIC_KEY` and `wrangler secret put VAPID_PRIVATE_KEY`
+# (and optionally VAPID_SUBJECT). Never put the private key in wrangler.json.
+# VAPID_PUBLIC_KEY=
+# VAPID_PRIVATE_KEY=
+# VAPID_SUBJECT=mailto:you@example.com

@@ -343,6 +343,73 @@ export const r2PendingDeletions = sqliteTable(
 	(table) => [index("r2_pending_deletions_created_idx").on(table.createdAt)],
 );
 
+/**
+ * #123 网页推送订阅。一台设备一行；endpoint 全局唯一（换账号登录同一浏览器时改挂到新 user_id）。
+ * 404/410 时删行。last_success_at 只在真正送达后更新。
+ */
+export const pushSubscriptions = sqliteTable(
+	"push_subscriptions",
+	{
+		userId: text("user_id")
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		endpoint: text("endpoint").primaryKey(),
+		p256dh: text("p256dh").notNull(),
+		auth: text("auth").notNull(),
+		createdAt: text("created_at").notNull(),
+		lastSuccessAt: text("last_success_at"),
+	},
+	(table) => [index("push_subscriptions_user_id_idx").on(table.userId)],
+);
+
+/**
+ * #123 到期提醒设置。一行一个用户。
+ * next_*_at 是下次触发的 UTC 时刻（ISO）。定时任务只查 `next_*_at <= now`，不扫全表重算时区。
+ * 总开关关闭或「明天」关闭时，对应的 next_*_at 为 NULL，索引扫不到。
+ */
+export const notificationSettings = sqliteTable(
+	"notification_settings",
+	{
+		userId: text("user_id")
+			.primaryKey()
+			.references(() => user.id, { onDelete: "cascade" }),
+		enabled: integer("enabled", { mode: "boolean" }).default(false).notNull(),
+		digestTime: text("digest_time").default("09:00").notNull(),
+		tomorrowEnabled: integer("tomorrow_enabled", { mode: "boolean" }).default(false).notNull(),
+		tomorrowTime: text("tomorrow_time").default("21:00").notNull(),
+		includeOverdue: integer("include_overdue", { mode: "boolean" }).default(true).notNull(),
+		timeZone: text("time_zone").default("Asia/Shanghai").notNull(),
+		nextDueDigestAt: text("next_due_digest_at"),
+		nextTomorrowAt: text("next_tomorrow_at"),
+		updatedAt: text("updated_at").notNull(),
+	},
+	(table) => [
+		index("notification_settings_next_due_idx")
+			.on(table.nextDueDigestAt)
+			.where(sql`${table.nextDueDigestAt} is not null`),
+		index("notification_settings_next_tomorrow_idx")
+			.on(table.nextTomorrowAt)
+			.where(sql`${table.nextTomorrowAt} is not null`),
+	],
+);
+
+/**
+ * #123 去重占位。主键 (user_id, kind, local_date)。
+ * 先 INSERT … ON CONFLICT DO NOTHING，插入成功才发送。全部设备失败时删掉占位，下一个 15 分钟补发。
+ */
+export const notificationLog = sqliteTable(
+	"notification_log",
+	{
+		userId: text("user_id")
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		kind: text("kind").notNull(),
+		localDate: text("local_date").notNull(),
+		createdAt: text("created_at").notNull(),
+	},
+	(table) => [primaryKey({ columns: [table.userId, table.kind, table.localDate] })],
+);
+
 export const userRelations = relations(user, ({ many }) => ({
 	sessions: many(session),
 	projects: many(projects),
@@ -382,4 +449,7 @@ export const schema = {
 	attachments,
 	attachmentUploads,
 	r2PendingDeletions,
+	pushSubscriptions,
+	notificationSettings,
+	notificationLog,
 };

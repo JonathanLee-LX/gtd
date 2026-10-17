@@ -4,4 +4,5 @@ export const settingsKeys = {
 	tokens: () => [...settingsKeys.all, "tokens"] as const,
 	deletedTasks: () => [...settingsKeys.all, "deleted-tasks"] as const,
 	passkeys: () => [...settingsKeys.all, "passkeys"] as const,
+	notifications: () => [...settingsKeys.all, "notifications"] as const,
 };

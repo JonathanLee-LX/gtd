@@ -209,4 +209,48 @@ export const api = {
 			method: "POST",
 			body: JSON.stringify(draft),
 		}),
+	notificationSettings: () => request<NotificationSettings>("/api/notifications"),
+	saveNotificationSettings: (body: SaveNotificationSettings) =>
+		request<NotificationSettings>("/api/notifications", {
+			method: "PUT",
+			body: JSON.stringify(body),
+		}),
+	upsertPushSubscription: (body: PushSubscriptionKeys) =>
+		request<{ subscriptionCount: number }>("/api/notifications/subscription", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+	testNotification: (endpoint: string) =>
+		request<{ ok: boolean }>("/api/notifications/test", {
+			method: "POST",
+			body: JSON.stringify({ endpoint }),
+		}),
+};
+
+export type PushSubscriptionKeys = {
+	endpoint: string;
+	p256dh: string;
+	auth: string;
+};
+
+export type NotificationSettings = {
+	enabled: boolean;
+	digestTime: string;
+	tomorrowEnabled: boolean;
+	tomorrowTime: string;
+	includeOverdue: boolean;
+	timeZone: string;
+	saved: boolean;
+	subscriptionCount: number;
+	vapidPublicKey: string | null;
+};
+
+export type SaveNotificationSettings = {
+	enabled: boolean;
+	digestTime: string;
+	tomorrowEnabled: boolean;
+	tomorrowTime: string;
+	includeOverdue: boolean;
+	timeZone: string;
+	subscription?: PushSubscriptionKeys;
 };

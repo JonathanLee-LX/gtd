@@ -10,6 +10,12 @@ import type { AppDatabase } from "../../db/client";
 type Query = PromiseLike<any>;
 type Results<T extends readonly Query[]> = { -readonly [K in keyof T]: Awaited<T[K]> };
 
+/** 条数不固定时用（定时任务按用户拼写入）。空列表直接返回。一次 batch 仍是 1 次往返。 */
+export async function runQueries(db: AppDatabase, queries: Query[]): Promise<unknown[]> {
+	if (queries.length === 0) return [];
+	return runBatch(db, queries as unknown as [Query, ...Query[]]);
+}
+
 export async function runBatch<T extends readonly [Query, ...Query[]]>(
 	db: AppDatabase,
 	queries: T,

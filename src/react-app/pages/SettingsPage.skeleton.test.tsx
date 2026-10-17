@@ -12,6 +12,7 @@ vi.mock("../api", () => ({
 		tokens: vi.fn(() => never()),
 		deletedTasks: vi.fn(() => never()),
 		health: vi.fn(() => never()),
+		notificationSettings: vi.fn(() => never()),
 	},
 }));
 vi.mock("../auth-client", () => ({

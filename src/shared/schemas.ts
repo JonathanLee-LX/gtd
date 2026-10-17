@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { QUARTER_HOUR } from "./digest";
 import { SEARCH_Q_MAX_CHARS } from "./search";
 
 export const taskStatusSchema = z.enum([
@@ -115,6 +116,31 @@ export const commitAiInput = taskDraftSchema.extend({
 	projectId: z.string().min(1).optional(),
 });
 
+export const quarterHourSchema = z
+	.string()
+	.regex(QUARTER_HOUR, "时间只能选整点或每 15 分钟一档");
+
+export const pushSubscriptionInput = z.object({
+	endpoint: z.string().min(8).max(2000),
+	p256dh: z.string().min(1).max(200),
+	auth: z.string().min(1).max(200),
+});
+
+/** 设置页一次提交完整表单，服务端不用先读再写。subscription 只在这台设备刚订阅时带上。 */
+export const saveNotificationSettingsInput = z.object({
+	enabled: z.boolean(),
+	digestTime: quarterHourSchema,
+	tomorrowEnabled: z.boolean(),
+	tomorrowTime: quarterHourSchema,
+	includeOverdue: z.boolean(),
+	timeZone: z.string().trim().min(1).max(64),
+	subscription: pushSubscriptionInput.optional(),
+});
+
+export const testNotificationInput = z.object({
+	endpoint: z.string().min(8).max(2000),
+});
+
 export const processInboxInput = z.object({
 	action: z.enum(["next", "waiting", "someday", "discard"]),
 	waitingOn: z.string().max(200).optional(),
@@ -133,3 +159,5 @@ export type TaskDraft = z.infer<typeof taskDraftSchema>;
 export type ParseAiOutput = z.infer<typeof parseAiOutput>;
 export type CommitAiInput = z.infer<typeof commitAiInput>;
 export type ProcessInboxInput = z.infer<typeof processInboxInput>;
+export type SaveNotificationSettingsInput = z.infer<typeof saveNotificationSettingsInput>;
+export type PushSubscriptionInput = z.infer<typeof pushSubscriptionInput>;

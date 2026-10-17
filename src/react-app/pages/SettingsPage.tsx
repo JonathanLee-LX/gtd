@@ -36,6 +36,7 @@ import {
 	Trash2Icon,
 } from "lucide-react";
 import { toast } from "sonner";
+import { DueReminderCard } from "../components/DueReminderCard";
 import { PasskeyCard } from "../components/PasskeyCard";
 import { SettingsListItem } from "../components/SettingsListItem";
 import { EmptyLine } from "../components/EmptyLine";
@@ -159,6 +160,7 @@ export function SettingsPage() {
 					把 MCP URL 和个人 Token 配进 Grok / Claude。助手调用的是和网页同一套任务服务。
 				</p>
 			</header>
+			<DueReminderCard />
 			<PasskeyCard />
 			<Card className="max-w-xl">
 				<CardHeader>

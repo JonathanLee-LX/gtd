@@ -535,6 +535,42 @@ export async function nudgeWaiting(
 	return task;
 }
 
+function priorityRankSql() {
+	// P1 > P2 > P3 > none (text DESC would put p3 first)
+	return sql`case ${tasks.priority}
+		when 'p1' then 1
+		when 'p2' then 2
+		when 'p3' then 3
+		else 4
+	end`;
+}
+
+function focusRankSql(today: string) {
+	return sql`case
+		when ${tasks.dueAt} is not null and substr(${tasks.dueAt}, 1, 10) < ${today} then 0
+		when ${tasks.dueAt} is not null and substr(${tasks.dueAt}, 1, 10) = ${today} then 1
+		when ${tasks.status} = 'next' then 2
+		else 3
+	end`;
+}
+
+/** 未删除、未完成/未取消、且没有未完成子任务。今日焦点和到期提醒共用（#66）。 */
+function actionableTaskFilters(userId: string) {
+	return [
+		eq(tasks.userId, userId),
+		isNull(tasks.deletedAt),
+		sql`${tasks.status} not in ('completed', 'cancelled')`,
+		// 只出叶子：有未完成子任务的父任务不进今日（#66）。
+		sql`not exists (
+			select 1 from tasks as child
+			where child.parent_id = ${tasks.id}
+				and child.user_id = ${userId}
+				and child.deleted_at is null
+				and child.status not in ('completed', 'cancelled')
+		)`,
+	];
+}
+
 export async function todayFocus(
 	db: AppDatabase,
 	userId: string,
@@ -548,45 +584,38 @@ export async function todayFocus(
 		eq(tasks.status, "next"),
 		eq(tasks.priority, "p1"),
 	)!;
-	// P1 > P2 > P3 > none (text DESC would put p3 first)
-	const priorityRank = sql`case ${tasks.priority}
-		when 'p1' then 1
-		when 'p2' then 2
-		when 'p3' then 3
-		else 4
-	end`;
-	const focusRank = sql`case
-		when ${tasks.dueAt} is not null and substr(${tasks.dueAt}, 1, 10) < ${today} then 0
-		when ${tasks.dueAt} is not null and substr(${tasks.dueAt}, 1, 10) = ${today} then 1
-		when ${tasks.status} = 'next' then 2
-		else 3
-	end`;
 	const rows = await db
 		.select()
 		.from(tasks)
-		.where(
-			and(
-				eq(tasks.userId, userId),
-				isNull(tasks.deletedAt),
-				sql`${tasks.status} not in ('completed', 'cancelled')`,
-				focusPredicate,
-				// 只出叶子：有未完成子任务的父任务不进今日（#66）。
-				sql`not exists (
-					select 1 from tasks as child
-					where child.parent_id = ${tasks.id}
-						and child.user_id = ${userId}
-						and child.deleted_at is null
-						and child.status not in ('completed', 'cancelled')
-				)`,
-			),
-		)
-		.orderBy(priorityRank, focusRank, desc(tasks.dueAt), desc(tasks.createdAt))
+		.where(and(...actionableTaskFilters(userId), focusPredicate))
+		.orderBy(priorityRankSql(), focusRankSql(today), desc(tasks.dueAt), desc(tasks.createdAt))
 		.limit(100);
 	return {
 		today,
 		timeZone,
 		items: await hydrate(db, userId, rows),
 	};
+}
+
+/**
+ * #123 到期提醒和「今日」同一套叶子 / 状态 / 日期比较。
+ * includeOverdue 时 due_at 的日期 <= day，否则只等于 day。不套今日页的 100 行上限，正文才能算「还有 K 条」。
+ * 排序与 todayFocus 相同，所以前几条标题和今日列表里到期任务的顺序一致。
+ */
+export function digestTasksQuery(
+	db: AppDatabase,
+	userId: string,
+	day: string,
+	includeOverdue: boolean,
+) {
+	const duePredicate = includeOverdue
+		? sql`${tasks.dueAt} is not null and substr(${tasks.dueAt}, 1, 10) <= ${day}`
+		: sql`${tasks.dueAt} is not null and substr(${tasks.dueAt}, 1, 10) = ${day}`;
+	return db
+		.select({ title: tasks.title, dueAt: tasks.dueAt })
+		.from(tasks)
+		.where(and(...actionableTaskFilters(userId), duePredicate))
+		.orderBy(priorityRankSql(), focusRankSql(day), desc(tasks.dueAt), desc(tasks.createdAt));
 }
 
 export async function searchTasks(

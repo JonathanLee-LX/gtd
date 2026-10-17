@@ -14,7 +14,8 @@ import { tokenRoutes } from "./routes/tokens";
 import { aiRoutes } from "./routes/ai";
 import { attachmentRoutes } from "./routes/attachments";
 import type { AppEnv } from "./lib/storage";
-import { runDailyCleanup } from "./services/cleanup";
+import { notificationRoutes } from "./routes/notifications";
+import { handleScheduled } from "./scheduled";
 
 const app = new Hono<{ Bindings: AppEnv }>();
 
@@ -59,6 +60,15 @@ app.route("/api/tasks", taskRoutes);
 app.route("/api/tags", tagRoutes);
 app.route("/api/tokens", tokenRoutes);
 app.route("/api/ai", aiRoutes);
+app.route("/api/notifications", notificationRoutes);
+
+// Service Worker 不缓存：更新 sw.js 后下一轮注册就能拿到。只处理 push / notificationclick。
+app.get("/sw.js", async (c) => {
+	const asset = await c.env.ASSETS.fetch(c.req.raw);
+	const headers = new Headers(asset.headers);
+	headers.set("Cache-Control", "no-cache");
+	return new Response(asset.body, { status: asset.status, headers });
+});
 
 app.all("/mcp", (c) => handleMcp(c.req.raw, c.env));
 app.all("/mcp/*", (c) => handleMcp(c.req.raw, c.env));
@@ -70,9 +80,7 @@ app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 export default {
 	fetch: app.fetch.bind(app),
-	// 现有的每日 03:00 cron：先清附件（含回收站到期任务的 R2 对象），再硬删回收站任务。
-	async scheduled(_controller: ScheduledController, env: AppEnv) {
-		const result = await runDailyCleanup(createDb(env.DB), env.UPLOADS);
-		console.log("daily cleanup", JSON.stringify(result));
+	scheduled(controller: ScheduledController, env: AppEnv) {
+		return handleScheduled(controller, env);
 	},
 };

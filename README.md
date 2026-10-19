@@ -37,6 +37,10 @@ pnpm run deploy
 
 线上地址：https://gtd.livs.top
 
+Worker 固定在 `aws:ap-southeast-1`（`wrangler.json` 的 `placement.region`，不能和 `mode` 一起写），让执行靠近 D1 主库。曾经用 Smart Placement（`mode: smart`），但来自 AMS/IAD 的流量太低，分析结果不稳定；2026-10-17 的 2 次部署和 3 个 secret 版本重置了分析，Worker 退回美东本地执行（`cf-placement: local-IAD`），每次 D1 往返都要跨到 APAC。现在的区域是只读探针量出来的：请求从 IAD 进入，新加坡（`remote-SIN`）一批 D1 中位数约 9.5ms，快于香港和东京；备选是 `aws:ap-east-1`。回滚改回 `"mode": "smart"` 即可，不动数据。`run_worker_first` 覆盖 `/*`（`/assets/*` 除外），所以 HTML 和 `sw.js` 也到这个区域：上海打开页面没有多一跳，美东和欧洲会多一跳。
+
+推到 `main` 之后，部署工作流会请求 `https://gtd.livs.top/api/health`（现成接口，不读 D1），确认响应头 `cf-placement` 以 `remote-` 开头，最多等 15 分钟。
+
 旧地址 `https://gtd.jonathanleelx.workers.dev` 只为兼容保留：页面会 307 跳到 gtd.livs.top（登录接口 308），`/mcp` 和带 Bearer Token 的 `/api/*` 在旧地址上仍可用，但新配置请一律用 gtd.livs.top。登录 cookie 只认 gtd.livs.top，这样浏览器、桌面端、手机只有一份登录态（#82）。
 
 **登录只能在 https://gtd.livs.top 上进行**：workers.dev 旧地址和 Cloudflare 预览地址（`<版本>-gtd.<子域>.workers.dev`）上登录不可用（不在 trustedOrigins 里），请改用 gtd.livs.top。
@@ -45,7 +49,7 @@ pnpm run deploy
 
 ### GitHub 自动部署
 
-推送到 `main` 会跑 GitHub Actions：先测试，再应用 D1 迁移并 `wrangler deploy`。
+推送到 `main` 会跑 GitHub Actions：先测试，再应用 D1 迁移并 `wrangler deploy`。部署成功后从 runner 请求 `https://gtd.livs.top/api/health`，确认 `cf-placement` 以 `remote-` 开头（最多等 15 分钟，否则失败）。
 
 仓库 Secrets（Settings → Secrets and variables → Actions）：
 

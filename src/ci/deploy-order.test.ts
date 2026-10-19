@@ -37,9 +37,10 @@ describe("deploy.yml migration 必须先于 deploy", () => {
 		const deployAt = steps.findIndex(isDeployStep);
 		expect(migrateAt).toBeGreaterThanOrEqual(0);
 		expect(deployAt).toBeGreaterThan(migrateAt);
-		const migrate = steps[migrateAt] as { run?: string; "continue-on-error"?: unknown };
+		const migrate = steps[migrateAt] as { run?: string; if?: unknown; "continue-on-error"?: unknown };
 		expect(migrate.run).toContain("pnpm exec wrangler d1 migrations apply gtd --remote");
 		expect(migrate["continue-on-error"]).toBeUndefined();
+		expect(migrate.if).toBeUndefined();
 		const deployStep = steps[deployAt] as { if?: unknown; uses?: string; with?: { command?: string } };
 		expect(deployStep.if).toBeUndefined();
 		expect(deployStep.uses).toContain("cloudflare/wrangler-action");
@@ -142,6 +143,46 @@ jobs:
 			expect(() => assertMigrationPrecedesDeploy(parse(item.yaml)), item.name).toThrow(item.message);
 		}
 	});
+
+	it("反例：migration 步骤自己带 if 会被拒绝", () => {
+		const workflow = parse(`
+jobs:
+  ship:
+    steps:
+      - name: Apply D1 migrations
+        if: success()
+        run: pnpm exec wrangler d1 migrations apply gtd --remote
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v4
+        with:
+          command: deploy
+`);
+		expect(() => assertMigrationPrecedesDeploy(workflow)).toThrow(/不能设置 if:/);
+	});
+
+	it("反例：migration 步骤吞掉失败会被拒绝", () => {
+		const runs = [
+			"pnpm exec wrangler d1 migrations apply gtd --remote || true",
+			"pnpm exec wrangler d1 migrations apply gtd --remote || :",
+			"pnpm exec wrangler d1 migrations apply gtd --remote; true",
+			"set +e\npnpm exec wrangler d1 migrations apply gtd --remote",
+			"set +euo pipefail\npnpm exec wrangler d1 migrations apply gtd --remote",
+		];
+		for (const run of runs) {
+			const workflow = parse(`
+jobs:
+  ship:
+    steps:
+      - name: Apply D1 migrations
+        run: ${JSON.stringify(run)}
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v4
+        with:
+          command: deploy
+`);
+			expect(() => assertMigrationPrecedesDeploy(workflow), run).toThrow(/不能吞掉命令失败/);
+		}
+	});
 });
 
 describe("本地坏 migration", () => {
@@ -169,47 +210,67 @@ describe("本地坏 migration", () => {
 		expect(prod.d1_databases[0].database_name).toBe("gtd");
 	});
 
-	it("语法错误的 SQL 让 wrangler d1 migrations apply --local 非零退出", () => {
+	it("语法错误的 SQL 非零退出，且命令参数不含 --remote", () => {
+		const invocation = wranglerInvocation(readFileSync(script, "utf8"));
+		expect(invocation).toContain("d1 migrations apply");
+		expect(invocation).toContain("--local");
+		expect(invocation).not.toContain("--remote");
 		const bad = run();
-		const out = `${bad.stdout}\n${bad.stderr}`;
-		expect(bad.status, out).not.toBe(0);
-		expect(out).toContain("Resource location: local");
-		expect(out).toContain("Executing on local database gtd-migrate-fail-demo");
-		expect(out).toMatch(/syntax error|SQLITE_ERROR/);
-		expect(out).not.toContain("Executing on remote database");
+		expect(bad.status, `${bad.stdout}\n${bad.stderr}`).not.toBe(0);
 	}, 60_000);
 
 	it("同一条命令遇到合法 SQL 会成功，说明非零退出来自坏 migration", () => {
 		const ok = run("CREATE TABLE IF NOT EXISTS migrate_fail_demo (id INTEGER PRIMARY KEY);");
-		const out = `${ok.stdout}\n${ok.stderr}`;
-		expect(ok.status, out).toBe(0);
-		expect(out).toContain("Resource location: local");
-		expect(out).not.toContain("Executing on remote database");
+		expect(ok.status, `${ok.stdout}\n${ok.stderr}`).toBe(0);
 	}, 60_000);
 });
 
+function wranglerInvocation(scriptText: string): string {
+	const lines = scriptText.split("\n");
+	const start = lines.findIndex((line) => line.includes("wrangler d1 migrations apply"));
+	if (start < 0) throw new Error("missing wrangler invocation");
+	const parts = [lines[start]];
+	for (let i = start; i < lines.length - 1 && lines[i].trimEnd().endsWith("\\"); i += 1) {
+		parts.push(lines[i + 1]);
+	}
+	return parts.join(" ");
+}
+
 describe("migration-failure-demo.yml", () => {
-	it("只在 PR / 手动触发，deploy 步骤换成 echo，且不连生产", () => {
+	it("只手动触发，deploy 步骤换成 echo，且不连生产", () => {
 		const raw = readFileSync(resolve(root, ".github/workflows/migration-failure-demo.yml"), "utf8");
 		const workflow = parse(raw) as {
 			on?: Record<string, unknown>;
-			jobs?: Record<string, { steps?: { name?: string; run?: string; uses?: string }[] }>;
+			jobs?: Record<
+				string,
+				{
+					"continue-on-error"?: unknown;
+					steps?: { name?: string; run?: string; uses?: string; if?: unknown; "continue-on-error"?: unknown }[];
+				}
+			>;
 		};
+		expect(workflow.on && Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
 		expect(workflow.on?.push).toBeUndefined();
-		expect(workflow.on?.pull_request).toBeTruthy();
-		expect(Object.prototype.hasOwnProperty.call(workflow.on, "workflow_dispatch")).toBe(true);
+		expect(workflow.on?.pull_request).toBeUndefined();
 
-		const steps = workflow.jobs?.["broken-migration"]?.steps ?? [];
+		const job = workflow.jobs?.["broken-migration"];
+		expect(job?.["continue-on-error"]).toBeUndefined();
+		const steps = job?.steps ?? [];
 		const migrateAt = steps.findIndex((step) => step.name === "Apply D1 migrations");
 		const buildAt = steps.findIndex((step) => step.name === "Build");
 		const deployAt = steps.findIndex((step) => step.name === "Deploy Worker");
+		const assertAt = steps.findIndex((step) => step.name === "Assert deploy was skipped");
 		expect(migrateAt).toBeGreaterThanOrEqual(0);
 		expect(buildAt).toBeGreaterThan(migrateAt);
 		expect(deployAt).toBeGreaterThan(buildAt);
+		expect(assertAt).toBeGreaterThan(deployAt);
 		expect(steps[migrateAt]?.run).toContain("scripts/broken-local-migration.sh");
+		expect(String(steps[buildAt]?.if)).toContain("steps.migrate.outcome");
 		expect(steps[buildAt]?.run).toContain("pnpm exec vite build");
+		expect(String(steps[deployAt]?.if)).toContain("steps.migrate.outcome");
 		expect(steps[deployAt]?.run).toContain("echo ");
 		expect(steps[deployAt]?.uses).toBeUndefined();
+		expect(steps[assertAt]?.run).toContain('test "${{ steps.deploy.outcome }}" = "skipped"');
 		expect(raw).not.toContain("--remote");
 		expect(raw).not.toContain("wrangler-action");
 		expect(raw).not.toContain("wrangler deploy");

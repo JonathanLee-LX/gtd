@@ -4,7 +4,8 @@
  *
  * 生产 deploy 必须先有远程 D1 migration（`wrangler d1 migrations apply … --remote`）：
  * 要么在同一个 job 里排在 deploy 前面，要么 deploy 所在 job `needs` migration 所在 job。
- * migration 步骤不能 `continue-on-error: true`。
+ * migration 步骤不能 `continue-on-error: true`，也不能自带 `if:`（被跳过后 deploy 仍会跑）。
+ * migration 步骤的 `run` 不能用 `|| true`、`|| :`、结尾的 `; true`、`set +e` 把失败吞掉。
  * deploy 步骤和它所在的 job 不能用 `always()` / `failure()` / `cancelled()`。
  */
 
@@ -24,7 +25,7 @@ function commandText(step: Record<string, unknown>): string {
 }
 
 function isRemoteMigrateText(text: string): boolean {
-	return text.includes("d1 migrations apply") && /(^|\s)--remote(\s|$)/.test(text);
+	return text.includes("d1 migrations apply") && /(^|\s)--remote(?=$|[\s;|&])/.test(text);
 }
 
 export function isRemoteMigrateStep(step: unknown): step is Record<string, unknown> {
@@ -62,9 +63,25 @@ function assertNoBypass(condition: unknown, where: string): void {
 	}
 }
 
-function assertMigrateNotContinue(step: Record<string, unknown>): void {
+function swallowsFailure(run: string): boolean {
+	const text = run.trim();
+	if (/\|\|\s*true\b/.test(text)) return true;
+	if (/\|\|\s*:/.test(text)) return true;
+	if (/;\s*true\s*$/.test(text)) return true;
+	if (/set\s+\+[a-zA-Z]*e/.test(text)) return true;
+	if (/set\s+\+o\s+errexit\b/.test(text)) return true;
+	return false;
+}
+
+function assertMigrateStep(step: Record<string, unknown>): void {
 	if (isContinueOnError(step["continue-on-error"])) {
 		throw new Error("migration 步骤不能设置 continue-on-error: true");
+	}
+	if ("if" in step) {
+		throw new Error("migration 步骤不能设置 if:，被跳过后仍会继续 deploy");
+	}
+	if (typeof step.run === "string" && swallowsFailure(step.run)) {
+		throw new Error("migration 步骤的 run 不能吞掉命令失败");
 	}
 }
 
@@ -102,7 +119,7 @@ export function assertMigrationPrecedesDeploy(workflow: unknown): void {
 	const steps = Array.isArray(deploy.job.steps) ? deploy.job.steps : [];
 	const prior = steps.slice(0, deploy.index).filter(isRemoteMigrateStep);
 	if (prior.length > 0) {
-		for (const step of prior) assertMigrateNotContinue(step);
+		for (const step of prior) assertMigrateStep(step);
 		return;
 	}
 
@@ -119,6 +136,6 @@ export function assertMigrationPrecedesDeploy(workflow: unknown): void {
 		if (isContinueOnError(job["continue-on-error"])) {
 			throw new Error(`job ${id} 设置了 continue-on-error，migration 失败仍会继续 deploy`);
 		}
-		for (const step of migrateSteps) assertMigrateNotContinue(step);
+		for (const step of migrateSteps) assertMigrateStep(step);
 	}
 }

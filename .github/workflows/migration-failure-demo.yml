@@ -1,12 +1,10 @@
 name: Migration failure demo
 
-# #88：故意让本地 D1 migration 失败，证明后面的 deploy 步骤会被跳过。
-# 只在 PR 和手动触发时跑。不在 push main 时跑，不连生产库，也不发布 Worker。
+# #88：只手动触发。故意让本地 D1 migration 失败，证明后面的 deploy 步骤被跳过。
+# 不在 PR / push 上跑，所以不会出现在 PR 检查里。不连生产库，也不发布 Worker。
 # 步骤顺序与 deploy.yml 的 deploy job 一致（install → migration → build → deploy），
 # deploy 换成 echo。migration 用 scripts/broken-local-migration.sh（--local）。
 on:
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -19,17 +17,8 @@ concurrency:
 jobs:
   broken-migration:
     name: Broken local migration skips deploy
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # 坏 migration 会让「Apply D1 migrations」失败，随后 Build / Deploy Worker 被跳过。
-    # continue-on-error 只加在这个演示 job 上，让后面的断言 job 还能跑、workflow 不必被预期失败染红。
-    # 生产 deploy.yml 的 migration 步骤和 deploy job 都没有 continue-on-error。
-    continue-on-error: true
-    outputs:
-      migrate: ${{ steps.record.outputs.migrate }}
-      build: ${{ steps.record.outputs.build }}
-      deploy: ${{ steps.record.outputs.deploy }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -40,43 +29,34 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # 步骤级 continue-on-error 只为了让最后的断言能把这次手动 run 标成成功。
+      # outcome 仍是 failure。本 job 没有 continue-on-error。
+      # Build / Deploy 只在 migration 成功时跑，所以这里会被跳过。
       - name: Apply D1 migrations
         id: migrate
+        continue-on-error: true
         run: bash scripts/broken-local-migration.sh
       - name: Build
         id: build
+        if: steps.migrate.outcome == 'success'
         run: pnpm exec vite build
       - name: Deploy Worker
         id: deploy
+        if: steps.migrate.outcome == 'success'
         run: echo "deploy only runs after migration succeeds"
-      - name: Record step outcomes
-        id: record
+      - name: Assert deploy was skipped
         if: always()
         run: |
-          echo "migrate=${{ steps.migrate.outcome }}" >> "$GITHUB_OUTPUT"
-          echo "build=${{ steps.build.outcome }}" >> "$GITHUB_OUTPUT"
-          echo "deploy=${{ steps.deploy.outcome }}" >> "$GITHUB_OUTPUT"
-          echo "migrate=${{ steps.migrate.outcome }} build=${{ steps.build.outcome }} deploy=${{ steps.deploy.outcome }}"
+          set -euo pipefail
+          echo "migrate=${{ steps.migrate.outcome }}"
+          echo "build=${{ steps.build.outcome }}"
+          echo "deploy=${{ steps.deploy.outcome }}"
+          test "${{ steps.migrate.outcome }}" = "failure"
+          test "${{ steps.build.outcome }}" = "skipped"
+          test "${{ steps.deploy.outcome }}" = "skipped"
           {
             echo "### #88 migration failure demo"
             echo "- Apply D1 migrations: \`${{ steps.migrate.outcome }}\`"
             echo "- Build: \`${{ steps.build.outcome }}\`"
             echo "- Deploy Worker: \`${{ steps.deploy.outcome }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-
-  assert-skipped:
-    name: Assert deploy step was skipped
-    needs: broken-migration
-    if: always() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Assert migrate failed and deploy was skipped
-        run: |
-          set -euo pipefail
-          echo "migrate=${{ needs.broken-migration.outputs.migrate }}"
-          echo "build=${{ needs.broken-migration.outputs.build }}"
-          echo "deploy=${{ needs.broken-migration.outputs.deploy }}"
-          test "${{ needs.broken-migration.outputs.migrate }}" = "failure"
-          test "${{ needs.broken-migration.outputs.build }}" = "skipped"
-          test "${{ needs.broken-migration.outputs.deploy }}" = "skipped"

@@ -1,0 +1,62 @@
+name: Migration failure demo
+
+# #88：只手动触发。故意让本地 D1 migration 失败，证明后面的 deploy 步骤被跳过。
+# 不在 PR / push 上跑，所以不会出现在 PR 检查里。不连生产库，也不发布 Worker。
+# 步骤顺序与 deploy.yml 的 deploy job 一致（install → migration → build → deploy），
+# deploy 换成 echo。migration 用 scripts/broken-local-migration.sh（--local）。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-failure-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  broken-migration:
+    name: Broken local migration skips deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # 步骤级 continue-on-error 只为了让最后的断言能把这次手动 run 标成成功。
+      # outcome 仍是 failure。本 job 没有 continue-on-error。
+      # Build / Deploy 只在 migration 成功时跑，所以这里会被跳过。
+      - name: Apply D1 migrations
+        id: migrate
+        continue-on-error: true
+        run: bash scripts/broken-local-migration.sh
+      - name: Build
+        id: build
+        if: steps.migrate.outcome == 'success'
+        run: pnpm exec vite build
+      - name: Deploy Worker
+        id: deploy
+        if: steps.migrate.outcome == 'success'
+        run: echo "deploy only runs after migration succeeds"
+      - name: Assert deploy was skipped
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "migrate=${{ steps.migrate.outcome }}"
+          echo "build=${{ steps.build.outcome }}"
+          echo "deploy=${{ steps.deploy.outcome }}"
+          test "${{ steps.migrate.outcome }}" = "failure"
+          test "${{ steps.build.outcome }}" = "skipped"
+          test "${{ steps.deploy.outcome }}" = "skipped"
+          {
+            echo "### #88 migration failure demo"
+            echo "- Apply D1 migrations: \`${{ steps.migrate.outcome }}\`"
+            echo "- Build: \`${{ steps.build.outcome }}\`"
+            echo "- Deploy Worker: \`${{ steps.deploy.outcome }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -28,7 +28,9 @@ jobs:
       - run: pnpm exec tsc -b
 
   deploy:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # 只在 push main / 手动触发时部署。success() 写明：前面的 check 失败就不部署。
+    # 不要改成 always() / failure() / cancelled()，否则 check 失败也会部署。
+    if: ${{ success() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     needs: check
     runs-on: ubuntu-latest
     # 安装、迁移、构建、部署，再加上部署后最多 15 分钟的 placement smoke。
@@ -45,7 +47,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # #88：migration 是 deploy 之前的独立步骤。失败则本 job 停止，后面的 build / deploy / smoke 全部跳过。
+      # 不要给这一步加 continue-on-error，也不要给 Deploy Worker 加 always() / failure() / cancelled()。
       - name: Apply D1 migrations
+        id: migrate
         run: pnpm exec wrangler d1 migrations apply gtd --remote
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -53,6 +58,7 @@ jobs:
       - name: Build
         run: pnpm exec vite build
       - name: Deploy Worker
+        id: deploy
         uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

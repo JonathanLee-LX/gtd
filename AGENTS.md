@@ -30,6 +30,7 @@ pnpm build
 - 密钥只放 `.dev.vars` 和 Worker secrets。
 - 不要让模型直接写 SQL。
 - 附件（#68）：二进制只进 R2（绑定 `UPLOADS`，生产桶 `gtd-uploads`），上传 / 下载都经 Worker 代理，不发 R2 凭据或预签名 URL。额度与类型白名单在 `src/shared/limits.ts`（前后端共用）。附件清理挂在现有每日 cron 上，必须先于回收站任务硬删。
+- Worker 固定在 `aws:ap-southeast-1`（`wrangler.json` 的 `placement.region`；`region` 与 `mode` 不能同时写）。不要改回 Smart Placement：AMS/IAD 流量太低，分析结果不稳定；2026-10-17 的 2 次部署加 3 个 secret 版本把分析重置后，Worker 退回 `local-IAD`，每次 D1 往返都跨到 APAC 主库。区域是探针量出来的（主库几乎确定在新加坡，`remote-SIN`；备选 `aws:ap-east-1`）。`run_worker_first` 覆盖 `/*`（`/assets/*` 除外），HTML 和 `sw.js` 也走这个区域。
 
 ## 任务状态
 

@@ -31,7 +31,8 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs: check
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 安装、迁移、构建、部署，再加上部署后最多 15 分钟的 placement smoke。
+    timeout-minutes: 35
     permissions:
       contents: read
     steps:
@@ -58,3 +59,35 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: pnpm
           command: deploy
+      # #125：显式 region 生效后，GitHub runner（美东）打到生产应看到 remote-*，而不是 local-IAD。
+      # /api/health 不碰 D1。placement 传播可能滞后，最多等 15 分钟。
+      - name: Smoke cf-placement
+        run: |
+          set -uo pipefail
+          url="https://gtd.livs.top/api/health"
+          deadline=$((SECONDS + 15 * 60))
+          attempt=0
+          while true; do
+            attempt=$((attempt + 1))
+            headers=$(mktemp)
+            body=$(mktemp)
+            code=$(curl -sS -D "$headers" -o "$body" -w '%{http_code}' --max-time 20 "$url" || echo "curl_fail")
+            placement=$(awk 'BEGIN{IGNORECASE=1} /^cf-placement:/ { gsub(/\r/, "", $2); print $2; exit }' "$headers")
+            echo "attempt=${attempt} http=${code} cf-placement=${placement:-<missing>}"
+            if [[ "$code" == "200" && "$placement" == remote-* ]]; then
+              echo "placement ok: $placement"
+              rm -f "$headers" "$body"
+              exit 0
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "cf-placement did not start with remote- within 15 minutes (last http=${code} placement=${placement:-<missing>})"
+              echo "--- response headers ---"
+              cat "$headers" || true
+              echo "--- body ---"
+              cat "$body" || true
+              rm -f "$headers" "$body"
+              exit 1
+            fi
+            rm -f "$headers" "$body"
+            sleep 20
+          done

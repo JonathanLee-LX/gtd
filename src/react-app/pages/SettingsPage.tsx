@@ -153,7 +153,7 @@ export function SettingsPage() {
 	}
 
 	return (
-		<section className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6 pb-24 *:shrink-0 md:pb-6">
+		<section className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6 *:shrink-0">
 			<header className="flex flex-col gap-1">
 				<h1 className="font-heading text-2xl tracking-tight">设置</h1>
 				<p className="max-w-2xl text-sm text-muted-foreground">

@@ -77,6 +77,7 @@ import { peekTaskAutosave } from "../lib/task-autosave";
 import { createLoginRedirectOnce, loadErrorMessage, shellLoadOutcome } from "../lib/session";
 import { MobileBottomNav } from "../components/MobileBottomNav";
 import { MobileQuickCollect } from "../components/MobileQuickCollect";
+import { mobileContentPaddingClass, showMobileQuickCollect } from "../lib/mobile-fab";
 import appIconDark from "../assets/app-icon-dark.svg";
 import appIcon from "../assets/app-icon.svg";
 
@@ -440,7 +441,9 @@ export function Shell() {
 						</Alert>
 					</div>
 				) : null}
-				<div className="flex min-h-0 flex-1 flex-col overflow-hidden pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0">
+				<div
+					className={`flex min-h-0 flex-1 flex-col overflow-hidden ${mobileContentPaddingClass(location.pathname)}`}
+				>
 					<Outlet context={outletContext} />
 				</div>
 			</SidebarInset>
@@ -450,7 +453,7 @@ export function Shell() {
 				onNewProject={() => setProjectOpen(true)}
 				onSignOut={signOut}
 			/>
-			<MobileQuickCollect projects={projects} />
+			{showMobileQuickCollect(location.pathname) ? <MobileQuickCollect projects={projects} /> : null}
 			<AlertDialog open={confirmSignOut} onOpenChange={setConfirmSignOut}>
 				<AlertDialogContent>
 					<AlertDialogHeader>

@@ -15,6 +15,11 @@ export type PushProbe = {
 	subscribe: (publicKey: string) => Promise<PushSubscriptionKeys | "denied">;
 };
 
+/** 用户在权限弹窗里拒绝之后，Notification.permission 会停在 denied。 */
+export function notificationPermissionDenied(): boolean {
+	return typeof Notification !== "undefined" && Notification.permission === "denied";
+}
+
 export function detectPushBlock(env: {
 	userAgent: string;
 	platform: string;
@@ -72,16 +77,23 @@ export const browserPushProbe: PushProbe = {
 		return sub ? keysFrom(sub) : null;
 	},
 	async subscribe(publicKey) {
-		const permission = await Notification.requestPermission();
-		if (permission !== "granted") return "denied";
-		await navigator.serviceWorker.register("/sw.js");
-		const ready = await navigator.serviceWorker.ready;
-		const sub = await ready.pushManager.subscribe({
-			userVisibleOnly: true,
-			applicationServerKey: base64UrlToBytes(publicKey),
-		});
-		const keys = keysFrom(sub);
-		if (!keys) throw new Error("订阅没有返回密钥");
-		return keys;
+		try {
+			const permission = await Notification.requestPermission();
+			if (permission !== "granted" || notificationPermissionDenied()) return "denied";
+			await navigator.serviceWorker.register("/sw.js");
+			const ready = await navigator.serviceWorker.ready;
+			const sub = await ready.pushManager.subscribe({
+				userVisibleOnly: true,
+				applicationServerKey: base64UrlToBytes(publicKey),
+			});
+			const keys = keysFrom(sub);
+			if (!keys) throw new Error("订阅没有返回密钥");
+			return keys;
+		} catch (err) {
+			// pushManager.subscribe 会抛 "Registration failed - permission denied"。
+			// 只有权限确实变成 denied 才走「已拒绝」；其他错误交给设置卡片提示重试。
+			if (notificationPermissionDenied()) return "denied";
+			throw err;
+		}
 	},
 };

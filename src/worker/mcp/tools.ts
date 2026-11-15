@@ -111,7 +111,7 @@ export const MCP_TOOLS = [
 	},
 	{
 		name: "get_task",
-		description: "按 id 获取一条完整任务，含项目名和标签。",
+		description: "按 id 获取一条完整任务，含项目名和标签（备注为 Markdown 格式）。",
 		inputSchema: {
 			type: "object",
 			properties: { id: { type: "string" } },
@@ -127,7 +127,11 @@ export const MCP_TOOLS = [
 			type: "object",
 			properties: {
 				title: { type: "string" },
-				notes: { type: "string" },
+				notes: {
+					type: "string",
+					description:
+						"任务备注，支持 Markdown（标题、列表、任务列表、代码块、表格、链接），网页端会渲染显示，最长 8000 字。",
+				},
 				projectId: { type: "string" },
 				parentId: {
 					type: ["string", "null"],
@@ -154,7 +158,11 @@ export const MCP_TOOLS = [
 			properties: {
 				id: { type: "string" },
 				title: { type: "string" },
-				notes: { type: "string" },
+				notes: {
+					type: "string",
+					description:
+						"任务备注，支持 Markdown（标题、列表、任务列表、代码块、表格、链接），网页端会渲染显示，最长 8000 字。",
+				},
 				projectId: { type: "string" },
 				parentId: {
 					type: ["string", "null"],

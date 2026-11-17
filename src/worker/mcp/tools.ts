@@ -1,11 +1,11 @@
 import { z } from "zod";
 import { createTagInput, createTaskInput, updateProjectInput, updateTaskInput } from "../../shared/schemas";
 import type { AppDatabase } from "../../db/client";
+import { AppError } from "../lib/errors";
 import {
 	completeTask,
 	createTask,
 	deleteTask,
-	getTask,
 	listTasks,
 	nudgeWaiting,
 	restoreTask,
@@ -15,6 +15,15 @@ import {
 } from "../services/tasks";
 import { createProject, listProjects, updateProject } from "../services/projects";
 import { createTag, listTags } from "../services/tags";
+import {
+	attachmentUsage,
+	deleteAttachment,
+	getTaskWithAttachments,
+	listTaskAttachments,
+	toAttachmentDto,
+	uploadTaskAttachment,
+	type AttachmentBucket,
+} from "../services/attachments";
 
 const listTasksToolInput = z.object({
 	status: z
@@ -111,7 +120,7 @@ export const MCP_TOOLS = [
 	},
 	{
 		name: "get_task",
-		description: "按 id 获取一条完整任务，含项目名和标签（备注为 Markdown 格式）。",
+		description: "按 id 获取一条完整任务，含项目名、标签与附件列表（备注为 Markdown 格式）。",
 		inputSchema: {
 			type: "object",
 			properties: { id: { type: "string" } },
@@ -241,13 +250,98 @@ export const MCP_TOOLS = [
 			additionalProperties: false,
 		},
 	},
+	{
+		name: "list_attachments",
+		description: "列出指定任务的所有附件及其元数据与下载地址，并返回用户附件配额用量。",
+		inputSchema: {
+			type: "object",
+			properties: {
+				taskId: { type: "string", description: "所属任务 id" },
+			},
+			required: ["taskId"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "upload_attachment",
+		description:
+			"为任务上传附件（支持图片 JPG/PNG/GIF/WebP/HEIC 与 PDF，单文件不超过 10MB）。通过 base64 传入文件内容。",
+		inputSchema: {
+			type: "object",
+			properties: {
+				taskId: { type: "string", description: "所属任务 id" },
+				fileName: { type: "string", description: "文件名，含扩展名（如 photo.jpg、doc.pdf）" },
+				content: {
+					type: "string",
+					description:
+						"文件二进制内容的 base64 编码字符串（支持纯 base64 或 data URI 格式）",
+				},
+				mimeType: {
+					type: "string",
+					description: "可选 MIME 类型，若未传则根据文件名和内容头自动推断",
+				},
+			},
+			required: ["taskId", "fileName", "content"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "delete_attachment",
+		description: "删除任务的指定附件，并清理其 R2 存储对象。",
+		inputSchema: {
+			type: "object",
+			properties: {
+				taskId: { type: "string", description: "所属任务 id" },
+				id: { type: "string", description: "附件 id" },
+			},
+			required: ["taskId", "id"],
+			additionalProperties: false,
+		},
+	},
 ] as const;
+
+/** 标准 base64（允许内部空白，解码前去掉；不接受 base64url 与缺失的填充）。 */
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+export function decodeBase64(content: string): Uint8Array {
+	const trimmed = content.trim();
+	const commaIdx = trimmed.indexOf(",");
+	const raw =
+		commaIdx !== -1 && trimmed.slice(0, commaIdx).includes(";base64")
+			? trimmed.slice(commaIdx + 1).trim()
+			: trimmed;
+	// 先严格校验再解码：Buffer.from 遇到非法字符是静默丢弃、不抛错，
+	// 不校验的话 "!!!" 这类输入会解成空字节、最后以 invalid_size 报错，文案误导。
+	const compact = raw.replace(/[\t\n\f\r ]/g, "");
+	if (compact === "" || !BASE64_PATTERN.test(compact)) {
+		throw new AppError(400, "invalid_base64", "无效的 base64 内容");
+	}
+	try {
+		if (typeof Buffer !== "undefined") {
+			const buf = Buffer.from(compact, "base64");
+			return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+		}
+		const binary = atob(compact);
+		const bytes = new Uint8Array(binary.length);
+		for (let i = 0; i < binary.length; i++) {
+			bytes[i] = binary.charCodeAt(i);
+		}
+		return bytes;
+	} catch {
+		throw new AppError(400, "invalid_base64", "无效的 base64 内容");
+	}
+}
+
+export type McpToolOptions = {
+	bucket?: AttachmentBucket;
+};
 
 export async function callMcpTool(
 	db: AppDatabase,
 	userId: string,
 	name: string,
 	args: Record<string, unknown>,
+	options?: McpToolOptions,
 ) {
 	switch (name) {
 		case "list_projects": {
@@ -276,7 +370,13 @@ export async function callMcpTool(
 			return listTasks(db, userId, listTasksToolInput.parse(args));
 		case "get_task": {
 			const input = z.object({ id: z.string() }).parse(args);
-			return { task: await getTask(db, userId, input.id) };
+			const { task, attachments } = await getTaskWithAttachments(db, userId, input.id);
+			return {
+				task: {
+					...task,
+					attachments: attachments.map(toAttachmentDto),
+				},
+			};
 		}
 		case "create_task":
 			return { task: await createTask(db, userId, createTaskInput.parse(args), "mcp") };
@@ -310,6 +410,53 @@ export async function callMcpTool(
 		case "today_focus": {
 			const input = z.object({ tz: z.string().optional() }).parse(args);
 			return todayFocus(db, userId, input.tz);
+		}
+		case "list_attachments": {
+			const input = z.object({ taskId: z.string() }).parse(args);
+			const items = await listTaskAttachments(db, userId, input.taskId);
+			const usage = await attachmentUsage(db, userId);
+			return { items: items.map(toAttachmentDto), usage };
+		}
+		case "upload_attachment": {
+			if (!options?.bucket) {
+				throw new AppError(500, "storage_not_configured", "未配置附件存储桶 (UPLOADS)");
+			}
+			const input = z
+				.object({
+					taskId: z.string(),
+					fileName: z.string(),
+					content: z.string(),
+					mimeType: z.string().optional(),
+				})
+				.parse(args);
+			const bytes = decodeBase64(input.content);
+			const row = await uploadTaskAttachment(
+				db,
+				options.bucket,
+				userId,
+				input.taskId,
+				{
+					fileName: input.fileName,
+					bytes,
+					mime: input.mimeType,
+				},
+				"mcp",
+			);
+			return { attachment: toAttachmentDto(row) };
+		}
+		case "delete_attachment": {
+			if (!options?.bucket) {
+				throw new AppError(500, "storage_not_configured", "未配置附件存储桶 (UPLOADS)");
+			}
+			const input = z.object({ taskId: z.string(), id: z.string() }).parse(args);
+			return deleteAttachment(
+				db,
+				options.bucket,
+				userId,
+				input.taskId,
+				input.id,
+				"mcp",
+			);
 		}
 		default:
 			throw new Error(`未知工具: ${name}`);

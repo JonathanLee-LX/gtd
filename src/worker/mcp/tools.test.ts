@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createTestDb, seedUser } from "../test/db";
-import { callMcpTool, MCP_TOOLS } from "./tools";
+import { FakeR2, PDF_BYTES, PNG_BYTES } from "../test/fake-r2";
+import { callMcpTool, decodeBase64, MCP_TOOLS } from "./tools";
 
 describe("MCP tools markdown notes support (#131)", () => {
 	it("exposes markdown descriptions in MCP tool schemas", () => {
@@ -91,5 +92,191 @@ describe("MCP tools markdown notes support (#131)", () => {
 		})) as { items: Array<{ id: string; notes: string | null }> };
 		expect(searchAfterUpdate.items.some((item) => item.id === taskId)).toBe(true);
 		expect(searchAfterUpdate.items.find((item) => item.id === taskId)?.notes).toBe(updatedMarkdownNotes);
+	});
+});
+
+describe("MCP tools task attachments support (#133)", () => {
+	it("exposes attachment tools in MCP_TOOLS schemas", () => {
+		const getTask = MCP_TOOLS.find((t) => t.name === "get_task");
+		expect(getTask?.description).toContain("附件");
+
+		const listAtt = MCP_TOOLS.find((t) => t.name === "list_attachments");
+		expect(listAtt).toBeDefined();
+		expect((listAtt?.inputSchema.properties as Record<string, unknown>).taskId).toBeDefined();
+		expect(listAtt?.inputSchema.required).toEqual(["taskId"]);
+
+		const uploadAtt = MCP_TOOLS.find((t) => t.name === "upload_attachment");
+		expect(uploadAtt).toBeDefined();
+		expect(uploadAtt?.inputSchema.required).toEqual(["taskId", "fileName", "content"]);
+
+		const deleteAtt = MCP_TOOLS.find((t) => t.name === "delete_attachment");
+		expect(deleteAtt).toBeDefined();
+		expect(deleteAtt?.inputSchema.required).toEqual(["taskId", "id"]);
+	});
+
+	it("decodes pure base64 and data URI base64 correctly", () => {
+		const original = new Uint8Array([1, 2, 3, 4, 5, 255]);
+		const base64Str = Buffer.from(original).toString("base64");
+		const dataUriStr = `data:image/png;base64,${base64Str}`;
+
+		expect(decodeBase64(base64Str)).toEqual(original);
+		expect(decodeBase64(dataUriStr)).toEqual(original);
+		expect(decodeBase64(`  ${base64Str} \n`)).toEqual(original);
+	});
+
+	it("rejects invalid base64 with invalid_base64 (Buffer.from would silently drop bad chars)", () => {
+		for (const bad of ["", "   ", "!!!", "abc", "a===", "AB=C", "aGVsbG8", "aGVsbG8td29ybGQ"]) {
+			expect(() => decodeBase64(bad)).toThrow("无效的 base64 内容");
+		}
+	});
+
+	it("tolerates whitespace inside base64 (MIME-style line breaks)", () => {
+		const original = new Uint8Array([1, 2, 3, 4, 5, 255]);
+		const base64Str = Buffer.from(original).toString("base64");
+		const broken = `${base64Str.slice(0, 4)}\n${base64Str.slice(4)}`;
+		expect(decodeBase64(broken)).toEqual(original);
+	});
+
+	it("throws when calling upload_attachment or delete_attachment without bucket configured", async () => {
+		const { db } = createTestDb();
+		const user = await seedUser(db);
+
+		await expect(
+			callMcpTool(db as never, user.id, "upload_attachment", {
+				taskId: "t1",
+				fileName: "test.png",
+				content: "AAAA",
+			}),
+		).rejects.toThrow("未配置附件存储桶");
+
+		await expect(
+			callMcpTool(db as never, user.id, "delete_attachment", {
+				taskId: "t1",
+				id: "a1",
+			}),
+		).rejects.toThrow("未配置附件存储桶");
+	});
+
+	it("supports uploading, listing, viewing in get_task, and deleting attachments", async () => {
+		const { db } = createTestDb();
+		const user = await seedUser(db);
+		const bucket = new FakeR2();
+
+		// 1. Create a task
+		const createResult = (await callMcpTool(db as never, user.id, "create_task", {
+			title: "带附件的任务",
+		})) as { task: { id: string } };
+		const taskId = createResult.task.id;
+
+		// 2. Initial get_task has empty attachments
+		const getInit = (await callMcpTool(db as never, user.id, "get_task", { id: taskId })) as {
+			task: { id: string; attachments: unknown[] };
+		};
+		expect(getInit.task.attachments).toEqual([]);
+
+		// 3. Upload attachment via upload_attachment
+		const pngBase64 = Buffer.from(PNG_BYTES).toString("base64");
+		const uploadRes = (await callMcpTool(
+			db as never,
+			user.id,
+			"upload_attachment",
+			{
+				taskId,
+				fileName: "screen.png",
+				content: pngBase64,
+			},
+			{ bucket: bucket as never },
+		)) as {
+			attachment: {
+				id: string;
+				taskId: string;
+				kind: string;
+				fileName: string;
+				mime: string;
+				size: number;
+				contentUrl: string;
+			};
+		};
+
+		expect(uploadRes.attachment.id).toBeDefined();
+		expect(uploadRes.attachment.taskId).toBe(taskId);
+		expect(uploadRes.attachment.kind).toBe("image");
+		expect(uploadRes.attachment.fileName).toBe("screen.png");
+		expect(uploadRes.attachment.mime).toBe("image/png");
+		expect(uploadRes.attachment.size).toBe(PNG_BYTES.byteLength);
+		expect(uploadRes.attachment.contentUrl).toBe(`/api/attachments/${uploadRes.attachment.id}/content`);
+		expect(bucket.objects.size).toBe(1);
+
+		// 4. get_task now includes the attachment
+		const getWithAtt = (await callMcpTool(db as never, user.id, "get_task", { id: taskId })) as {
+			task: { id: string; attachments: Array<{ id: string; fileName: string }> };
+		};
+		expect(getWithAtt.task.attachments).toHaveLength(1);
+		expect(getWithAtt.task.attachments[0].id).toBe(uploadRes.attachment.id);
+		expect(getWithAtt.task.attachments[0].fileName).toBe("screen.png");
+
+		// 5. list_attachments returns the attachment and usage
+		const listRes = (await callMcpTool(db as never, user.id, "list_attachments", { taskId })) as {
+			items: Array<{ id: string; fileName: string }>;
+			usage: { count: number; bytes: number };
+		};
+		expect(listRes.items).toHaveLength(1);
+		expect(listRes.items[0].id).toBe(uploadRes.attachment.id);
+		expect(listRes.usage.count).toBe(1);
+		expect(listRes.usage.bytes).toBe(PNG_BYTES.byteLength);
+
+		// 6. delete_attachment deletes the attachment from database and R2
+		const delRes = (await callMcpTool(
+			db as never,
+			user.id,
+			"delete_attachment",
+			{
+				taskId,
+				id: uploadRes.attachment.id,
+			},
+			{ bucket: bucket as never },
+		)) as { ok: boolean; r2Deleted: boolean };
+
+		expect(delRes.ok).toBe(true);
+		expect(delRes.r2Deleted).toBe(true);
+		expect(bucket.objects.size).toBe(0);
+
+		// 7. Verification: list_attachments and get_task are now empty
+		const listAfterDel = (await callMcpTool(db as never, user.id, "list_attachments", { taskId })) as {
+			items: unknown[];
+			usage: { count: number; bytes: number };
+		};
+		expect(listAfterDel.items).toHaveLength(0);
+		expect(listAfterDel.usage.count).toBe(0);
+
+		const getAfterDel = (await callMcpTool(db as never, user.id, "get_task", { id: taskId })) as {
+			task: { id: string; attachments: unknown[] };
+		};
+		expect(getAfterDel.task.attachments).toHaveLength(0);
+
+		// 8. Test uploading PDF file
+		const pdfBase64 = Buffer.from(PDF_BYTES).toString("base64");
+		const uploadPdfRes = (await callMcpTool(
+			db as never,
+			user.id,
+			"upload_attachment",
+			{
+				taskId,
+				fileName: "document.pdf",
+				content: pdfBase64,
+			},
+			{ bucket: bucket as never },
+		)) as {
+			attachment: {
+				kind: string;
+				fileName: string;
+				mime: string;
+				size: number;
+			};
+		};
+		expect(uploadPdfRes.attachment.kind).toBe("file");
+		expect(uploadPdfRes.attachment.fileName).toBe("document.pdf");
+		expect(uploadPdfRes.attachment.mime).toBe("application/pdf");
+		expect(uploadPdfRes.attachment.size).toBe(PDF_BYTES.byteLength);
 	});
 });

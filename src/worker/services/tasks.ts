@@ -61,8 +61,8 @@ async function hydrate(
 	}));
 }
 
-/** #119：任务行 + 项目名（子查询，一条语句）。 */
-function taskWithProjectQuery(db: AppDatabase, userId: string, id: string) {
+/** #119：任务行 + 项目名（子查询，一条语句）。附件服务复用它拼「任务 + 附件」的一次往返。 */
+export function taskWithProjectQuery(db: AppDatabase, userId: string, id: string) {
 	return db
 		.select({
 			task: tasks,
@@ -73,8 +73,8 @@ function taskWithProjectQuery(db: AppDatabase, userId: string, id: string) {
 		.limit(1);
 }
 
-/** #119：一条任务的标签（只读这条任务的 task_tags，不扫全表）。 */
-function taskTagsQuery(db: AppDatabase, userId: string, id: string) {
+/** #119：一条任务的标签（只读这条任务的 task_tags，不扫全表）。附件服务复用它拼「任务 + 附件」的一次往返。 */
+export function taskTagsQuery(db: AppDatabase, userId: string, id: string) {
 	return db
 		.select({ id: tags.id, name: tags.name })
 		.from(taskTags)

@@ -33,10 +33,11 @@ import {
 	type AttachmentKind,
 } from "../../shared/limits";
 import type { RequestAttachmentUploadInput, TaskSource } from "../../shared/schemas";
-import { AppError } from "../lib/errors";
+import { runBatch } from "../lib/batch";
+import { AppError, notFound } from "../lib/errors";
 import { newId, nowIso } from "../lib/ids";
 import { logActivity } from "./activity";
-import { softDeleteCutoffIso } from "./tasks";
+import { softDeleteCutoffIso, taskTagsQuery, taskWithProjectQuery, type TaskView } from "./tasks";
 
 export type AttachmentRow = typeof attachments.$inferSelect;
 export type AttachmentUploadRow = typeof attachmentUploads.$inferSelect;
@@ -108,6 +109,22 @@ export function uploadContentPath(uploadId: string): string {
 export function attachmentContentPath(attachmentId: string): string {
 	return `/api/attachments/${attachmentId}/content`;
 }
+
+/** 出网 DTO：r2Key / userId / status 是内部字段，不透给客户端。 */
+export function toAttachmentDto(row: AttachmentRow) {
+	return {
+		id: row.id,
+		taskId: row.taskId,
+		kind: row.kind,
+		fileName: row.filename,
+		mime: row.mime,
+		size: row.size,
+		contentUrl: attachmentContentPath(row.id),
+		createdAt: row.createdAt,
+	};
+}
+
+export type AttachmentDto = ReturnType<typeof toAttachmentDto>;
 
 /** 去掉路径/控制字符，防止 `../../` 之类的文件名污染任何拼串。 */
 export function sanitizeFilename(raw: string): string {
@@ -556,13 +573,51 @@ export async function confirmUpload(
 	return row;
 }
 
-/** 任务详情的附件列表。任务在回收站 → 404（附件随任务隐藏）。 */
-export async function listTaskAttachments(
+export type UploadTaskAttachmentInput = {
+	fileName: string;
+	bytes: Uint8Array;
+	mime?: string;
+};
+
+/**
+ * 助手/MCP/服务端单步上传：串起 requestUpload -> putUploadObject -> confirmUpload。
+ * 遵循完全相同的配额检查、文件头嗅探、R2 写入与活动记录。
+ */
+export async function uploadTaskAttachment(
 	db: AppDatabase,
+	bucket: AttachmentBucket,
 	userId: string,
 	taskId: string,
-): Promise<AttachmentRow[]> {
-	await assertTaskOwned(db, userId, taskId);
+	input: UploadTaskAttachmentInput,
+	source: TaskSource,
+	options: { now?: Date } = {},
+): Promise<AttachmentRow> {
+	const req = await requestUpload(
+		db,
+		userId,
+		taskId,
+		{
+			fileName: input.fileName,
+			size: input.bytes.byteLength,
+			mime: input.mime ?? resolveAttachmentMime(input.fileName, null) ?? "",
+		},
+		options,
+	);
+
+	const stream = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(input.bytes);
+			controller.close();
+		},
+	});
+
+	await putUploadObject(db, bucket, userId, req.uploadId, stream, options);
+
+	return confirmUpload(db, bucket, userId, taskId, req.uploadId, source, options);
+}
+
+/** 一条任务的未删除附件（惰性查询构造器，可进 runBatch）。 */
+function taskAttachmentsQuery(db: AppDatabase, userId: string, taskId: string) {
 	return db
 		.select()
 		.from(attachments)
@@ -574,6 +629,39 @@ export async function listTaskAttachments(
 			),
 		)
 		.orderBy(asc(attachments.createdAt), asc(attachments.id));
+}
+
+/** 任务详情的附件列表。任务在回收站 → 404（附件随任务隐藏）。 */
+export async function listTaskAttachments(
+	db: AppDatabase,
+	userId: string,
+	taskId: string,
+): Promise<AttachmentRow[]> {
+	await assertTaskOwned(db, userId, taskId);
+	return taskAttachmentsQuery(db, userId, taskId);
+}
+
+/**
+ * MCP `get_task`：任务 + 项目名 + 标签 + 附件，一次 D1 往返。
+ * 别写成 getTask 后再 listTaskAttachments：后者会多两次往返（归属校验 + 附件查询），
+ * 而任务行本身已在同一批里查过，归属不用再验一次。
+ */
+export async function getTaskWithAttachments(
+	db: AppDatabase,
+	userId: string,
+	id: string,
+): Promise<{ task: TaskView; attachments: AttachmentRow[] }> {
+	const [rows, tagRows, attachmentRows] = await runBatch(db, [
+		taskWithProjectQuery(db, userId, id),
+		taskTagsQuery(db, userId, id),
+		taskAttachmentsQuery(db, userId, id),
+	] as const);
+	const row = rows[0];
+	if (!row) throw notFound("任务");
+	return {
+		task: { ...row.task, projectName: row.projectName ?? "", tags: tagRows },
+		attachments: attachmentRows,
+	};
 }
 
 /**

@@ -5,7 +5,12 @@ import type { WorkerEnv } from "../lib/auth";
 import { userFromBearer } from "../services/tokens";
 import { AppError } from "../lib/errors";
 import type { AppDatabase } from "../../db/client";
-import { callMcpTool, MCP_TOOLS } from "./tools";
+import type { AttachmentBucket } from "../services/attachments";
+import { callMcpTool, MCP_TOOLS, type McpToolOptions } from "./tools";
+
+export type McpEnv = WorkerEnv & {
+	UPLOADS?: AttachmentBucket;
+};
 
 type JsonRpc = {
 	jsonrpc?: string;
@@ -40,7 +45,7 @@ async function authenticate(request: Request, env: WorkerEnv): Promise<AuthConte
 	return rows[0] ? { db, userId: rows[0].id } : null;
 }
 
-async function handleOne(auth: AuthContext, body: JsonRpc) {
+async function handleOne(auth: AuthContext, body: JsonRpc, options?: McpToolOptions) {
 	const id = body.id ?? null;
 	const method = body.method ?? "";
 	const isNotification = body.id === undefined;
@@ -75,7 +80,7 @@ async function handleOne(auth: AuthContext, body: JsonRpc) {
 				? (params.arguments as Record<string, unknown>)
 				: {};
 		try {
-			const result = await callMcpTool(auth.db, auth.userId, name, args);
+			const result = await callMcpTool(auth.db, auth.userId, name, args, options);
 			return jsonRpcResult(id, {
 				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 				structuredContent: result,
@@ -96,7 +101,7 @@ async function handleOne(auth: AuthContext, body: JsonRpc) {
 	return jsonRpcError(id, -32601, `未知方法: ${method}`);
 }
 
-export async function handleMcp(request: Request, env: WorkerEnv): Promise<Response> {
+export async function handleMcp(request: Request, env: McpEnv): Promise<Response> {
 	const cors = {
 		"Access-Control-Allow-Origin": "*",
 		"Access-Control-Allow-Headers": "Authorization, Content-Type, MCP-Protocol-Version",
@@ -145,16 +150,17 @@ export async function handleMcp(request: Request, env: WorkerEnv): Promise<Respo
 		);
 	}
 
+	const toolOptions: McpToolOptions = { bucket: env.UPLOADS };
 	if (Array.isArray(payload)) {
 		const results = [];
 		for (const item of payload) {
-			const result = await handleOne(auth, item as JsonRpc);
+			const result = await handleOne(auth, item as JsonRpc, toolOptions);
 			if (result) results.push(result);
 		}
 		return Response.json(results, { headers: cors });
 	}
 
-	const result = await handleOne(auth, payload as JsonRpc);
+	const result = await handleOne(auth, payload as JsonRpc, toolOptions);
 	if (!result) return new Response(null, { status: 202, headers: cors });
 	return Response.json(result, { headers: cors });
 }

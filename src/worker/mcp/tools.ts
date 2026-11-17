@@ -6,7 +6,6 @@ import {
 	completeTask,
 	createTask,
 	deleteTask,
-	getTask,
 	listTasks,
 	nudgeWaiting,
 	restoreTask,
@@ -19,6 +18,7 @@ import { createTag, listTags } from "../services/tags";
 import {
 	attachmentUsage,
 	deleteAttachment,
+	getTaskWithAttachments,
 	listTaskAttachments,
 	toAttachmentDto,
 	uploadTaskAttachment,
@@ -300,6 +300,9 @@ export const MCP_TOOLS = [
 	},
 ] as const;
 
+/** 标准 base64（允许内部空白，解码前去掉；不接受 base64url 与缺失的填充）。 */
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
 export function decodeBase64(content: string): Uint8Array {
 	const trimmed = content.trim();
 	const commaIdx = trimmed.indexOf(",");
@@ -307,12 +310,18 @@ export function decodeBase64(content: string): Uint8Array {
 		commaIdx !== -1 && trimmed.slice(0, commaIdx).includes(";base64")
 			? trimmed.slice(commaIdx + 1).trim()
 			: trimmed;
+	// 先严格校验再解码：Buffer.from 遇到非法字符是静默丢弃、不抛错，
+	// 不校验的话 "!!!" 这类输入会解成空字节、最后以 invalid_size 报错，文案误导。
+	const compact = raw.replace(/[\t\n\f\r ]/g, "");
+	if (compact === "" || !BASE64_PATTERN.test(compact)) {
+		throw new AppError(400, "invalid_base64", "无效的 base64 内容");
+	}
 	try {
 		if (typeof Buffer !== "undefined") {
-			const buf = Buffer.from(raw, "base64");
+			const buf = Buffer.from(compact, "base64");
 			return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 		}
-		const binary = atob(raw);
+		const binary = atob(compact);
 		const bytes = new Uint8Array(binary.length);
 		for (let i = 0; i < binary.length; i++) {
 			bytes[i] = binary.charCodeAt(i);
@@ -361,12 +370,11 @@ export async function callMcpTool(
 			return listTasks(db, userId, listTasksToolInput.parse(args));
 		case "get_task": {
 			const input = z.object({ id: z.string() }).parse(args);
-			const task = await getTask(db, userId, input.id);
-			const attachmentRows = await listTaskAttachments(db, userId, input.id);
+			const { task, attachments } = await getTaskWithAttachments(db, userId, input.id);
 			return {
 				task: {
 					...task,
-					attachments: attachmentRows.map(toAttachmentDto),
+					attachments: attachments.map(toAttachmentDto),
 				},
 			};
 		}

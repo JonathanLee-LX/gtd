@@ -124,6 +124,19 @@ describe("MCP tools task attachments support (#133)", () => {
 		expect(decodeBase64(`  ${base64Str} \n`)).toEqual(original);
 	});
 
+	it("rejects invalid base64 with invalid_base64 (Buffer.from would silently drop bad chars)", () => {
+		for (const bad of ["", "   ", "!!!", "abc", "a===", "AB=C", "aGVsbG8", "aGVsbG8td29ybGQ"]) {
+			expect(() => decodeBase64(bad)).toThrow("无效的 base64 内容");
+		}
+	});
+
+	it("tolerates whitespace inside base64 (MIME-style line breaks)", () => {
+		const original = new Uint8Array([1, 2, 3, 4, 5, 255]);
+		const base64Str = Buffer.from(original).toString("base64");
+		const broken = `${base64Str.slice(0, 4)}\n${base64Str.slice(4)}`;
+		expect(decodeBase64(broken)).toEqual(original);
+	});
+
 	it("throws when calling upload_attachment or delete_attachment without bucket configured", async () => {
 		const { db } = createTestDb();
 		const user = await seedUser(db);

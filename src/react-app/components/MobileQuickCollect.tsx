@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import type { Project } from "../api";
 import { useCreateTask } from "../hooks/use-task-mutations";
 import { createFailedMessage, restoreFailedDraft } from "../lib/draft-restore";
+import { mobileFabBottom } from "../lib/mobile-fab";
 
 type MobileQuickCollectProps = {
 	/** Shell 的项目列表：给乐观插入的临时行补上收件箱 id，立刻出现在收件箱列表里。 */
@@ -78,9 +79,7 @@ export function MobileQuickCollect({ projects, onCreated }: MobileQuickCollectPr
 				<button
 					type="button"
 					className="fixed right-4 z-40 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:hidden"
-					style={{
-						bottom: `calc(3.5rem + env(safe-area-inset-bottom, 0px) + 0.75rem)`,
-					}}
+					style={{ bottom: mobileFabBottom() }}
 					aria-label="加到收件箱"
 					onClick={() => setOpen(true)}
 				>

@@ -10,7 +10,7 @@ import { quarterHourOptions } from "../../shared/digest";
 import { DEFAULT_TIME_ZONE } from "../../shared/constants";
 import { api, type NotificationSettings, type PushSubscriptionKeys, type SaveNotificationSettings } from "../api";
 import { loadErrorMessage } from "../lib/load-state";
-import { browserPushProbe, type PushBlock, type PushProbe } from "../lib/push-client";
+import { browserPushProbe, notificationPermissionDenied, type PushBlock, type PushProbe } from "../lib/push-client";
 import { settingsKeys } from "../lib/settings-keys";
 
 type FormState = {
@@ -25,6 +25,7 @@ type FormState = {
 type SaveState = "idle" | "saving" | "saved" | "error";
 
 const HELP_ID = "due-reminder-help";
+const SUBSCRIBE_ERROR_ID = "due-reminder-subscribe-error";
 const TIMES = quarterHourOptions();
 
 function browserTimeZone(): string {
@@ -88,9 +89,13 @@ function SettingSwitch({
 				onCheckedChange(!checked);
 			}}
 			className={cn(
-				"relative h-5 w-9 shrink-0 rounded-full transition-colors",
-				checked ? "bg-primary" : "bg-input",
-				(disabled || blocked) && "opacity-50",
+				// 关闭态填充用 --input，1px 描边用 --muted-foreground。
+				// --border / --input 都是 oklch(0.922)，对白底只有约 1.26:1；描边这档对白底约 4.73:1。
+				// 置灰只改旁边的文字色，开关本身不降 opacity，轮廓保持清晰。
+				"relative box-border h-5 w-9 shrink-0 rounded-full border transition-colors",
+				"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+				checked ? "border-primary bg-primary" : "border-muted-foreground bg-input",
+				(disabled || blocked) && "cursor-not-allowed",
 			)}
 		>
 			<span
@@ -167,6 +172,7 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 	const [saveState, setSaveState] = useState<SaveState>("idle");
 	const [error, setError] = useState<string | null>(null);
 	const [testState, setTestState] = useState<"idle" | "sending" | "sent">("idle");
+	const [subscribeFailed, setSubscribeFailed] = useState(false);
 	const saveSeq = useRef(0);
 	const block = blockOverride ?? probe.inspect();
 	const blocked = block !== "ok";
@@ -214,35 +220,71 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 
 	function edit(patch: Partial<FormState>) {
 		if (!form) return;
+		setSubscribeFailed(false);
 		const next = { ...form, ...patch };
 		setForm(next);
 		void persist(next);
+	}
+
+	function markSubscriptionDenied() {
+		setSubscribeFailed(false);
+		setBlockOverride("denied");
+		setForm((current) => (current ? { ...current, enabled: false } : current));
+	}
+
+	function markThisDeviceDenied() {
+		setSubscribeFailed(false);
+		setBlockOverride("denied");
 	}
 
 	async function turnOn() {
 		if (!form || blocked) return;
 		const publicKey = query.data?.vapidPublicKey;
 		if (!publicKey) {
+			setSubscribeFailed(false);
 			setError("服务器还没有配置网页推送密钥");
 			return;
 		}
 		setError(null);
-		const sub = await probe.subscribe(publicKey);
-		if (sub === "denied") {
-			setBlockOverride("denied");
-			return;
+		setSubscribeFailed(false);
+		try {
+			const sub = await probe.subscribe(publicKey);
+			if (sub === "denied" || notificationPermissionDenied()) {
+				markSubscriptionDenied();
+				return;
+			}
+			const next = { ...form, enabled: true };
+			setForm(next);
+			setLocalSub(sub);
+			await persist(next, sub);
+		} catch {
+			// 失败不写服务端。开关回到关闭；权限被拒走已有引导，其他错误留在开关下方。
+			setForm((current) => (current ? { ...current, enabled: false } : current));
+			if (notificationPermissionDenied()) {
+				markSubscriptionDenied();
+				return;
+			}
+			setSubscribeFailed(true);
 		}
-		const next = { ...form, enabled: true };
-		setForm(next);
-		setLocalSub(sub);
-		await persist(next, sub);
 	}
 
 	async function enableThisDevice() {
 		if (!form || blocked || !query.data?.vapidPublicKey) return;
-		const sub = await probe.subscribe(query.data.vapidPublicKey);
-		if (sub === "denied") {
-			setBlockOverride("denied");
+		setError(null);
+		setSubscribeFailed(false);
+		let sub: PushSubscriptionKeys | "denied";
+		try {
+			sub = await probe.subscribe(query.data.vapidPublicKey);
+		} catch {
+			if (notificationPermissionDenied()) {
+				markThisDeviceDenied();
+				return;
+			}
+			setSubscribeFailed(true);
+			return;
+		}
+		if (sub === "denied" || notificationPermissionDenied()) {
+			markThisDeviceDenied();
 			return;
 		}
 		setLocalSub(sub);
@@ -305,7 +347,7 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 					<>
 						<div className="flex items-start justify-between gap-3">
 							<div className="min-w-0">
-								<div className="font-medium">到期提醒</div>
+								<div className={cn("font-medium", blocked && "text-muted-foreground")}>到期提醒</div>
 								<p className="text-sm text-muted-foreground">汇总今天到期的任务，逾期可以关掉。</p>
 								{showOther ? (
 									<p className="text-sm text-muted-foreground">其他 {otherCount} 台设备已开启</p>
@@ -315,13 +357,18 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 								label="到期提醒"
 								checked={form.enabled}
 								blocked={blocked}
-								describedBy={blocked ? HELP_ID : undefined}
+								describedBy={blocked ? HELP_ID : subscribeFailed ? SUBSCRIBE_ERROR_ID : undefined}
 								onCheckedChange={(next) => {
 									if (!next) edit({ enabled: false });
 									else void turnOn();
 								}}
 							/>
 						</div>
+						{subscribeFailed ? (
+							<p id={SUBSCRIBE_ERROR_ID} className="text-xs text-destructive" role="alert">
+								开启失败，请重试
+							</p>
+						) : null}
 						{help ? (
 							<p id={HELP_ID} className="text-sm text-muted-foreground">
 								{help}
@@ -329,7 +376,7 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 						) : null}
 						<div
 							data-children-disabled={form.enabled ? undefined : "true"}
-							className={cn("flex flex-col gap-4", !form.enabled && "opacity-50")}
+							className={cn("flex flex-col gap-4", !form.enabled && "text-muted-foreground")}
 						>
 							<label className="flex items-center justify-between gap-3 text-sm">
 								<span>推送时间</span>

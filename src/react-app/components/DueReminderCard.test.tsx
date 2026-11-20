@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NotificationSettings, SaveNotificationSettings } from "../api";
 import type { PushProbe, PushSubscriptionKeys } from "../lib/push-client";
@@ -123,7 +123,15 @@ describe("due reminder settings", () => {
 		expect(time.isConnected).toBe(true);
 		expect((screen.getByRole("switch", { name: "包含逾期" }) as HTMLButtonElement).disabled).toBe(true);
 		expect(screen.queryByLabelText("明天的推送时间")).toBeNull();
-		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-disabled")).toBeNull();
+		const master = screen.getByRole("switch", { name: "到期提醒" });
+		expect(master.getAttribute("aria-disabled")).toBeNull();
+		expect(master.className).toContain("bg-input");
+		expect(master.className).toContain("border-muted-foreground");
+		expect(master.className).not.toContain("opacity-50");
+		expect(screen.getByRole("switch", { name: "明天到期" }).className).not.toContain("opacity-50");
+		const children = document.querySelector("[data-children-disabled='true']");
+		expect(children?.className).toContain("text-muted-foreground");
+		expect(children?.className).not.toContain("opacity-50");
 	});
 
 	it("blocks the switch and points at the help text", async () => {
@@ -131,6 +139,8 @@ describe("due reminder settings", () => {
 		renderCard(probe({ inspect: () => "ios-install", subscribe }));
 		const sw = await screen.findByRole("switch", { name: "到期提醒" });
 		expect(sw.getAttribute("aria-disabled")).toBe("true");
+		expect(sw.className).not.toContain("opacity-50");
+		expect(sw.className).toContain("border-muted-foreground");
 		const help = document.getElementById(sw.getAttribute("aria-describedby") ?? "");
 		expect(help?.textContent).toMatch(/添加到主屏幕/);
 		expect(help?.querySelector("svg")).toBeTruthy();
@@ -164,5 +174,65 @@ describe("due reminder settings", () => {
 		renderCard(probe({ readSubscription: async () => null }), { ...SETTINGS, enabled: true, subscriptionCount: 2 });
 		expect(await screen.findByText("其他 2 台设备已开启")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy();
+	});
+
+	it("snaps the switch off and keeps an alert when subscribing fails", async () => {
+		vi.stubGlobal("Notification", { permission: "granted" });
+		const subscribe = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Registration failed - permission denied"))
+			.mockResolvedValueOnce(SUB);
+		const { save, upsert } = renderCard(probe({ subscribe }));
+		const sw = await screen.findByRole("switch", { name: "到期提醒" });
+		fireEvent.click(sw);
+		const alert = await screen.findByRole("alert");
+		expect(alert.textContent).toContain("开启失败，请重试");
+		expect(sw.getAttribute("aria-checked")).toBe("false");
+		expect(sw.getAttribute("aria-disabled")).toBeNull();
+		expect(document.body.textContent).not.toMatch(/通知权限已被拒绝/);
+		expect(save).not.toHaveBeenCalled();
+		expect(upsert).not.toHaveBeenCalled();
+
+		vi.useFakeTimers();
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(3000);
+		});
+		expect(screen.getByRole("alert").textContent).toContain("开启失败，请重试");
+		vi.useRealTimers();
+
+		fireEvent.click(screen.getByRole("switch", { name: "到期提醒" }));
+		await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+		await waitFor(() =>
+			expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true"),
+		);
+		expect(save).toHaveBeenCalledTimes(1);
+		expect(save.mock.calls[0]?.[0]).toMatchObject({ enabled: true, subscription: SUB });
+	});
+
+	it("shows the system-settings guidance when notification permission is denied", async () => {
+		vi.stubGlobal("Notification", { permission: "denied" });
+		const subscribe = vi.fn(async () => {
+			throw new Error("Registration failed - permission denied");
+		});
+		const { save, upsert } = renderCard(probe({ subscribe }));
+		fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
+		await waitFor(() => expect(document.body.textContent).toMatch(/请到系统设置里允许此网站发送通知/));
+		const sw = screen.getByRole("switch", { name: "到期提醒" });
+		expect(sw.getAttribute("aria-checked")).toBe("false");
+		expect(sw.getAttribute("aria-disabled")).toBe("true");
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(screen.queryByText("开启失败，请重试")).toBeNull();
+		expect(save).not.toHaveBeenCalled();
+		expect(upsert).not.toHaveBeenCalled();
+
+		cleanup();
+		const returned = vi.fn(async () => "denied" as const);
+		const second = renderCard(probe({ subscribe: returned }));
+		fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
+		await waitFor(() => expect(document.body.textContent).toMatch(/请到系统设置里允许此网站发送通知/));
+		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("false");
+		expect(screen.queryByText("开启失败，请重试")).toBeNull();
+		expect(second.save).not.toHaveBeenCalled();
+		expect(second.upsert).not.toHaveBeenCalled();
 	});
 });

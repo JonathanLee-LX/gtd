@@ -36,6 +36,7 @@ import { projectPickerItems } from "../lib/project-items";
 import { sameTask } from "../lib/task-mutation-lock";
 import type { AutosaveValues } from "../lib/task-autosave";
 import { useTaskAutosave } from "../hooks/use-task-autosave";
+import { MarkdownText } from "./MarkdownText";
 import { TaskActivityList } from "./TaskActivityList";
 import { TaskAttachments } from "./TaskAttachments";
 
@@ -173,6 +174,7 @@ export function TaskDetail({
 		...fromAutosave(autosave.pendingValues(current.id)),
 	});
 	const [form, setForm] = useState<Draft>(() => initialDraft(task));
+	const [notesMode, setNotesMode] = useState<"edit" | "preview">("edit");
 	const formRef = useRef(form);
 	formRef.current = form;
 	const { title, notes, status, priority, dueAt, projectId, parentId, waitingOn } = form;
@@ -225,6 +227,7 @@ export function TaskDetail({
 			autosave.flush(previousId);
 			autosave.setTitleInvalid({ ...task, id: previousId }, false);
 			focusedRef.current = null;
+			setNotesMode("edit");
 			setForm(initialDraft(task));
 			setTagDraft("");
 			setError(null);
@@ -351,15 +354,57 @@ export function TaskDetail({
 					) : null}
 				</Field>
 				<Field>
-					<FieldLabel htmlFor="task-detail-notes">备注</FieldLabel>
-					<Textarea
-						id="task-detail-notes"
-						value={notes}
-						onChange={(event) => change("notes", event.target.value)}
-						{...textFieldProps("notes")}
-						placeholder="补充上下文、链接或等待原因"
-						rows={6}
-					/>
+					<div className="flex items-center justify-between">
+						<FieldLabel htmlFor={notesMode === "edit" ? "task-detail-notes" : undefined}>
+							备注
+						</FieldLabel>
+						<div className="flex items-center gap-1 rounded-md bg-muted/60 p-0.5 text-xs">
+							<Button
+								type="button"
+								variant={notesMode === "edit" ? "secondary" : "ghost"}
+								size="xs"
+								onClick={() => setNotesMode("edit")}
+								aria-pressed={notesMode === "edit"}
+							>
+								编辑
+							</Button>
+							<Button
+								type="button"
+								variant={notesMode === "preview" ? "secondary" : "ghost"}
+								size="xs"
+								onClick={() => {
+									autosave.flush(task.id);
+									setNotesMode("preview");
+								}}
+								aria-pressed={notesMode === "preview"}
+							>
+								预览
+							</Button>
+						</div>
+					</div>
+					{notesMode === "edit" ? (
+						<Textarea
+							id="task-detail-notes"
+							value={notes}
+							onChange={(event) => change("notes", event.target.value)}
+							{...textFieldProps("notes")}
+							placeholder="补充上下文、链接或等待原因"
+							rows={6}
+						/>
+					) : (
+						<div
+							data-testid="task-detail-notes-preview"
+							className="min-h-[144px] rounded-md border border-input bg-transparent px-3 py-2 text-sm overflow-y-auto"
+						>
+							{notes.trim() ? (
+								<MarkdownText>{notes}</MarkdownText>
+							) : (
+								<p className="flex h-full min-h-[120px] items-center justify-center text-xs text-muted-foreground">
+									暂无备注内容
+								</p>
+							)}
+						</div>
+					)}
 				</Field>
 				{pendingCreate ? (
 					// 临时 id 还没换成真实 id：附件接口会 404，等新建返回后再显示。

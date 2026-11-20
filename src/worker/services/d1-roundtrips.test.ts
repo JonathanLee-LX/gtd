@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createTestDb, seedUser } from "../test/db";
 import { createCountingD1 } from "../test/d1-shim";
+import { FakeR2, PNG_BYTES } from "../test/fake-r2";
+import { callMcpTool } from "../mcp/tools";
 import { listTaskActivity } from "./activity";
 import { createTag } from "./tags";
 import { createTask, getTask, updateTask } from "./tasks";
@@ -29,6 +31,26 @@ describe("D1 round trips", () => {
 		expect(view.projectName).toBe("收件箱");
 		console.info("[#119] GET round trips", counter.roundTrips);
 		expect(counter.roundTrips).toBeLessThanOrEqual(Number(process.env.GTD_MAX_GET ?? 1));
+	});
+
+	it("MCP get_task（含附件，一次往返）", async () => {
+		const { db, counter, reset, me, task } = await setup();
+		const bucket = new FakeR2();
+		const pngBase64 = Buffer.from(PNG_BYTES).toString("base64");
+		await callMcpTool(
+			db as never,
+			me.id,
+			"upload_attachment",
+			{ taskId: task.id, fileName: "screen.png", content: pngBase64 },
+			{ bucket: bucket as never },
+		);
+		reset();
+		const res = (await callMcpTool(db as never, me.id, "get_task", { id: task.id })) as {
+			task: { attachments: unknown[] };
+		};
+		expect(res.task.attachments).toHaveLength(1);
+		console.info("[#133] MCP get_task round trips", counter.roundTrips);
+		expect(counter.roundTrips).toBeLessThanOrEqual(1);
 	});
 
 	it("PATCH priority（内容字段，合并活动）", async () => {

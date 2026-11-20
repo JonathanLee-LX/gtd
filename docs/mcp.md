@@ -12,13 +12,16 @@
 |---|---|
 | `today_focus` | 逾期 + 今天 + 下一步 + P1，只出可执行叶子 |
 | `list_projects` / `create_project` / `update_project` | 项目（`list_projects` 默认不含已归档） |
-| `list_tasks` / `get_task` / `search_tasks` | 查询 |
+| `list_tasks` / `get_task` / `search_tasks` | 查询（`get_task` 包含标签与附件列表） |
 | `create_task` | 创建（建议 `idempotencyKey`；可选 `parentId` 挂子任务） |
 | `update_task` | 部分更新（可改 `parentId`，`null` 取消父子） |
 | `nudge_waiting` | 对等待任务「要催」（生成下一步，幂等） |
 | `complete_task` | 完成 |
 | `delete_task` | 软删除 |
 | `restore_task` | 从回收站恢复软删任务（默认列表不含软删） |
+| `list_attachments` | 列出任务附件及当前存储配额用量 |
+| `upload_attachment` | 上传任务附件（支持 base64，图片 / PDF，单文件 <=10MB） |
+| `delete_attachment` | 删除任务附件并同步清理 R2 对象 |
 
 `dueAt` 使用 `YYYY-MM-DD`。
 
@@ -40,6 +43,13 @@
 
 - `today_focus` 与网页今日同一条规则：有未完成（非 completed/cancelled、未软删）子任务的父任务不出现，只出可执行叶子。
 - 下一步 / 项目列表仍会缩进展示父子，不受此规则影响。
+
+### 任务附件（#133）
+
+- `list_attachments`: 传 `taskId`，返回该任务的所有附件（含 `fileName`、`mime`、`size`、`contentUrl` 等）以及当前用户附件配额与用量 `usage`。
+- `upload_attachment`: 传 `taskId`、`fileName`、`content`（文件的 base64 字符串，支持纯 base64 或 `data:image/...;base64,...`），可选 `mimeType`。单文件上限 10MB，支持格式：JPG、PNG、GIF、WebP、HEIC、PDF。
+- `delete_attachment`: 传 `taskId` 与附件 `id`，从数据库与 R2 存储中同步删除。
+- `get_task`: 返回的任务对象中包含 `attachments: AttachmentDto[]` 列表，方便助手直接查看附件元数据与下载地址。
 
 ## 客户端配置示例
 

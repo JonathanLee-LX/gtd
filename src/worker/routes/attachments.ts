@@ -24,7 +24,6 @@ import { handleRoute } from "../lib/route-utils";
 import type { AppEnv } from "../lib/storage";
 import { requireUser, type AppVariables } from "../middleware/require-user";
 import {
-	attachmentContentPath,
 	attachmentUsage,
 	confirmUpload,
 	deleteAttachment,
@@ -32,8 +31,11 @@ import {
 	listTaskAttachments,
 	putUploadObject,
 	requestUpload,
-	type AttachmentRow,
+	toAttachmentDto,
+	type AttachmentDto,
 } from "../services/attachments";
+
+export { toAttachmentDto, type AttachmentDto };
 
 /** 解析单段 `bytes=start-end`。返回 null 表示不可满足 → 416。 */
 export function parseByteRange(
@@ -65,21 +67,6 @@ export function contentDisposition(filename: string | null, inline: boolean): st
 	return `${inline ? "inline" : "attachment"}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
-/** 出网 DTO：r2Key / userId / status 是内部字段，不透给客户端。 */
-export function toAttachmentDto(row: AttachmentRow) {
-	return {
-		id: row.id,
-		taskId: row.taskId,
-		kind: row.kind,
-		fileName: row.filename,
-		mime: row.mime,
-		size: row.size,
-		contentUrl: attachmentContentPath(row.id),
-		createdAt: row.createdAt,
-	};
-}
-
-export type AttachmentDto = ReturnType<typeof toAttachmentDto>;
 
 function jsonError(error: unknown) {
 	if (error instanceof AppError) {

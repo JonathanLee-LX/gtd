@@ -29,6 +29,7 @@ export type NotificationSettingsView = {
 	timeZone: string;
 	saved: boolean;
 	subscriptionCount: number;
+	subscriptionEndpoints: string[];
 };
 
 export type DigestKind = "due" | "tomorrow";
@@ -62,7 +63,7 @@ const EMPTY_RESULT: DigestCronResult = {
 	unconfigured: 0,
 };
 
-function viewFrom(row: SettingsRow | undefined, subscriptionCount: number): NotificationSettingsView {
+function viewFrom(row: SettingsRow | undefined, endpoints: string[]): NotificationSettingsView {
 	return {
 		enabled: row?.enabled ?? false,
 		digestTime: row?.digestTime ?? DEFAULT_DIGEST_TIME,
@@ -71,7 +72,8 @@ function viewFrom(row: SettingsRow | undefined, subscriptionCount: number): Noti
 		includeOverdue: row?.includeOverdue ?? true,
 		timeZone: row?.timeZone ?? DEFAULT_TIME_ZONE,
 		saved: Boolean(row),
-		subscriptionCount,
+		subscriptionCount: endpoints.length,
+		subscriptionEndpoints: endpoints,
 	};
 }
 
@@ -95,7 +97,10 @@ export async function getNotificationSettings(
 			.from(pushSubscriptions)
 			.where(eq(pushSubscriptions.userId, userId)),
 	])) as [SettingsRow[], { endpoint: string }[]];
-	return viewFrom(settingRows[0], subs.length);
+	return viewFrom(
+		settingRows[0],
+		subs.map((row) => row.endpoint),
+	);
 }
 
 /**
@@ -157,6 +162,7 @@ export async function saveNotificationSettings(
 	);
 	const results = await runQueries(db, queries);
 	const subs = results[results.length - 1] as { endpoint: string }[];
+	const endpoints = subs.map((row) => row.endpoint);
 	return {
 		enabled: input.enabled,
 		digestTime: input.digestTime,
@@ -165,7 +171,8 @@ export async function saveNotificationSettings(
 		includeOverdue: input.includeOverdue,
 		timeZone,
 		saved: true,
-		subscriptionCount: subs.length,
+		subscriptionCount: endpoints.length,
+		subscriptionEndpoints: endpoints,
 	};
 }
 

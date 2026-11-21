@@ -498,6 +498,7 @@ describe("notification settings", () => {
 		const settings = await getNotificationSettings(d1.db, me.id);
 		expect(settings.enabled).toBe(true);
 		expect(settings.subscriptionCount).toBe(1);
+		expect(settings.subscriptionEndpoints).toEqual([dev2.input.endpoint]);
 		const remaining = await plain.select().from(pushSubscriptions).where(eq(pushSubscriptions.userId, me.id));
 		expect(remaining.map((r) => r.endpoint)).toEqual([dev2.input.endpoint]);
 

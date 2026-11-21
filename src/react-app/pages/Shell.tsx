@@ -75,13 +75,13 @@ import { clearClientSession } from "../lib/client-session";
 import { replayUnsavedAfterLogin } from "../lib/autosave-persist";
 import {
 	browserPushProbe,
-	clearPushSubscriptionOwner,
-	markPushSubscriptionPendingUnsubscribe,
+	cleanupPushAfterSignOut,
+	cleanupPushBeforeSignOut,
 	pushSignOutCleanupWarning,
-	readPushSubscriptionOwner,
 	reconcilePushSubscriptionForUser,
+	restorePushAfterFailedSignOut,
+	SIGN_OUT_REQUEST_TIMEOUT_MS,
 	type PushProbe,
-	type PushSubscriptionKeys,
 } from "../lib/push-client";
 import { peekTaskAutosave } from "../lib/task-autosave";
 import { createLoginRedirectOnce, loadErrorMessage, shellLoadOutcome } from "../lib/session";
@@ -201,92 +201,39 @@ export function Shell({ pushProbe = browserPushProbe }: { pushProbe?: PushProbe 
 		if (signingOutRef.current) return;
 		signingOutRef.current = true;
 		setSigningOut(true);
-		// #123：退出前趁会话还有效，尽力删除本机在服务端的推送订阅；失败不挡退出。
-		let currentSub: PushSubscriptionKeys | null = null;
-		let readPushFailed = false;
 		try {
-			currentSub = await pushProbe.readSubscription();
-		} catch {
-			readPushFailed = true;
-		}
-		const owner = readPushSubscriptionOwner();
-		const isPendingUnsub = Boolean(
-			owner?.pendingUnsubscribe && (!currentSub || !owner.endpoint || owner.endpoint === currentSub.endpoint),
-		);
-		const isForeignOwner = Boolean(owner?.userId && userId && owner.userId !== userId);
-		const isNotOwned = isPendingUnsub || isForeignOwner;
-		const fallbackEndpoint =
-			!currentSub && !isNotOwned && owner && (!userId || !owner.userId || owner.userId === userId)
-				? owner.endpoint
-				: null;
-		const endpointToDelete = isNotOwned ? null : (currentSub?.endpoint ?? fallbackEndpoint);
+			// #123：退出前趁会话还有效，有超时上限地尽力删除本机在服务端的推送订阅；任一失败或超时不挡退出。
+			const pre = await cleanupPushBeforeSignOut({
+				userId,
+				probe: pushProbe,
+				deleteSubscription: api.deletePushSubscription,
+			});
 
-		let serverDelete: "skipped" | "not-owned" | "ok" | "failed" = isNotOwned ? "not-owned" : "skipped";
-		let serverDeletedRow = false;
-		if (endpointToDelete) {
 			try {
-				const res = await api.deletePushSubscription(endpointToDelete);
-				serverDelete = "ok";
-				serverDeletedRow = res.deleted === true;
-			} catch {
-				serverDelete = "failed";
+				await api.signOut({ timeoutMs: SIGN_OUT_REQUEST_TIMEOUT_MS });
+			} catch (err) {
+				// 退出没成功（如断网/超时）就别假装退出：不动浏览器推送订阅，仅当刚才确实删掉了当前用户行时才尽力补回。
+				const restored = await restorePushAfterFailedSignOut(pre, api.upsertPushSubscription);
+				const baseError = err instanceof Error ? `退出失败：${err.message}` : "退出失败，请重试";
+				toast.error(
+					restored ? baseError : `${baseError}；本机推送订阅未能恢复，请到设置页重新开启`,
+				);
+				return;
 			}
-		}
 
-		try {
-			await api.signOut();
-		} catch (err) {
-			// 退出没成功（如断网）就别假装退出：会话还在，登录页会直接把人送回来。
-			// 不动浏览器推送订阅；仅当刚才确实删掉了当前用户在服务端的订阅行时才尽力补回。
-			let restoreFailed = false;
-			if (serverDeletedRow) {
-				if (currentSub) {
-					try {
-						await api.upsertPushSubscription(currentSub);
-					} catch {
-						restoreFailed = true;
-					}
-				} else {
-					restoreFailed = true;
-				}
-			}
-			const baseError = err instanceof Error ? `退出失败：${err.message}` : "退出失败，请重试";
-			toast.error(
-				restoreFailed ? `${baseError}；本机推送订阅未能恢复，请到设置页重新开启` : baseError,
-			);
+			// 服务端会话已注销：有超时上限地退订浏览器推送，任何失败或超时都不挡跳转与本地会话清理。
+			const outcome = await cleanupPushAfterSignOut(pre, pushProbe);
+			setConfirmSignOut(false);
+			navigate("/login", { replace: true });
+			// 用户主动退出：未保存的改动按确认丢掉，不暂存。
+			clearClientSession(queryClient, { discardUnsaved: true });
+
+			const warning = pushSignOutCleanupWarning(outcome);
+			if (warning) toast.warning(warning);
+		} finally {
 			signingOutRef.current = false;
 			setSigningOut(false);
-			return;
 		}
-
-		// 服务端会话已注销：尽力退订浏览器推送（不弹窗），任何失败都不挡退出跳转。
-		let browserUnsub: "skipped" | "none" | "unsubscribed" | "failed" = "skipped";
-		try {
-			const res = await pushProbe.unsubscribe();
-			browserUnsub = res.status;
-			if (res.status === "failed") {
-				markPushSubscriptionPendingUnsubscribe(res.endpoint || endpointToDelete || owner?.endpoint || "");
-			} else {
-				clearPushSubscriptionOwner();
-			}
-		} catch {
-			browserUnsub = "failed";
-			markPushSubscriptionPendingUnsubscribe(endpointToDelete || owner?.endpoint || "");
-		}
-
-		signingOutRef.current = false;
-		setSigningOut(false);
-		setConfirmSignOut(false);
-		navigate("/login", { replace: true });
-		// 用户主动退出：未保存的改动按确认丢掉，不暂存。
-		clearClientSession(queryClient, { discardUnsaved: true });
-
-		const warning = pushSignOutCleanupWarning({
-			readFailed: readPushFailed,
-			serverDelete,
-			browserUnsub,
-		});
-		if (warning) toast.warning(warning);
 	}
 
 	const inbox = projects.find((project) => project.isInbox);

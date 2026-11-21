@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Me, NotificationSettings, SaveNotificationSettings } from "../api";
 import {
 	clearPushSubscriptionOwner,
+	PUSH_UNSUBSCRIBE_TIMEOUT_MS,
 	readPushSubscriptionOwner,
+	reconcilePushSubscriptionForUser,
 	writePushSubscriptionOwner,
 	type PushProbe,
 	type PushSubscriptionKeys,
@@ -22,6 +24,7 @@ const SETTINGS: NotificationSettings = {
 	timeZone: "Asia/Shanghai",
 	saved: true,
 	subscriptionCount: 0,
+	subscriptionEndpoints: [],
 	vapidPublicKey: "test-public",
 };
 
@@ -30,6 +33,8 @@ const SUB: PushSubscriptionKeys = {
 	p256dh: "p256",
 	auth: "auth",
 };
+
+const OTHER_EP = "https://fcm.googleapis.com/fcm/send/other-device";
 
 function probe(partial: Partial<PushProbe> = {}): PushProbe {
 	return {
@@ -51,14 +56,21 @@ function renderCard(
 	},
 ) {
 	let currentCount = settings.subscriptionCount;
-	const save = vi.fn(async (body: SaveNotificationSettings) => {
-		if (body.subscription && currentCount === 0) currentCount = 1;
+	let currentEndpoints = [...(settings.subscriptionEndpoints ?? [])];
+	const save = vi.fn(async (body: SaveNotificationSettings): Promise<NotificationSettings> => {
+		if (body.subscription) {
+			if (!currentEndpoints.includes(body.subscription.endpoint)) {
+				currentEndpoints = [...currentEndpoints, body.subscription.endpoint];
+			}
+			currentCount = Math.max(currentCount, currentEndpoints.length);
+		}
 		return {
 			...settings,
 			...body,
 			saved: true,
 			vapidPublicKey: settings.vapidPublicKey,
 			subscriptionCount: currentCount,
+			subscriptionEndpoints: currentEndpoints,
 		};
 	});
 	const testPush = vi.fn(async (endpoint: string) => ({ ok: endpoint.length > 0 }));
@@ -118,6 +130,7 @@ afterEach(() => {
 	localStorage.clear();
 	clearPushSubscriptionOwner();
 	vi.unstubAllGlobals();
+	vi.useRealTimers();
 });
 
 describe("due reminder settings", () => {
@@ -207,6 +220,7 @@ describe("due reminder settings", () => {
 			...SETTINGS,
 			enabled: true,
 			subscriptionCount: 1,
+			subscriptionEndpoints: [SUB.endpoint],
 		});
 		await screen.findByRole("button", { name: "发一条测试通知" });
 		expect(screen.queryByText(/其他/)).toBeNull();
@@ -215,7 +229,12 @@ describe("due reminder settings", () => {
 		expect(testPush).toHaveBeenCalledWith(SUB.endpoint);
 
 		cleanup();
-		renderCard(probe({ readSubscription: async () => null }), { ...SETTINGS, enabled: true, subscriptionCount: 2 });
+		renderCard(probe({ readSubscription: async () => null }), {
+			...SETTINGS,
+			enabled: true,
+			subscriptionCount: 2,
+			subscriptionEndpoints: [OTHER_EP, "https://fcm.googleapis.com/fcm/send/other-2"],
+		});
 		expect(await screen.findByText("其他 2 台设备已开启")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy();
 	});
@@ -284,7 +303,7 @@ describe("due reminder settings", () => {
 		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
 		const { save, remove } = renderCard(
 			probe({ readSubscription: async () => SUB, unsubscribe }),
-			{ ...SETTINGS, enabled: true, subscriptionCount: 2 },
+			{ ...SETTINGS, enabled: true, subscriptionCount: 2, subscriptionEndpoints: [SUB.endpoint, OTHER_EP] },
 		);
 		const sw = await screen.findByRole("switch", { name: "到期提醒" });
 		await screen.findByRole("button", { name: "在此设备关闭" });
@@ -301,7 +320,7 @@ describe("due reminder settings", () => {
 		const subscribe = vi.fn(async () => SUB);
 		const { save, remove, upsert, testPush } = renderCard(
 			probe({ readSubscription: async () => SUB, unsubscribe, subscribe }),
-			{ ...SETTINGS, enabled: true, subscriptionCount: 2 },
+			{ ...SETTINGS, enabled: true, subscriptionCount: 2, subscriptionEndpoints: [SUB.endpoint, OTHER_EP] },
 		);
 		const btn = await screen.findByRole("button", { name: "在此设备关闭" });
 		fireEvent.click(btn);
@@ -328,7 +347,7 @@ describe("due reminder settings", () => {
 		const unsubscribe = vi.fn(async () => ({ status: "failed" as const, endpoint: SUB.endpoint }));
 		const { remove } = renderCard(
 			probe({ readSubscription: async () => SUB, unsubscribe }),
-			{ ...SETTINGS, enabled: true, subscriptionCount: 1 },
+			{ ...SETTINGS, enabled: true, subscriptionCount: 1, subscriptionEndpoints: [SUB.endpoint] },
 		);
 		fireEvent.click(await screen.findByRole("button", { name: "在此设备关闭" }));
 		await waitFor(() => expect(remove).toHaveBeenCalledWith(SUB.endpoint));
@@ -342,7 +361,7 @@ describe("due reminder settings", () => {
 		const retryUnsub = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
 		const remount = renderCard(
 			probe({ readSubscription: async () => SUB, unsubscribe: retryUnsub }),
-			{ ...SETTINGS, enabled: true, subscriptionCount: 0 },
+			{ ...SETTINGS, enabled: true, subscriptionCount: 0, subscriptionEndpoints: [] },
 		);
 		await screen.findByRole("button", { name: "在这台设备上开启" });
 		await waitFor(() => expect(retryUnsub).toHaveBeenCalledOnce());
@@ -350,12 +369,35 @@ describe("due reminder settings", () => {
 		expect(readPushSubscriptionOwner()).toBeNull();
 	});
 
+	it("does not hang on 关闭中… when browser unsubscribe stalls after server DELETE succeeds", async () => {
+		const { remove } = renderCard(
+			probe({
+				readSubscription: async () => SUB,
+				unsubscribe: () => new Promise(() => {}),
+			}),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 1, subscriptionEndpoints: [SUB.endpoint] },
+		);
+		const btn = await screen.findByRole("button", { name: "在此设备关闭" });
+
+		vi.useFakeTimers();
+		fireEvent.click(btn);
+		await act(async () => {
+			await Promise.resolve();
+			await Promise.resolve();
+			await vi.advanceTimersByTimeAsync(PUSH_UNSUBSCRIBE_TIMEOUT_MS + 50);
+		});
+		expect(remove).toHaveBeenCalledWith(SUB.endpoint);
+		expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy();
+		expect(screen.getByRole("status").textContent).toContain("已保存");
+		expect(readPushSubscriptionOwner()).toMatchObject({ endpoint: SUB.endpoint, pendingUnsubscribe: true });
+	});
+
 	it("keeps the local subscription and shows an error when DELETE fails, then succeeds on retry", async () => {
 		let failOnce = true;
 		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
 		const { remove } = renderCard(
 			probe({ readSubscription: async () => SUB, unsubscribe }),
-			{ ...SETTINGS, enabled: true, subscriptionCount: 1 },
+			{ ...SETTINGS, enabled: true, subscriptionCount: 1, subscriptionEndpoints: [SUB.endpoint] },
 			{
 				onDelete: async () => {
 					if (failOnce) {
@@ -365,7 +407,7 @@ describe("due reminder settings", () => {
 							headers: { "Content-Type": "application/json" },
 						});
 					}
-					return new Response(JSON.stringify({ subscriptionCount: 0 }), {
+					return new Response(JSON.stringify({ subscriptionCount: 0, deleted: true }), {
 						status: 200,
 						headers: { "Content-Type": "application/json" },
 					});
@@ -384,6 +426,125 @@ describe("due reminder settings", () => {
 		await waitFor(() => expect(remove).toHaveBeenCalledTimes(2));
 		await waitFor(() => expect(unsubscribe).toHaveBeenCalledOnce());
 		await waitFor(() => expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy());
+	});
+
+	it("does not silently hijack a leftover browser subscription when localStorage is missing or userId is null and server does not own this endpoint", async () => {
+		// 场景 1：localStorage 缺失，但新账号在其他设备有订阅（subscriptionCount = 1，endpoint 不同）
+		const { upsert } = renderCard(
+			probe({ readSubscription: async () => SUB }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 1, subscriptionEndpoints: [OTHER_EP] },
+			{ me: { user: { id: "user-b", email: "b@example.com", name: "B" }, source: "human" } },
+		);
+		expect(await screen.findByText("其他 1 台设备已开启")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "在此设备关闭" })).toBeNull();
+		expect(upsert).not.toHaveBeenCalled();
+
+		// 场景 2：localStorage 里 userId 为 null，同样绝不静默 upsert 接管
+		cleanup();
+		writePushSubscriptionOwner(null, SUB.endpoint);
+		const second = renderCard(
+			probe({ readSubscription: async () => SUB }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 1, subscriptionEndpoints: [OTHER_EP] },
+			{ me: { user: { id: "user-b", email: "b@example.com", name: "B" }, source: "human" } },
+		);
+		expect(await screen.findByText("其他 1 台设备已开启")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy();
+		expect(second.upsert).not.toHaveBeenCalled();
+	});
+
+	it("does not wrongly unsubscribe a valid browser subscription when gtd:push-owner records a different stale endpoint", async () => {
+		writePushSubscriptionOwner("user-a", "https://fcm.googleapis.com/fcm/send/stale-old-ep");
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		renderCard(
+			probe({ readSubscription: async () => SUB, unsubscribe }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 1, subscriptionEndpoints: [SUB.endpoint] },
+			{ me: { user: { id: "user-b", email: "b@example.com", name: "B" }, source: "human" } },
+		);
+		expect(await screen.findByRole("button", { name: "在此设备关闭" })).toBeTruthy();
+		expect(unsubscribe).not.toHaveBeenCalled();
+		expect(readPushSubscriptionOwner()).toEqual({
+			userId: "user-b",
+			endpoint: SUB.endpoint,
+			pendingUnsubscribe: false,
+		});
+	});
+
+	it("serializes Shell reconcilePushSubscriptionForUser with DueReminderCard mount probe so unsubscribe runs once and never re-upserts", async () => {
+		writePushSubscriptionOwner("user-a", SUB.endpoint);
+		let releaseUnsub: () => void = () => {};
+		const unsubscribe = vi.fn(
+			() =>
+				new Promise<{ status: "unsubscribed"; endpoint: string }>((resolve) => {
+					releaseUnsub = () => resolve({ status: "unsubscribed", endpoint: SUB.endpoint });
+				}),
+		);
+		const sharedProbe = probe({ readSubscription: async () => SUB, unsubscribe });
+		// 模拟 Shell 在同一轮 commit 里先发起 reconcile
+		const shellReconcile = reconcilePushSubscriptionForUser("user-b", sharedProbe);
+		const { upsert } = renderCard(
+			sharedProbe,
+			{ ...SETTINGS, enabled: true, subscriptionCount: 1, subscriptionEndpoints: [OTHER_EP] },
+			{ me: { user: { id: "user-b", email: "b@example.com", name: "B" }, source: "human" } },
+		);
+		await screen.findByRole("switch", { name: "到期提醒" });
+		await act(async () => {
+			releaseUnsub();
+			await shellReconcile;
+			await new Promise((r) => setTimeout(r, 10));
+		});
+		expect(unsubscribe).toHaveBeenCalledOnce();
+		expect(upsert).not.toHaveBeenCalled();
+		expect(readPushSubscriptionOwner()).toBeNull();
+		expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy();
+	});
+
+	it("prevents Shell reconcile from unsubscribing a new subscription created by turnOn while /api/me was pending", async () => {
+		writePushSubscriptionOwner("user-a", "https://fcm.googleapis.com/fcm/send/prev-user");
+		let resolveMe: (res: Response) => void = () => {};
+		const mePromise = new Promise<Response>((resolve) => {
+			resolveMe = resolve;
+		});
+		let releaseSubscribe: () => void = () => {};
+		const subscribe = vi.fn(
+			() =>
+				new Promise<PushSubscriptionKeys>((resolve) => {
+					releaseSubscribe = () => resolve(SUB);
+				}),
+		);
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const sharedProbe = probe({ subscribe, unsubscribe });
+		renderCard(sharedProbe, SETTINGS, { onMe: () => mePromise });
+
+		// /api/me 还在途时用户点击开启总开关
+		fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
+		await waitFor(() => expect(subscribe).toHaveBeenCalledOnce());
+
+		// subscribe 还在途时 /api/me 返回 user-b，Shell 立即触发 reconcilePushSubscriptionForUser
+		let reconcilePromise: Promise<unknown> = Promise.resolve();
+		await act(async () => {
+			resolveMe(
+				new Response(
+					JSON.stringify({ user: { id: "user-b", email: "b@example.com", name: "B" }, source: "human" }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+			);
+			reconcilePromise = reconcilePushSubscriptionForUser("user-b", sharedProbe);
+			await Promise.resolve();
+		});
+
+		// subscribe 完成并保存后，reconcile 不应退订刚创建的新订阅
+		await act(async () => {
+			releaseSubscribe();
+			await reconcilePromise;
+		});
+		await waitFor(() => expect(screen.getByRole("button", { name: "在此设备关闭" })).toBeTruthy());
+		expect(unsubscribe).not.toHaveBeenCalled();
+		expect(readPushSubscriptionOwner()).toEqual({
+			userId: "user-b",
+			endpoint: SUB.endpoint,
+			pendingUnsubscribe: false,
+		});
 	});
 
 	it("does not silently hijack a leftover browser subscription owned by another account", async () => {
@@ -498,7 +659,7 @@ describe("due reminder settings", () => {
 		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
 		const { save, remove } = renderCard(
 			probe({ readSubscription: async () => SUB, unsubscribe }),
-			{ ...SETTINGS, enabled: true, subscriptionCount: 2 },
+			{ ...SETTINGS, enabled: true, subscriptionCount: 2, subscriptionEndpoints: [SUB.endpoint, OTHER_EP] },
 		);
 		await screen.findByRole("button", { name: "在此设备关闭" });
 

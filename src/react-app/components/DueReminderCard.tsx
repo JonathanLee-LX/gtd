@@ -13,10 +13,16 @@ import { useMeQuery } from "../hooks/use-shell-data";
 import { loadErrorMessage } from "../lib/load-state";
 import {
 	browserPushProbe,
+	classifyPushOwner,
 	clearPushSubscriptionOwner,
 	markPushSubscriptionPendingUnsubscribe,
 	notificationPermissionDenied,
+	readPushSubscriptionBounded,
 	readPushSubscriptionOwner,
+	reconcilePushSubscriptionForUser,
+	runSerializedPushOp,
+	SIGN_OUT_REQUEST_TIMEOUT_MS,
+	unsubscribePushBounded,
 	writePushSubscriptionOwner,
 	type PushBlock,
 	type PushProbe,
@@ -188,10 +194,11 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 	const [subscribeFailed, setSubscribeFailed] = useState(false);
 	const saveSeq = useRef(0);
 	const probedRef = useRef(false);
+	const turningOnRef = useRef(false);
 	const block = blockOverride ?? probe.inspect();
 	const blocked = block !== "ok";
 	const hasSettings = Boolean(query.data);
-	const serverSubscriptionCount = query.data?.subscriptionCount ?? 0;
+	const serverSubscriptionEndpoints = query.data?.subscriptionEndpoints;
 	const currentUserId = meQuery.data?.user.id ?? null;
 	const mePending = meQuery.isPending;
 
@@ -211,52 +218,52 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 	useEffect(() => {
 		if (block !== "ok" || !hasSettings || probedRef.current) return;
 		// 冷启动 /settings 时 /api/notifications 可能先于 /api/me 返回：
-		// 等 me 请求落地后再判定归属，避免 currentUserId === null 绕过跨账号检查并静默接管上一账号订阅。
+		// 等 me 请求落地后再判定归属，避免 currentUserId === null 绕过跨账号检查。
 		if (mePending) return;
 		let cancelled = false;
-		void probe.readSubscription().then(async (sub) => {
-			if (cancelled) return;
-			if (!sub) {
-				probedRef.current = true;
-				return;
-			}
-			const owner = readPushSubscriptionOwner();
-			const isPendingUnsub = Boolean(
-				owner?.pendingUnsubscribe && (!owner.endpoint || owner.endpoint === sub.endpoint),
-			);
-			const isForeignOwner = Boolean(owner?.userId && currentUserId && owner.userId !== currentUserId);
-			if (isPendingUnsub || isForeignOwner) {
-				probedRef.current = true;
-				// 上一个账号残留或本机曾退订失败的订阅：不接管、不静默上报，后台重试退订。
-				try {
-					const res = await probe.unsubscribe();
-					if (res.status !== "failed") clearPushSubscriptionOwner();
-				} catch {
-					// 下次继续重试。
+		const reconcilePromise = currentUserId
+			? reconcilePushSubscriptionForUser(currentUserId, probe)
+			: Promise.resolve("noop" as const);
+		void reconcilePromise.then((reconcileResult) => {
+			if (cancelled || probedRef.current) return;
+			return runSerializedPushOp(async () => {
+				if (cancelled || probedRef.current) return;
+				if (reconcileResult === "unsubscribed" || reconcileResult === "failed") {
+					probedRef.current = true;
+					return;
 				}
-				return;
-			}
-			// 本地明确记录了归属 userId，但 /api/me 失败拿不到当前用户 id 时，保守不接管不上报（等重试恢复 me 后再判）。
-			if (owner?.userId && !currentUserId) return;
-			probedRef.current = true;
-			// 服务端当前账号没有任何订阅（如 404/410 清理或曾被关闭）时，不把遗留浏览器订阅静默挂回当前账号。
-			if (serverSubscriptionCount === 0) return;
-			setLocalSub(sub);
-			if (currentUserId) writePushSubscriptionOwner(currentUserId, sub.endpoint);
-			try {
-				const result = await api.upsertPushSubscription(sub);
-				if (cancelled) return;
-				queryClient.setQueryData<NotificationSettings>(settingsKeys.notifications(), (current) =>
-					current ? { ...current, subscriptionCount: result.subscriptionCount } : current,
-				);
-			} catch {
-				// 静默同步失败不影响设置。
-			}
+				const { sub } = await readPushSubscriptionBounded(probe);
+				if (cancelled || probedRef.current) return;
+				if (!sub) {
+					probedRef.current = true;
+					return;
+				}
+				const owner = readPushSubscriptionOwner();
+				const ownerStatus = classifyPushOwner(owner, currentUserId, sub.endpoint);
+				if (ownerStatus === "pending-unsubscribe" || ownerStatus === "foreign") {
+					probedRef.current = true;
+					// 上一个账号残留或本机曾退订失败的订阅：不接管，后台重试退订。
+					const res = await unsubscribePushBounded(probe, sub.endpoint);
+					if (res.status !== "failed") {
+						clearPushSubscriptionOwner();
+					} else {
+						markPushSubscriptionPendingUnsubscribe(res.endpoint || sub.endpoint);
+					}
+					return;
+				}
+				// 本地明确记录了归属 userId，但 /api/me 失败拿不到当前用户 id 时，保守不接管（等重试恢复 me 后再判）。
+				if (ownerStatus === "unverified" && owner?.userId) return;
+				probedRef.current = true;
+				// 以服务端当前用户的已登记 endpoint 列表为准，绝不因 localStorage 缺失或 userId 为 null 静默 upsert 接管旧浏览器订阅。
+				if (!serverSubscriptionEndpoints?.includes(sub.endpoint)) return;
+				setLocalSub(sub);
+				if (currentUserId) writePushSubscriptionOwner(currentUserId, sub.endpoint);
+			});
 		});
 		return () => {
 			cancelled = true;
 		};
-	}, [block, hasSettings, mePending, currentUserId, serverSubscriptionCount, probe, queryClient]);
+	}, [block, hasSettings, mePending, currentUserId, serverSubscriptionEndpoints, probe]);
 
 	async function persist(next: FormState, subscription?: PushSubscriptionKeys): Promise<boolean> {
 		const seq = ++saveSeq.current;
@@ -297,30 +304,33 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 	}
 
 	async function turnOn() {
-		if (!form || blocked) return;
+		if (!form || blocked || turningOnRef.current) return;
 		const publicKey = query.data?.vapidPublicKey;
 		if (!publicKey) {
 			setSubscribeFailed(false);
 			setError("服务器还没有配置网页推送密钥");
 			return;
 		}
+		turningOnRef.current = true;
 		setError(null);
 		setSubscribeFailed(false);
 		try {
-			const sub = await probe.subscribe(publicKey);
-			if (sub === "denied" || notificationPermissionDenied()) {
-				markSubscriptionDenied();
-				return;
-			}
-			const next = { ...form, enabled: true };
-			setForm(next);
-			const saved = await persist(next, sub);
-			if (saved) {
-				probedRef.current = true;
-				setLocalSub(sub);
-				const resolvedUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? currentUserId;
-				writePushSubscriptionOwner(resolvedUserId, sub.endpoint);
-			}
+			await runSerializedPushOp(async () => {
+				const sub = await probe.subscribe(publicKey);
+				if (sub === "denied" || notificationPermissionDenied()) {
+					markSubscriptionDenied();
+					return;
+				}
+				const next = { ...form, enabled: true };
+				setForm(next);
+				const saved = await persist(next, sub);
+				if (saved) {
+					probedRef.current = true;
+					setLocalSub(sub);
+					const resolvedUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? currentUserId;
+					writePushSubscriptionOwner(resolvedUserId, sub.endpoint);
+				}
+			});
 		} catch {
 			// 失败不写服务端。开关回到关闭；权限被拒走已有引导，其他错误留在开关下方。
 			setForm((current) => (current ? { ...current, enabled: false } : current));
@@ -329,46 +339,54 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 				return;
 			}
 			setSubscribeFailed(true);
+		} finally {
+			turningOnRef.current = false;
 		}
 	}
 
 	async function enableThisDevice() {
 		if (!form || blocked || deviceBusy || !query.data?.vapidPublicKey) return;
+		const publicKey = query.data.vapidPublicKey;
 		setDeviceBusy(true);
 		setError(null);
 		setSubscribeFailed(false);
-		let sub: PushSubscriptionKeys | "denied";
 		try {
-			sub = await probe.subscribe(query.data.vapidPublicKey);
-		} catch {
-			setDeviceBusy(false);
-			if (notificationPermissionDenied()) {
-				markThisDeviceDenied();
-				return;
-			}
-			setSubscribeFailed(true);
-			return;
-		}
-		if (sub === "denied" || notificationPermissionDenied()) {
-			setDeviceBusy(false);
-			markThisDeviceDenied();
-			return;
-		}
-		const seq = ++saveSeq.current;
-		setSaveState("saving");
-		try {
-			const result = await api.upsertPushSubscription(sub);
-			probedRef.current = true;
-			setLocalSub(sub);
-			const resolvedUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? currentUserId;
-			writePushSubscriptionOwner(resolvedUserId, sub.endpoint);
-			queryClient.setQueryData<NotificationSettings>(settingsKeys.notifications(), (current) =>
-				current ? { ...current, subscriptionCount: result.subscriptionCount } : current,
-			);
-			if (seq === saveSeq.current) setSaveState("saved");
-		} catch (err) {
-			if (seq === saveSeq.current) setSaveState("error");
-			setError(err instanceof Error ? err.message : "保存失败");
+			await runSerializedPushOp(async () => {
+				let sub: PushSubscriptionKeys | "denied";
+				try {
+					sub = await probe.subscribe(publicKey);
+				} catch {
+					if (notificationPermissionDenied()) {
+						markThisDeviceDenied();
+						return;
+					}
+					setSubscribeFailed(true);
+					return;
+				}
+				if (sub === "denied" || notificationPermissionDenied()) {
+					markThisDeviceDenied();
+					return;
+				}
+				const seq = ++saveSeq.current;
+				setSaveState("saving");
+				try {
+					const result = await api.upsertPushSubscription(sub);
+					probedRef.current = true;
+					setLocalSub(sub);
+					const resolvedUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? currentUserId;
+					writePushSubscriptionOwner(resolvedUserId, sub.endpoint);
+					queryClient.setQueryData<NotificationSettings>(settingsKeys.notifications(), (current) => {
+						if (!current) return current;
+						const prev = current.subscriptionEndpoints ?? [];
+						const subscriptionEndpoints = prev.includes(sub.endpoint) ? prev : [...prev, sub.endpoint];
+						return { ...current, subscriptionCount: result.subscriptionCount, subscriptionEndpoints };
+					});
+					if (seq === saveSeq.current) setSaveState("saved");
+				} catch (err) {
+					if (seq === saveSeq.current) setSaveState("error");
+					setError(err instanceof Error ? err.message : "保存失败");
+				}
+			});
 		} finally {
 			setDeviceBusy(false);
 		}
@@ -383,29 +401,29 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 		setSubscribeFailed(false);
 		setSaveState("saving");
 		try {
-			const result = await api.deletePushSubscription(endpoint);
-			// 服务端已删除：本机不会再收到推送。再尽力退订浏览器；退订失败不向用户报错，
-			// 但记下 pendingUnsubscribe，防止下次进入设置页时把残留订阅静默补回服务端。
-			let browserOk = false;
-			try {
-				const browserResult = await probe.unsubscribe();
-				browserOk = browserResult.status !== "failed";
-			} catch {
-				browserOk = false;
-			}
-			if (browserOk) {
-				clearPushSubscriptionOwner();
-			} else {
-				markPushSubscriptionPendingUnsubscribe(endpoint);
-			}
-			setLocalSub(null);
-			setTestState("idle");
-			queryClient.setQueryData<NotificationSettings>(settingsKeys.notifications(), (current) =>
-				current ? { ...current, subscriptionCount: result.subscriptionCount } : current,
-			);
-			if (seq === saveSeq.current) setSaveState("saved");
+			await runSerializedPushOp(async () => {
+				const result = await api.deletePushSubscription(endpoint, {
+					timeoutMs: SIGN_OUT_REQUEST_TIMEOUT_MS,
+				});
+				// 服务端已删除：本机不会再收到推送。再带超时上限地退订浏览器；退订失败或超时不向用户报错，
+				// 但记下 pendingUnsubscribe，防止残留订阅未清理并在下次登录/重进时重试。
+				const browserResult = await unsubscribePushBounded(probe, endpoint);
+				if (browserResult.status !== "failed") {
+					clearPushSubscriptionOwner();
+				} else {
+					markPushSubscriptionPendingUnsubscribe(endpoint);
+				}
+				setLocalSub(null);
+				setTestState("idle");
+				queryClient.setQueryData<NotificationSettings>(settingsKeys.notifications(), (current) => {
+					if (!current) return current;
+					const subscriptionEndpoints = current.subscriptionEndpoints?.filter((item) => item !== endpoint);
+					return { ...current, subscriptionCount: result.subscriptionCount, subscriptionEndpoints };
+				});
+				if (seq === saveSeq.current) setSaveState("saved");
+			});
 		} catch (err) {
-			// 服务端删除失败：不动浏览器订阅，不假装已关闭，让用户看到错误并可重试。
+			// 服务端删除失败或超时：不动浏览器订阅，不假装已关闭，让用户看到错误并可重试。
 			if (seq === saveSeq.current) setSaveState("error");
 			setError(err instanceof Error ? err.message : "关闭失败，请重试");
 		} finally {

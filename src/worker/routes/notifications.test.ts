@@ -54,6 +54,24 @@ async function signUpCookie(env: AppEnv, email: string, name: string) {
 	return { cookie, userId: data.user.id };
 }
 
+function callNotifications(
+	env: AppEnv,
+	method: string,
+	path: string,
+	options?: { cookie?: string; token?: string; body?: unknown; rawBody?: string },
+) {
+	const headers: Record<string, string> = { "Content-Type": "application/json" };
+	if (options?.cookie) headers.Cookie = options.cookie;
+	if (options?.token) headers.Authorization = `Bearer ${options.token}`;
+	const body =
+		options?.rawBody !== undefined
+			? options.rawBody
+			: options?.body !== undefined
+				? JSON.stringify(options.body)
+				: undefined;
+	return worker.fetch(new Request(`${ORIGIN}${path}`, { method, headers, body }), env);
+}
+
 describe("DELETE /api/notifications/subscription route", () => {
 	it("rejects unauthenticated requests with 401 and MCP Bearer tokens with 403", async () => {
 		const { db: plain, sqlite } = createTestDb();
@@ -62,54 +80,31 @@ describe("DELETE /api/notifications/subscription route", () => {
 		const alice = await signUpCookie(env, "alice@example.com", "Alice");
 		const sub = await makePushSub("auth-boundary");
 
-		const createRes = await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications/subscription`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json", Cookie: alice.cookie },
-				body: JSON.stringify(sub),
-			}),
-			env,
-		);
+		const createRes = await callNotifications(env, "POST", "/api/notifications/subscription", {
+			cookie: alice.cookie,
+			body: sub,
+		});
 		expect(createRes.status).toBe(200);
 
 		// 未登录 → 401
-		const unauth = await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications/subscription`, {
-				method: "DELETE",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ endpoint: sub.endpoint }),
-			}),
-			env,
-		);
+		const unauth = await callNotifications(env, "DELETE", "/api/notifications/subscription", {
+			body: { endpoint: sub.endpoint },
+		});
 		expect(unauth.status).toBe(401);
 
 		// MCP Bearer Token → 403（即使请求体无效也先被 humanOnly 拒绝），且订阅未被删除
 		const { token } = await createToken(plain as never, alice.userId, "MCP");
-		const mcpRes = await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications/subscription`, {
-				method: "DELETE",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${token}`,
-				},
-				body: JSON.stringify({ endpoint: sub.endpoint }),
-			}),
-			env,
-		);
+		const mcpRes = await callNotifications(env, "DELETE", "/api/notifications/subscription", {
+			token,
+			body: { endpoint: sub.endpoint },
+		});
 		expect(mcpRes.status).toBe(403);
 		expect(await mcpRes.json()).toMatchObject({ error: "forbidden" });
 
-		const mcpBadBody = await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications/subscription`, {
-				method: "DELETE",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${token}`,
-				},
-				body: JSON.stringify({ endpoint: "short" }),
-			}),
-			env,
-		);
+		const mcpBadBody = await callNotifications(env, "DELETE", "/api/notifications/subscription", {
+			token,
+			body: { endpoint: "short" },
+		});
 		expect(mcpBadBody.status).toBe(403);
 
 		const left = await plain
@@ -130,92 +125,75 @@ describe("DELETE /api/notifications/subscription route", () => {
 		const bobDev1 = await makePushSub("bob-dev-1");
 
 		// Alice 开启总开关并绑定两台设备
-		const saveAlice = await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications`, {
-				method: "PUT",
-				headers: { "Content-Type": "application/json", Cookie: alice.cookie },
-				body: JSON.stringify({
-					enabled: true,
-					digestTime: "09:00",
-					tomorrowEnabled: false,
-					tomorrowTime: "21:00",
-					includeOverdue: true,
-					timeZone: "Asia/Shanghai",
-					subscription: aliceDev1,
-				}),
-			}),
-			env,
-		);
+		const saveAlice = await callNotifications(env, "PUT", "/api/notifications", {
+			cookie: alice.cookie,
+			body: {
+				enabled: true,
+				digestTime: "09:00",
+				tomorrowEnabled: false,
+				tomorrowTime: "21:00",
+				includeOverdue: true,
+				timeZone: "Asia/Shanghai",
+				subscription: aliceDev1,
+			},
+		});
 		expect(saveAlice.status).toBe(200);
-		await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications/subscription`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json", Cookie: alice.cookie },
-				body: JSON.stringify(aliceDev2),
-			}),
-			env,
-		);
-		await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications/subscription`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json", Cookie: bob.cookie },
-				body: JSON.stringify(bobDev1),
-			}),
-			env,
-		);
+		expect(await saveAlice.json()).toMatchObject({
+			subscriptionEndpoints: [aliceDev1.endpoint],
+		});
+		await callNotifications(env, "POST", "/api/notifications/subscription", {
+			cookie: alice.cookie,
+			body: aliceDev2,
+		});
+		await callNotifications(env, "POST", "/api/notifications/subscription", {
+			cookie: bob.cookie,
+			body: bobDev1,
+		});
+
+		// GET /api/notifications 只返回当前登录用户自己的 subscriptionEndpoints
+		const getBob = await callNotifications(env, "GET", "/api/notifications", { cookie: bob.cookie });
+		expect(getBob.status).toBe(200);
+		expect(await getBob.json()).toMatchObject({
+			subscriptionCount: 1,
+			subscriptionEndpoints: [bobDev1.endpoint],
+		});
 
 		// 参数校验：缺 endpoint、太短、超长、非法 JSON / 空 body → 400
-		for (const body of [
+		for (const rawBody of [
 			JSON.stringify({ endpoint: "short" }),
 			JSON.stringify({}),
 			JSON.stringify({ endpoint: `https://fcm.googleapis.com/${"a".repeat(2000)}` }),
 			"{not-json",
 			"",
 		]) {
-			const badRes = await worker.fetch(
-				new Request(`${ORIGIN}/api/notifications/subscription`, {
-					method: "DELETE",
-					headers: { "Content-Type": "application/json", Cookie: alice.cookie },
-					body,
-				}),
-				env,
-			);
+			const badRes = await callNotifications(env, "DELETE", "/api/notifications/subscription", {
+				cookie: alice.cookie,
+				rawBody,
+			});
 			expect(badRes.status).toBe(400);
 		}
 
 		// 租户隔离：Bob 尝试删 Alice 的设备 → 返回 Bob 自己的计数且 deleted: false，Alice 数据不受影响
-		const crossRes = await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications/subscription`, {
-				method: "DELETE",
-				headers: { "Content-Type": "application/json", Cookie: bob.cookie },
-				body: JSON.stringify({ endpoint: aliceDev1.endpoint }),
-			}),
-			env,
-		);
+		const crossRes = await callNotifications(env, "DELETE", "/api/notifications/subscription", {
+			cookie: bob.cookie,
+			body: { endpoint: aliceDev1.endpoint },
+		});
 		expect(crossRes.status).toBe(200);
 		expect(await crossRes.json()).toEqual({ subscriptionCount: 1, deleted: false });
 
 		// Alice 删除 dev1 → 只删 dev1（deleted: true），保留 dev2 和总开关 enabled=true
-		const del1 = await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications/subscription`, {
-				method: "DELETE",
-				headers: { "Content-Type": "application/json", Cookie: alice.cookie },
-				body: JSON.stringify({ endpoint: aliceDev1.endpoint }),
-			}),
-			env,
-		);
+		const del1 = await callNotifications(env, "DELETE", "/api/notifications/subscription", {
+			cookie: alice.cookie,
+			body: { endpoint: aliceDev1.endpoint },
+		});
 		expect(del1.status).toBe(200);
 		expect(await del1.json()).toEqual({ subscriptionCount: 1, deleted: true });
 
 		// 幂等：重复删除 dev1 返回 200、相同 subscriptionCount 且 deleted: false
-		const del1Again = await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications/subscription`, {
-				method: "DELETE",
-				headers: { "Content-Type": "application/json", Cookie: alice.cookie },
-				body: JSON.stringify({ endpoint: aliceDev1.endpoint }),
-			}),
-			env,
-		);
+		const del1Again = await callNotifications(env, "DELETE", "/api/notifications/subscription", {
+			cookie: alice.cookie,
+			body: { endpoint: aliceDev1.endpoint },
+		});
 		expect(del1Again.status).toBe(200);
 		expect(await del1Again.json()).toEqual({ subscriptionCount: 1, deleted: false });
 
@@ -231,25 +209,17 @@ describe("DELETE /api/notifications/subscription route", () => {
 		expect(aliceSubs.map((s) => s.endpoint)).toEqual([aliceDev2.endpoint]);
 
 		// 同浏览器切号：Bob 显式认领同一 endpoint 后，Alice 删这个 endpoint 不会删掉 Bob 的订阅
-		const claimByBob = await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications/subscription`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json", Cookie: bob.cookie },
-				body: JSON.stringify(aliceDev2),
-			}),
-			env,
-		);
+		const claimByBob = await callNotifications(env, "POST", "/api/notifications/subscription", {
+			cookie: bob.cookie,
+			body: aliceDev2,
+		});
 		expect(claimByBob.status).toBe(200);
 		expect(await claimByBob.json()).toEqual({ subscriptionCount: 2 });
 
-		const aliceLateDelete = await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications/subscription`, {
-				method: "DELETE",
-				headers: { "Content-Type": "application/json", Cookie: alice.cookie },
-				body: JSON.stringify({ endpoint: aliceDev2.endpoint }),
-			}),
-			env,
-		);
+		const aliceLateDelete = await callNotifications(env, "DELETE", "/api/notifications/subscription", {
+			cookie: alice.cookie,
+			body: { endpoint: aliceDev2.endpoint },
+		});
 		expect(aliceLateDelete.status).toBe(200);
 		expect(await aliceLateDelete.json()).toEqual({ subscriptionCount: 0, deleted: false });
 		const bobSubs = await plain

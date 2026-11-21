@@ -6,6 +6,7 @@
  * （会 404 并触发回滚），所以它们的 mutationFn 走 `enqueueTaskAction`：按点击顺序排进这条任务的队列，
  * 等真实 id 到了再依次发出（排队，而不是禁用按钮）；新建失败则一起放弃。
  */
+import type { QueryClient } from "@tanstack/react-query";
 import type { Task } from "../api";
 
 const TEMP_PREFIX = "tmp-";
@@ -24,6 +25,34 @@ export function newTempTaskId(): string {
 	return `${TEMP_PREFIX}${counter}-${random}`;
 }
 
+/** #117：为每次新建生成幂等键（8~80 字符，符合 createTaskInput），避免 401 重登补发或并发重放重复创建。 */
+export function newCreateIdempotencyKey(): string {
+	const random =
+		typeof crypto !== "undefined" && "randomUUID" in crypto
+			? crypto.randomUUID()
+			: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+	return `create-${random}`.slice(0, 80);
+}
+
+function stripSource(body: Record<string, unknown>): Record<string, unknown> {
+	const rest = { ...body };
+	delete rest.source;
+	return rest;
+}
+
+function defaultBodyFromTask(task: Task): Record<string, unknown> {
+	const out: Record<string, unknown> = { title: task.title, status: task.status };
+	if (task.notes) out.notes = task.notes;
+	if (task.priority && task.priority !== "none") out.priority = task.priority;
+	if (task.dueAt) out.dueAt = task.dueAt;
+	if (task.startAt) out.startAt = task.startAt;
+	if (task.waitingOn) out.waitingOn = task.waitingOn;
+	if (task.projectId) out.projectId = task.projectId;
+	if (task.parentId) out.parentId = task.parentId;
+	if (Array.isArray(task.tags) && task.tags.length > 0) out.tagIds = task.tags.map((tag) => tag.id);
+	return out;
+}
+
 /** 新建失败时，排在它后面的操作统一抛这个错（新建本身已经提示过，不再重复 toast）。 */
 export class PendingCreateFailedError extends Error {
 	constructor(readonly tempId: string) {
@@ -32,11 +61,29 @@ export class PendingCreateFailedError extends Error {
 	}
 }
 
+export type PendingCreateSnapshot = {
+	tempId: string;
+	idempotencyKey: string;
+	optimisticTitle: string;
+	body: Record<string, unknown>;
+	sentFold: Record<string, unknown>;
+	fold: Record<string, unknown>;
+	queuedPatch: Record<string, unknown>;
+	completed: boolean;
+	createSent: boolean;
+	sentBody?: Record<string, unknown>;
+};
+
 type Entry = {
 	tempId: string;
+	queryClient?: QueryClient;
 	/** 最初插入缓存的乐观记录（缓存里找不到时兜底）。 */
 	optimistic: Task;
-	state: "pending" | "created" | "failed";
+	/** 原始创建请求体（不含 source），供 401 暂存补发（#117）。 */
+	body: Record<string, unknown>;
+	/** 稳定幂等键（#117），同一条新建重放不重复创建。 */
+	idempotencyKey: string;
+	state: "pending" | "unauthorized" | "created" | "failed";
 	/** 服务端返回的真实记录。 */
 	created?: Task;
 	/** 已有操作改过这条临时任务（乐观 patch / 排队等真实 id 的完成、保存、删除…）。 */
@@ -45,6 +92,8 @@ type Entry = {
 	removed: boolean;
 	/** 已排队删除（删除 / 收件箱丢掉）：排在它前面、还没发出的其它操作不必再发。 */
 	deleted: boolean;
+	/** 已排队完成：401 补发时保留完成状态。 */
+	completed: boolean;
 	/** 这条任务的操作队列尾部：所有操作按点击顺序串行发出。 */
 	tail: Promise<unknown>;
 	/** 队列里还没结束的操作数。 */
@@ -55,6 +104,12 @@ type Entry = {
 	 */
 	createSent: boolean;
 	fold: Record<string, unknown>;
+	/** #117：takePendingCreateFold 发出前已并入的改动副本，避免 401 时丢失。 */
+	sentFold: Record<string, unknown>;
+	/** #117：真正传给 api.createTask 的请求体快照。 */
+	sentBody?: Record<string, unknown>;
+	/** #117：非自动保存路径（如收件箱处理 / updateTask）对临时任务排队的改动。 */
+	queuedPatch: Record<string, unknown>;
 	promise: Promise<string>;
 	resolve: (id: string) => void;
 	reject: (error: Error) => void;
@@ -63,7 +118,10 @@ type Entry = {
 const entries = new Map<string, Entry>();
 const MAX_SETTLED = 200;
 
-export function registerPendingCreate(task: Task): void {
+export function registerPendingCreate(
+	task: Task,
+	opts: { body?: Record<string, unknown>; queryClient?: QueryClient } = {},
+): void {
 	let resolve!: (id: string) => void;
 	let reject!: (error: Error) => void;
 	const promise = new Promise<string>((res, rej) => {
@@ -72,17 +130,29 @@ export function registerPendingCreate(task: Task): void {
 	});
 	// 没人等的时候失败也不该变成 unhandled rejection。
 	promise.catch(() => undefined);
+	const cleanBody = stripSource(opts.body ? { ...opts.body } : defaultBodyFromTask(task));
+	const existingKey = cleanBody.idempotencyKey;
+	const idempotencyKey =
+		typeof existingKey === "string" && existingKey.length >= 8 && existingKey.length <= 80
+			? existingKey
+			: newCreateIdempotencyKey();
 	entries.set(task.id, {
 		tempId: task.id,
+		queryClient: opts.queryClient,
 		optimistic: task,
+		body: cleanBody,
+		idempotencyKey,
 		state: "pending",
 		touched: false,
 		removed: false,
 		deleted: false,
+		completed: false,
 		tail: promise.catch(() => undefined),
 		queued: 0,
 		createSent: false,
 		fold: {},
+		sentFold: {},
+		queuedPatch: {},
 		promise,
 		resolve,
 		reject,
@@ -94,7 +164,7 @@ function pruneSettled() {
 	if (entries.size <= MAX_SETTLED) return;
 	for (const [id, entry] of entries) {
 		if (entries.size <= MAX_SETTLED) break;
-		if (entry.state !== "pending" && entry.queued === 0) entries.delete(id);
+		if ((entry.state === "created" || entry.state === "failed") && entry.queued === 0) entries.delete(id);
 	}
 }
 
@@ -109,7 +179,7 @@ export function listPendingCreates(): Readonly<Entry>[] {
 
 /** 所有已有结果的新建（回滚快照后用来把残留的临时行换成真实记录 / 删掉）。 */
 export function listSettledCreates(): Readonly<Entry>[] {
-	return [...entries.values()].filter((entry) => entry.state !== "pending");
+	return [...entries.values()].filter((entry) => entry.state === "created" || entry.state === "failed");
 }
 
 export function isPendingCreateTouched(tempId: string): boolean {
@@ -119,18 +189,22 @@ export function isPendingCreateTouched(tempId: string): boolean {
 /** 在乐观 onMutate 里调用：这条临时任务被改过 / 将被拿掉，新建返回时别用服务端原始记录覆盖。 */
 export function touchPendingCreate(
 	tempId: string,
-	opts: { removed?: boolean; deleted?: boolean } = {},
+	opts: { removed?: boolean; deleted?: boolean; completed?: boolean; patch?: Record<string, unknown> } = {},
 ): void {
 	const entry = entries.get(tempId);
-	if (!entry || entry.state !== "pending") return;
+	if (!entry || (entry.state !== "pending" && entry.state !== "unauthorized")) return;
 	entry.touched = true;
 	if (opts.removed || opts.deleted) entry.removed = true;
 	if (opts.deleted) entry.deleted = true;
+	if (opts.completed) entry.completed = true;
+	if (opts.patch) Object.assign(entry.queuedPatch, stripSource(opts.patch));
 }
 
 /** 还在等真实 id 的临时任务：它上面的操作排队，不加锁、不禁用按钮。 */
 export function isAwaitingRealId(id: string): boolean {
-	return isTempTaskId(id) && entries.get(id)?.state === "pending";
+	if (!isTempTaskId(id)) return false;
+	const state = entries.get(id)?.state;
+	return state === "pending" || state === "unauthorized";
 }
 
 function entryForTask(id: string): Entry | undefined {
@@ -210,7 +284,53 @@ export function takePendingCreateFold(tempId: string): Record<string, unknown> {
 	const fold = { ...entry.fold };
 	entry.fold = {};
 	if (fold.notes === null) delete fold.notes;
+	Object.assign(entry.sentFold, fold);
 	return fold;
+}
+
+/** #117：记录实际传给 POST /api/tasks 的请求体（供 401 时计算后续排队改动）。 */
+export function recordPendingCreateSentBody(tempId: string, body: Record<string, unknown>): void {
+	const entry = entries.get(tempId);
+	if (!entry) return;
+	entry.sentBody = { ...body };
+}
+
+/** #117：新建请求遇 401，暂停等待 clearClientSession 暂存，不触发 reject / 丢弃排队编辑。 */
+export function markPendingCreateUnauthorized(tempId: string): void {
+	const entry = entries.get(tempId);
+	if (!entry || entry.state !== "pending") return;
+	entry.state = "unauthorized";
+}
+
+/** #117：导出仍在途或已遇 401、且未被用户删除的未完成新建（供 clearClientSession 暂存）。 */
+export function exportPendingCreates(queryClient?: QueryClient): PendingCreateSnapshot[] {
+	const out: PendingCreateSnapshot[] = [];
+	for (const entry of entries.values()) {
+		if (entry.state !== "pending" && entry.state !== "unauthorized") continue;
+		if (entry.deleted) continue;
+		if (queryClient && entry.queryClient && entry.queryClient !== queryClient) continue;
+		out.push({
+			tempId: entry.tempId,
+			idempotencyKey: entry.idempotencyKey,
+			optimisticTitle: entry.optimistic.title,
+			body: { ...entry.body },
+			sentFold: { ...entry.sentFold },
+			fold: { ...entry.fold },
+			queuedPatch: { ...entry.queuedPatch },
+			completed: entry.completed,
+			createSent: entry.createSent,
+			...(entry.sentBody ? { sentBody: { ...entry.sentBody } } : {}),
+		});
+	}
+	return out;
+}
+
+/** #117：会话清理（401 / 退出 / 登录页挂载）时移除当前会话的临时新建登记，防止旧请求回写新会话。 */
+export function clearPendingCreates(queryClient?: QueryClient): void {
+	for (const [id, entry] of entries) {
+		if (queryClient && entry.queryClient && entry.queryClient !== queryClient) continue;
+		entries.delete(id);
+	}
 }
 
 /** 等这条新建出结果（成功给真实 id，失败抛 PendingCreateFailedError）。 */

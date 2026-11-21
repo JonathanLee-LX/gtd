@@ -135,6 +135,15 @@ export type UnsavedRecord = {
 	fields: Partial<Record<AutosaveField, { value: unknown; base: unknown }>>;
 };
 
+/** #117：401 时暂存到本机、重新登录后补发的一条未完成新建任务（已合并 fold 与排队改动）。 */
+export type UnsavedCreateRecord = {
+	idempotencyKey: string;
+	tempId?: string;
+	body: Record<string, unknown> & { title: string; idempotencyKey: string };
+	/** 原 POST 在 401 前已发出后又排队的改动：若服务端已按 idempotencyKey 创建旧版，补发后回填。 */
+	postCreatePatch?: Record<string, unknown>;
+};
+
 /** 这些 4xx 是请求本身不对（校验失败等），重发没用。401 / 404 / 408 / 429 另外处理。 */
 function isRejection(err: unknown): err is ApiError {
 	return (
@@ -187,6 +196,8 @@ export class TaskAutosaveQueue {
 	 * 重新登录后（同一用户）再补发。`userId` 是当时的用户（不知道就是 null，重新登录后不补发）。
 	 */
 	private heldFor: { userId: string | null } | null = null;
+	/** #117：401 暂存失败（localStorage 满/不可用）时留在内存里的未完成新建。 */
+	private heldCreates: UnsavedCreateRecord[] = [];
 	private disposeLifecycle: (() => void) | null = null;
 
 	constructor(
@@ -350,6 +361,7 @@ export class TaskAutosaveQueue {
 
 	/** 有没有失败的保存或还没发出的改动。 */
 	hasUnsaved(id?: string): boolean {
+		if (!id && this.heldCreates.length > 0) return true;
 		const list = id ? [this.lookup(id)].filter(Boolean) : [...this.entries.values()];
 		return (list as Entry[]).some(
 			(entry) =>
@@ -719,13 +731,34 @@ export class TaskAutosaveQueue {
 		return out;
 	}
 
+	/** #117：导出某条临时任务还没被服务端确认的改动（不含 4xx 被拒绝的），供 401 暂存并进新建请求体。 */
+	exportTempEdits(tempId: string): Partial<AutosaveValues> {
+		const entry = this.lookup(tempId);
+		if (!entry || entry.discarded) return {};
+		return { ...entry.folded, ...(entry.sending ?? {}), ...entry.edits };
+	}
+
 	/** 暂存失败：队列留在内存里、停止发送，beforeunload 一直拦，等同一用户重新登录。 */
-	hold(userId: string | null) {
+	hold(userId: string | null, creates: UnsavedCreateRecord[] = []) {
 		this.heldFor = { userId };
+		this.heldCreates = creates.map((record) => ({
+			...record,
+			body: { ...record.body },
+			...(record.postCreatePatch ? { postCreatePatch: { ...record.postCreatePatch } } : {}),
+		}));
 		for (const entry of this.entries.values()) {
 			if (entry.timer) clearTimeout(entry.timer);
 			entry.timer = null;
 		}
+	}
+
+	/** #117：导出因 localStorage 写不进去而留在内存里的未完成新建。 */
+	exportHeldCreates(): UnsavedCreateRecord[] {
+		return this.heldCreates.map((record) => ({
+			...record,
+			body: { ...record.body },
+			...(record.postCreatePatch ? { postCreatePatch: { ...record.postCreatePatch } } : {}),
+		}));
 	}
 
 	heldUserId(): string | null | undefined {
@@ -772,7 +805,7 @@ export class TaskAutosaveQueue {
 			// keepalive 发不了、改用普通请求（页面关掉可能被取消）的：也拦，直到普通请求成功。
 			const guarded =
 				[...this.entries.values()].some((entry) => entry.guardSeq !== null) ||
-				Boolean(this.heldFor && this.exportUnsaved().length > 0);
+				Boolean(this.heldFor && (this.exportUnsaved().length > 0 || this.heldCreates.length > 0));
 			if (!blocked && !guarded) return;
 			event.preventDefault();
 			event.returnValue = "";
@@ -790,6 +823,7 @@ export class TaskAutosaveQueue {
 	dispose() {
 		this.disposed = true;
 		this.heldFor = null;
+		this.heldCreates = [];
 		this.disposeLifecycle?.();
 		this.disposeLifecycle = null;
 		for (const entry of this.entries.values()) if (entry.timer) clearTimeout(entry.timer);

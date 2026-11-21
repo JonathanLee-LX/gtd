@@ -610,6 +610,7 @@ describe("task detail autosave (#115)", () => {
 			title: "离线记的",
 			notes: "离线时写的备注",
 			waitingOn: "老李",
+			idempotencyKey: expect.stringMatching(/^create-.+/),
 		});
 		expect(calls).toHaveLength(0);
 		expect(status()).toBe("已保存");

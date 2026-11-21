@@ -14,8 +14,10 @@ import {
 	isPendingCreateTouched,
 	isTempTaskId,
 	listSettledCreates,
+	markPendingCreateUnauthorized,
 	newTempTaskId,
 	PendingCreateFailedError,
+	recordPendingCreateSentBody,
 	registerPendingCreate,
 	rejectPendingCreate,
 	enqueueTaskAction,
@@ -24,6 +26,8 @@ import {
 	takePendingCreateFold,
 	touchPendingCreate,
 } from "./pending-creates";
+import { isUnauthorized } from "./session";
+import { shellKeys } from "./shell-keys";
 import {
 	applyOptimisticTaskPatch,
 	findCachedTask,
@@ -147,17 +151,28 @@ export function createTaskMutationOptions(
 	getProjects: () => readonly Project[] = () => [],
 ): MutationOptions<{ task: Task }, Error, CreateTaskVariables, CreateContext> {
 	return {
-		// #115：离线暂停过的新建，发出前把期间详情里自动保存的改动并进请求体（只发 1 个 POST）。
+		// #115 / #117：发出前合并期间 fold 的改动，并带上稳定幂等键，防止 401 补发或竞态重复创建。
 		mutationFn: (body) => {
 			const tempId = tempIdByCreateBody.get(body);
+			if (tempId && !getPendingCreate(tempId)) {
+				// 已被 clearClientSession 清理（401 已暂存或主动退出丢弃）：不再发旧会话的请求。
+				return Promise.reject(new PendingCreateFailedError(tempId));
+			}
 			const fold = tempId ? takePendingCreateFold(tempId) : {};
-			return api.createTask(stripSourceFromBody({ ...body, ...fold }));
+			const entry = tempId ? getPendingCreate(tempId) : undefined;
+			const payload = stripSourceFromBody({
+				...body,
+				...fold,
+				...(entry ? { idempotencyKey: entry.idempotencyKey } : {}),
+			});
+			if (tempId) recordPendingCreateSentBody(tempId, payload);
+			return api.createTask(payload);
 		},
 		// 同步插入：不 await cancelQueries，点下去当帧就能看到。进行中的刷新由 withPendingCreates 补齐。
 		onMutate: (body) => {
 			// #101：项目列表没回来时临时行 projectId 为 ''（不用记住的收件箱 id）；请求体不带 projectId，以服务端为准。
 			const task = buildOptimisticTask(body, getProjects());
-			registerPendingCreate(task);
+			registerPendingCreate(task, { body: stripSourceFromBody(body), queryClient });
 			tempIdByCreateBody.set(body, task.id);
 			upsertTaskInCaches(queryClient, task);
 			return { tempId: task.id };
@@ -166,8 +181,10 @@ export function createTaskMutationOptions(
 			const tempId = ctx?.tempId;
 			if (tempId) {
 				const entry = getPendingCreate(tempId);
+				// 会话已被 clearClientSession 清理：不把旧会话的创建结果写回缓存。
+				if (!entry) return;
 				const cachedTemp = findCachedTask(queryClient, tempId);
-				if (entry?.removed) {
+				if (entry.removed) {
 					// 已被排队的完成 / 删除拿掉：不要再插回去。
 					removeTaskFromCaches(queryClient, tempId);
 				} else if (isPendingCreateTouched(tempId) && cachedTemp) {
@@ -191,10 +208,23 @@ export function createTaskMutationOptions(
 			void silentInvalidateTasks(queryClient);
 		},
 		onError: (err, _body, ctx) => {
-			// 只撤回这一条（不用整表快照，免得把同时在建的其它临时行一起抹掉）。
-			if (ctx?.tempId) {
-				removeTaskFromCaches(queryClient, ctx.tempId);
-				rejectPendingCreate(ctx.tempId);
+			const tempId = ctx?.tempId;
+			if (tempId) {
+				const entry = getPendingCreate(tempId);
+				// 会话已被 clearClientSession 清理（401 已暂存或主动退出丢弃）：忽略迟到的失败。
+				if (!entry) return;
+				if (isUnauthorized(err)) {
+					// #117：登录过期 —— 保留新建与已 fold / 排队的改动，让外壳重拉 me → 401 → clearClientSession 暂存。
+					markPendingCreateUnauthorized(tempId);
+					void queryClient.invalidateQueries({ queryKey: shellKeys.me });
+					return;
+				}
+				// 只撤回这一条（不用整表快照，免得把同时在建的其它临时行一起抹掉）。
+				removeTaskFromCaches(queryClient, tempId);
+				rejectPendingCreate(tempId);
+			} else if (isUnauthorized(err)) {
+				void queryClient.invalidateQueries({ queryKey: shellKeys.me });
+				return;
 			}
 			toast.error(mutationErrorMessage(err, "创建失败，已撤回"));
 			void silentInvalidateTasks(queryClient);
@@ -215,7 +245,7 @@ export function completeTaskMutationOptions(
 		onMutate: async (id) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
 			const snapshot = snapshotTask(queryClient, id);
-			if (isTempTaskId(id)) touchPendingCreate(id, { removed: true });
+			if (isTempTaskId(id)) touchPendingCreate(id, { removed: true, completed: true });
 			removeTaskFromCaches(queryClient, id);
 			return { snapshot };
 		},
@@ -251,7 +281,7 @@ export function updateTaskMutationOptions(
 		onMutate: async ({ id, patch }) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
 			const snapshot = snapshotTask(queryClient, id);
-			if (isTempTaskId(id)) touchPendingCreate(id);
+			if (isTempTaskId(id)) touchPendingCreate(id, { patch: stripSourceFromBody(patch) });
 			applyOptimisticTaskPatch(queryClient, id, patch);
 			return { snapshot };
 		},
@@ -323,9 +353,18 @@ export function processInboxMutationOptions(
 			const snapshot = snapshotTask(queryClient, id);
 			const current = findCachedTask(queryClient, id);
 			if (isTempTaskId(id)) {
+				const patch =
+					body.action === "discard"
+						? undefined
+						: {
+								status: body.action,
+								...(body.waitingOn !== undefined ? { waitingOn: body.waitingOn } : {}),
+								...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
+							};
 				touchPendingCreate(id, {
 					removed: body.action === "discard" || !current,
 					deleted: body.action === "discard",
+					...(patch ? { patch } : {}),
 				});
 			}
 			if (body.action === "discard") {

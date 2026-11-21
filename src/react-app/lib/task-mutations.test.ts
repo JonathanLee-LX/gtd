@@ -111,9 +111,14 @@ describe("optimistic create (#90)", () => {
 		const temp = items()[0]!;
 		expect(isTempTaskId(temp.id)).toBe(true);
 		expect(temp).toMatchObject({ projectId: "inbox", projectName: "收件箱", status: "inbox", source: null });
-		// 请求体不带 source / 临时 id
+		// 请求体不带 source / 临时 id，带稳定幂等键（#117）
 		await flush();
-		expect(api.createTask).toHaveBeenCalledWith({ title: "买牛奶", status: "inbox" });
+		expect(api.createTask).toHaveBeenCalledWith({
+			title: "买牛奶",
+			status: "inbox",
+			idempotencyKey: expect.stringMatching(/^create-.+/),
+		});
+		expect(api.createTask.mock.calls[0]![0]).not.toHaveProperty("source");
 
 		req.resolve({ task: serverTask() });
 		await done;

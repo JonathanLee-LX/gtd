@@ -8,10 +8,20 @@ import { cn } from "@/lib/utils";
 import { CheckIcon, CircleAlertIcon, Loader2Icon, ShareIcon } from "lucide-react";
 import { quarterHourOptions } from "../../shared/digest";
 import { DEFAULT_TIME_ZONE } from "../../shared/constants";
-import { api, type NotificationSettings, type PushSubscriptionKeys, type SaveNotificationSettings } from "../api";
+import { api, type Me, type NotificationSettings, type PushSubscriptionKeys, type SaveNotificationSettings } from "../api";
 import { loadErrorMessage } from "../lib/load-state";
-import { browserPushProbe, notificationPermissionDenied, type PushBlock, type PushProbe } from "../lib/push-client";
+import {
+	browserPushProbe,
+	clearPushSubscriptionOwner,
+	markPushSubscriptionPendingUnsubscribe,
+	notificationPermissionDenied,
+	readPushSubscriptionOwner,
+	writePushSubscriptionOwner,
+	type PushBlock,
+	type PushProbe,
+} from "../lib/push-client";
 import { settingsKeys } from "../lib/settings-keys";
+import { shellKeys } from "../lib/shell-keys";
 
 type FormState = {
 	enabled: boolean;
@@ -172,23 +182,48 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 	const [saveState, setSaveState] = useState<SaveState>("idle");
 	const [error, setError] = useState<string | null>(null);
 	const [testState, setTestState] = useState<"idle" | "sending" | "sent">("idle");
+	const [deviceBusy, setDeviceBusy] = useState(false);
 	const [subscribeFailed, setSubscribeFailed] = useState(false);
 	const saveSeq = useRef(0);
+	const probedRef = useRef(false);
 	const block = blockOverride ?? probe.inspect();
 	const blocked = block !== "ok";
+	const hasSettings = Boolean(query.data);
+	const serverSubscriptionCount = query.data?.subscriptionCount ?? 0;
 
 	useEffect(() => {
 		if (query.data && !form) setForm(formFrom(query.data, zone));
 	}, [query.data, form, zone]);
 
 	useEffect(() => {
-		if (block !== "ok") return;
+		if (block !== "ok" || !hasSettings || probedRef.current) return;
 		let cancelled = false;
+		const currentUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? null;
 		void probe.readSubscription().then(async (sub) => {
-			if (cancelled || !sub) return;
+			if (cancelled) return;
+			probedRef.current = true;
+			if (!sub) return;
+			const owner = readPushSubscriptionOwner();
+			const staleForThisUser =
+				(owner?.pendingUnsubscribe && (!owner.endpoint || owner.endpoint === sub.endpoint)) ||
+				Boolean(owner?.userId && currentUserId && owner.userId !== currentUserId);
+			if (staleForThisUser) {
+				// 上一个账号残留或本机曾退订失败的订阅：不接管、不静默上报，后台重试退订。
+				try {
+					const res = await probe.unsubscribe();
+					if (res.status !== "failed") clearPushSubscriptionOwner();
+				} catch {
+					// 下次继续重试。
+				}
+				return;
+			}
+			// 服务端当前账号没有任何订阅（如 404/410 清理或曾被关闭）时，不把遗留浏览器订阅静默挂回当前账号。
+			if (serverSubscriptionCount === 0) return;
 			setLocalSub(sub);
+			if (currentUserId) writePushSubscriptionOwner(currentUserId, sub.endpoint);
 			try {
 				const result = await api.upsertPushSubscription(sub);
+				if (cancelled) return;
 				queryClient.setQueryData<NotificationSettings>(settingsKeys.notifications(), (current) =>
 					current ? { ...current, subscriptionCount: result.subscriptionCount } : current,
 				);
@@ -199,22 +234,24 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 		return () => {
 			cancelled = true;
 		};
-	}, [block, probe, queryClient]);
+	}, [block, hasSettings, serverSubscriptionCount, probe, queryClient]);
 
-	async function persist(next: FormState, subscription?: PushSubscriptionKeys) {
+	async function persist(next: FormState, subscription?: PushSubscriptionKeys): Promise<boolean> {
 		const seq = ++saveSeq.current;
 		setSaveState("saving");
 		setError(null);
 		try {
 			const body: SaveNotificationSettings = { ...next, subscription };
 			const saved = await api.saveNotificationSettings(body);
-			if (seq !== saveSeq.current) return;
+			if (seq !== saveSeq.current) return false;
 			queryClient.setQueryData(settingsKeys.notifications(), saved);
 			setSaveState("saved");
+			return true;
 		} catch (err) {
-			if (seq !== saveSeq.current) return;
+			if (seq !== saveSeq.current) return false;
 			setSaveState("error");
 			setError(err instanceof Error ? err.message : "保存失败");
+			return false;
 		}
 	}
 
@@ -255,8 +292,12 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 			}
 			const next = { ...form, enabled: true };
 			setForm(next);
-			setLocalSub(sub);
-			await persist(next, sub);
+			const saved = await persist(next, sub);
+			if (saved) {
+				setLocalSub(sub);
+				const currentUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? null;
+				writePushSubscriptionOwner(currentUserId, sub.endpoint);
+			}
 		} catch {
 			// 失败不写服务端。开关回到关闭；权限被拒走已有引导，其他错误留在开关下方。
 			setForm((current) => (current ? { ...current, enabled: false } : current));
@@ -269,13 +310,15 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 	}
 
 	async function enableThisDevice() {
-		if (!form || blocked || !query.data?.vapidPublicKey) return;
+		if (!form || blocked || deviceBusy || !query.data?.vapidPublicKey) return;
+		setDeviceBusy(true);
 		setError(null);
 		setSubscribeFailed(false);
 		let sub: PushSubscriptionKeys | "denied";
 		try {
 			sub = await probe.subscribe(query.data.vapidPublicKey);
 		} catch {
+			setDeviceBusy(false);
 			if (notificationPermissionDenied()) {
 				markThisDeviceDenied();
 				return;
@@ -284,13 +327,16 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 			return;
 		}
 		if (sub === "denied" || notificationPermissionDenied()) {
+			setDeviceBusy(false);
 			markThisDeviceDenied();
 			return;
 		}
-		setLocalSub(sub);
 		setSaveState("saving");
 		try {
 			const result = await api.upsertPushSubscription(sub);
+			setLocalSub(sub);
+			const currentUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? null;
+			writePushSubscriptionOwner(currentUserId, sub.endpoint);
 			queryClient.setQueryData<NotificationSettings>(settingsKeys.notifications(), (current) =>
 				current ? { ...current, subscriptionCount: result.subscriptionCount } : current,
 			);
@@ -298,6 +344,46 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 		} catch (err) {
 			setSaveState("error");
 			setError(err instanceof Error ? err.message : "保存失败");
+		} finally {
+			setDeviceBusy(false);
+		}
+	}
+
+	async function disableThisDevice() {
+		if (!localSub || deviceBusy) return;
+		const endpoint = localSub.endpoint;
+		setDeviceBusy(true);
+		setError(null);
+		setSubscribeFailed(false);
+		setSaveState("saving");
+		try {
+			const result = await api.deletePushSubscription(endpoint);
+			// 服务端已删除：本机不会再收到推送。再尽力退订浏览器；退订失败不向用户报错，
+			// 但记下 pendingUnsubscribe，防止下次进入设置页时把残留订阅静默补回服务端。
+			let browserOk = false;
+			try {
+				const browserResult = await probe.unsubscribe();
+				browserOk = browserResult.status !== "failed";
+			} catch {
+				browserOk = false;
+			}
+			if (browserOk) {
+				clearPushSubscriptionOwner();
+			} else {
+				markPushSubscriptionPendingUnsubscribe(endpoint);
+			}
+			setLocalSub(null);
+			setTestState("idle");
+			queryClient.setQueryData<NotificationSettings>(settingsKeys.notifications(), (current) =>
+				current ? { ...current, subscriptionCount: result.subscriptionCount } : current,
+			);
+			setSaveState("saved");
+		} catch (err) {
+			// 服务端删除失败：不动浏览器订阅，不假装已关闭，让用户看到错误并可重试。
+			setSaveState("error");
+			setError(err instanceof Error ? err.message : "关闭失败，请重试");
+		} finally {
+			setDeviceBusy(false);
 		}
 	}
 
@@ -448,21 +534,34 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 							</label>
 						</div>
 						{form.enabled && block === "ok" && localSub ? (
-							<div>
+							<div className="flex flex-wrap items-center gap-2">
 								<Button
 									type="button"
 									variant="outline"
-									disabled={testState !== "idle"}
+									disabled={testState !== "idle" || deviceBusy}
 									onClick={() => void sendTest()}
 								>
 									{testState === "sent" ? "已发送" : testState === "sending" ? "发送中…" : "发一条测试通知"}
+								</Button>
+								<Button
+									type="button"
+									variant="outline"
+									disabled={deviceBusy || testState === "sending"}
+									onClick={() => void disableThisDevice()}
+								>
+									{deviceBusy ? "关闭中…" : "在此设备关闭"}
 								</Button>
 							</div>
 						) : null}
 						{form.enabled && block === "ok" && !localSub ? (
 							<div>
-								<Button type="button" variant="outline" onClick={() => void enableThisDevice()}>
-									在这台设备上开启
+								<Button
+									type="button"
+									variant="outline"
+									disabled={deviceBusy}
+									onClick={() => void enableThisDevice()}
+								>
+									{deviceBusy ? "开启中…" : "在这台设备上开启"}
 								</Button>
 							</div>
 						) : null}

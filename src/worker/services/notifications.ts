@@ -205,6 +205,28 @@ export async function upsertPushSubscription(
 }
 
 /**
+ * #123 / #129：删除当前用户在这台设备上的推送订阅（幂等）。
+ * 只按 (user_id, endpoint) 删除，不影响总开关、其他设备或其他用户。
+ * 1 次 D1 batch（DELETE + 查剩余订阅数）。
+ */
+export async function deletePushSubscription(
+	db: AppDatabase,
+	userId: string,
+	endpoint: string,
+): Promise<{ subscriptionCount: number }> {
+	const [, subs] = (await runQueries(db, [
+		db
+			.delete(pushSubscriptions)
+			.where(and(eq(pushSubscriptions.userId, userId), eq(pushSubscriptions.endpoint, endpoint))),
+		db
+			.select({ endpoint: pushSubscriptions.endpoint })
+			.from(pushSubscriptions)
+			.where(eq(pushSubscriptions.userId, userId)),
+	])) as [unknown, { endpoint: string }[]];
+	return { subscriptionCount: subs.length };
+}
+
+/**
  * 测试通知：和正式推送同一个 channel.send（里面是 sendWebPush），不写 notification_log，
  * 所以不会占掉当天的正式汇总。
  */

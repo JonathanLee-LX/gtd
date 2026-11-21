@@ -2,8 +2,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { NotificationSettings, SaveNotificationSettings } from "../api";
-import type { PushProbe, PushSubscriptionKeys } from "../lib/push-client";
+import type { Me, NotificationSettings, SaveNotificationSettings } from "../api";
+import {
+	clearPushSubscriptionOwner,
+	readPushSubscriptionOwner,
+	writePushSubscriptionOwner,
+	type PushProbe,
+	type PushSubscriptionKeys,
+} from "../lib/push-client";
+import { shellKeys } from "../lib/shell-keys";
 import { DueReminderCard } from "./DueReminderCard";
 
 const SETTINGS: NotificationSettings = {
@@ -29,20 +36,37 @@ function probe(partial: Partial<PushProbe> = {}): PushProbe {
 		inspect: () => "ok",
 		readSubscription: async () => null,
 		subscribe: async () => SUB,
+		unsubscribe: async () => ({ status: "none" }),
 		...partial,
 	};
 }
 
-function renderCard(push: PushProbe, settings = SETTINGS) {
-	const save = vi.fn(async (body: SaveNotificationSettings) => ({
-		...settings,
-		...body,
-		saved: true,
-		vapidPublicKey: settings.vapidPublicKey,
-		subscriptionCount: settings.subscriptionCount,
-	}));
+function renderCard(
+	push: PushProbe,
+	settings = SETTINGS,
+	options?: { me?: Me; onDelete?: (endpoint: string) => Promise<Response> | Response },
+) {
+	let currentCount = settings.subscriptionCount;
+	const save = vi.fn(async (body: SaveNotificationSettings) => {
+		if (body.subscription && currentCount === 0) currentCount = 1;
+		return {
+			...settings,
+			...body,
+			saved: true,
+			vapidPublicKey: settings.vapidPublicKey,
+			subscriptionCount: currentCount,
+		};
+	});
 	const testPush = vi.fn(async (endpoint: string) => ({ ok: endpoint.length > 0 }));
-	const upsert = vi.fn(async () => ({ subscriptionCount: settings.subscriptionCount }));
+	const upsert = vi.fn(async () => ({ subscriptionCount: Math.max(1, currentCount) }));
+	const remove = vi.fn(async (endpoint: string) => {
+		if (options?.onDelete) return options.onDelete(endpoint);
+		currentCount = Math.max(0, currentCount - 1);
+		return new Response(JSON.stringify({ subscriptionCount: currentCount }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		});
+	});
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -54,7 +78,15 @@ function renderCard(push: PushProbe, settings = SETTINGS) {
 			if (path === "/api/notifications" && method === "PUT") {
 				return json(await save(JSON.parse(String(init?.body)) as SaveNotificationSettings));
 			}
-			if (path === "/api/notifications/subscription") return json(await upsert());
+			if (path === "/api/notifications/subscription" && method === "POST") {
+				const res = await upsert();
+				currentCount = res.subscriptionCount;
+				return json(res);
+			}
+			if (path === "/api/notifications/subscription" && method === "DELETE") {
+				const body = JSON.parse(String(init?.body)) as { endpoint: string };
+				return remove(body.endpoint);
+			}
 			if (path === "/api/notifications/test") {
 				await testPush(JSON.parse(String(init?.body)).endpoint);
 				return json({ ok: true });
@@ -63,16 +95,19 @@ function renderCard(push: PushProbe, settings = SETTINGS) {
 		}),
 	);
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	if (options?.me) client.setQueryData(shellKeys.me, options.me);
 	render(
 		<QueryClientProvider client={client}>
 			<DueReminderCard probe={push} />
 		</QueryClientProvider>,
 	);
-	return { save, testPush, upsert };
+	return { save, testPush, upsert, remove, client };
 }
 
 afterEach(() => {
 	cleanup();
+	localStorage.clear();
+	clearPushSubscriptionOwner();
 	vi.unstubAllGlobals();
 });
 
@@ -234,5 +269,125 @@ describe("due reminder settings", () => {
 		expect(screen.queryByText("开启失败，请重试")).toBeNull();
 		expect(second.save).not.toHaveBeenCalled();
 		expect(second.upsert).not.toHaveBeenCalled();
+	});
+
+	it("turns off the master switch without deleting or unsubscribing this device", async () => {
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const { save, remove } = renderCard(
+			probe({ readSubscription: async () => SUB, unsubscribe }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 2 },
+		);
+		const sw = await screen.findByRole("switch", { name: "到期提醒" });
+		await screen.findByRole("button", { name: "在此设备关闭" });
+		fireEvent.click(sw);
+		await waitFor(() => expect(save).toHaveBeenCalled());
+		expect(save.mock.calls[0]?.[0]).toMatchObject({ enabled: false });
+		expect(save.mock.calls[0]?.[0]?.subscription).toBeUndefined();
+		expect(remove).not.toHaveBeenCalled();
+		expect(unsubscribe).not.toHaveBeenCalled();
+	});
+
+	it("disables push on this device only, keeps master switch and other devices, and allows re-enabling + testing", async () => {
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const subscribe = vi.fn(async () => SUB);
+		const { save, remove, upsert, testPush } = renderCard(
+			probe({ readSubscription: async () => SUB, unsubscribe, subscribe }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 2 },
+		);
+		const btn = await screen.findByRole("button", { name: "在此设备关闭" });
+		fireEvent.click(btn);
+		await waitFor(() => expect(remove).toHaveBeenCalledWith(SUB.endpoint));
+		await waitFor(() => expect(unsubscribe).toHaveBeenCalledOnce());
+		expect(save).not.toHaveBeenCalled();
+		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
+		expect(await screen.findByText("其他 1 台设备已开启")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "在此设备关闭" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "发一条测试通知" })).toBeNull();
+		expect(readPushSubscriptionOwner()).toBeNull();
+
+		// 重新在此设备开启并发测试通知
+		fireEvent.click(screen.getByRole("button", { name: "在这台设备上开启" }));
+		await waitFor(() => expect(subscribe).toHaveBeenCalledOnce());
+		await waitFor(() => expect(screen.getByRole("button", { name: "发一条测试通知" })).toBeTruthy());
+		expect(upsert).toHaveBeenCalled();
+		fireEvent.click(screen.getByRole("button", { name: "发一条测试通知" }));
+		await waitFor(() => expect(screen.getByRole("button", { name: "已发送" })).toBeTruthy());
+		expect(testPush).toHaveBeenCalledWith(SUB.endpoint);
+	});
+
+	it("still deletes on server without showing an error when browser unsubscribe fails, and avoids silently re-upserting on remount", async () => {
+		const unsubscribe = vi.fn(async () => ({ status: "failed" as const, endpoint: SUB.endpoint }));
+		const { remove } = renderCard(
+			probe({ readSubscription: async () => SUB, unsubscribe }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 1 },
+		);
+		fireEvent.click(await screen.findByRole("button", { name: "在此设备关闭" }));
+		await waitFor(() => expect(remove).toHaveBeenCalledWith(SUB.endpoint));
+		await waitFor(() => expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy());
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(screen.getByRole("status").textContent).toContain("已保存");
+		expect(readPushSubscriptionOwner()).toMatchObject({ endpoint: SUB.endpoint, pendingUnsubscribe: true });
+
+		// 重新挂载时即使浏览器还残留订阅，也不会静默补回服务端，而是后台重试退订
+		cleanup();
+		const retryUnsub = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const remount = renderCard(
+			probe({ readSubscription: async () => SUB, unsubscribe: retryUnsub }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 0 },
+		);
+		await screen.findByRole("button", { name: "在这台设备上开启" });
+		await waitFor(() => expect(retryUnsub).toHaveBeenCalledOnce());
+		expect(remount.upsert).not.toHaveBeenCalled();
+		expect(readPushSubscriptionOwner()).toBeNull();
+	});
+
+	it("keeps the local subscription and shows an error when DELETE fails, then succeeds on retry", async () => {
+		let failOnce = true;
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const { remove } = renderCard(
+			probe({ readSubscription: async () => SUB, unsubscribe }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 1 },
+			{
+				onDelete: async () => {
+					if (failOnce) {
+						failOnce = false;
+						return new Response(JSON.stringify({ message: "服务暂时不可用" }), {
+							status: 500,
+							headers: { "Content-Type": "application/json" },
+						});
+					}
+					return new Response(JSON.stringify({ subscriptionCount: 0 }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					});
+				},
+			},
+		);
+		fireEvent.click(await screen.findByRole("button", { name: "在此设备关闭" }));
+		await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+		expect(await screen.findByText("服务暂时不可用")).toBeTruthy();
+		expect(screen.getByRole("status").textContent).toContain("保存失败");
+		// 服务端失败时不破坏浏览器订阅，按钮仍在可重试
+		expect(unsubscribe).not.toHaveBeenCalled();
+		expect(screen.getByRole("button", { name: "在此设备关闭" })).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: "在此设备关闭" }));
+		await waitFor(() => expect(remove).toHaveBeenCalledTimes(2));
+		await waitFor(() => expect(unsubscribe).toHaveBeenCalledOnce());
+		await waitFor(() => expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy());
+	});
+
+	it("does not silently hijack a leftover browser subscription owned by another account", async () => {
+		writePushSubscriptionOwner("user-a", SUB.endpoint);
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const { upsert } = renderCard(
+			probe({ readSubscription: async () => SUB, unsubscribe }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 1 },
+			{ me: { user: { id: "user-b", email: "b@example.com", name: "B" }, source: "human" } },
+		);
+		await screen.findByRole("button", { name: "在这台设备上开启" });
+		await waitFor(() => expect(unsubscribe).toHaveBeenCalledOnce());
+		expect(upsert).not.toHaveBeenCalled();
+		expect(screen.queryByRole("button", { name: "在此设备关闭" })).toBeNull();
 	});
 });

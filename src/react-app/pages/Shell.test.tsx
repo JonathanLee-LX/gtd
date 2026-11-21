@@ -8,10 +8,18 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { useEffect } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { api } from "../api";
 import { useShellContext } from "../hooks/use-shell-data";
 import { readInboxHint, writeInboxHint } from "../lib/inbox-hint";
+import {
+	clearPushSubscriptionOwner,
+	readPushSubscriptionOwner,
+	writePushSubscriptionOwner,
+	type PushProbe,
+	type PushSubscriptionKeys,
+} from "../lib/push-client";
 import { readSkeletonCount, writeSkeletonCount } from "../lib/skeleton";
 import { listPersistedUnsaved } from "../lib/autosave-persist";
 import { getTaskAutosave, peekTaskAutosave } from "../lib/task-autosave";
@@ -23,7 +31,8 @@ type Pending = { path: string; resolve: (reply: Reply) => void };
 
 let pending: Pending[] = [];
 let fetchCalls: string[] = [];
-let autoReply: ((path: string) => Reply | undefined) | null = null;
+let fetchLog: { method: string; path: string; body?: string }[] = [];
+let autoReply: ((path: string, method: string) => Reply | undefined) | null = null;
 
 function json(status: number, body: unknown) {
 	return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -32,14 +41,16 @@ function json(status: number, body: unknown) {
 function installFetch() {
 	vi.stubGlobal(
 		"fetch",
-		vi.fn((input: RequestInfo | URL) => {
+		vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
 			const path = String(input);
+			const method = init?.method ?? "GET";
 			fetchCalls.push(path);
+			fetchLog.push({ method, path, body: init?.body ? String(init.body) : undefined });
 			const settle = (reply: Reply) => {
 				if (reply === "network-error") throw new TypeError("Failed to fetch");
 				return json(reply.status, reply.body);
 			};
-			const auto = autoReply?.(path);
+			const auto = autoReply?.(path, method);
 			if (auto) return Promise.resolve().then(() => settle(auto));
 			return new Promise<Response>((resolve, reject) => {
 				pending.push({
@@ -121,7 +132,7 @@ function ListProbe() {
 	return null;
 }
 
-function renderShell(client: QueryClient) {
+function renderShell(client: QueryClient, pushProbe?: PushProbe) {
 	return render(
 		<QueryClientProvider client={client}>
 			<TooltipProvider>
@@ -129,7 +140,7 @@ function renderShell(client: QueryClient) {
 					<LocationSpy />
 					<Routes>
 						<Route path="/login" element={<FakeLogin />} />
-						<Route path="/" element={<Shell />}>
+						<Route path="/" element={<Shell pushProbe={pushProbe} />}>
 							<Route path="today" element={<FakePage />} />
 						</Route>
 					</Routes>
@@ -151,11 +162,13 @@ function makeClient() {
 beforeEach(() => {
 	pending = [];
 	fetchCalls = [];
+	fetchLog = [];
 	autoReply = null;
 	locations.length = 0;
 	loginMounts = 0;
 	reload = null;
 	localStorage.clear();
+	clearPushSubscriptionOwner();
 	vi.stubGlobal(
 		"matchMedia",
 		vi.fn((query: string) => ({
@@ -172,6 +185,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
 });
@@ -438,5 +452,163 @@ describe("Shell sidebar app icon", () => {
 		expect(link?.getAttribute("href")).toBe("/today");
 		expect(link?.textContent).toContain("GTD 工作台");
 		expect(link?.textContent).toContain("个人 + 助手");
+	});
+});
+
+describe("Shell sign-out push cleanup & account switch (#123)", () => {
+	const SUB: PushSubscriptionKeys = {
+		endpoint: "https://fcm.googleapis.com/fcm/send/shell-dev",
+		p256dh: "p256",
+		auth: "auth",
+	};
+
+	function makePushProbe(partial: Partial<PushProbe> = {}): PushProbe {
+		return {
+			inspect: () => "ok",
+			readSubscription: async () => SUB,
+			subscribe: async () => SUB,
+			unsubscribe: async () => ({ status: "unsubscribed", endpoint: SUB.endpoint }),
+			...partial,
+		};
+	}
+
+	async function triggerSignOut() {
+		await act(async () => {
+			fireEvent.click(screen.getByText("jon@example.com"));
+			await flush();
+		});
+		await act(async () => {
+			fireEvent.click(await screen.findByRole("menuitem", { name: "退出" }));
+			await flush();
+		});
+	}
+
+	it("deletes server subscription before sign-out and unsubscribes browser after sign-out", async () => {
+		const warnSpy = vi.spyOn(toast, "warning");
+		const order: string[] = [];
+		const unsubscribe = vi.fn(async () => {
+			order.push("browser-unsubscribe");
+			return { status: "unsubscribed" as const, endpoint: SUB.endpoint };
+		});
+		writePushSubscriptionOwner(ME.user.id, SUB.endpoint);
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path, method) => {
+			if (path === "/api/notifications/subscription" && method === "DELETE") {
+				order.push("server-delete");
+				return { status: 200, body: { subscriptionCount: 0 } };
+			}
+			if (path === "/api/auth/sign-out") {
+				order.push("sign-out");
+				return { status: 200, body: { success: true } };
+			}
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client, makePushProbe({ unsubscribe }));
+		await act(flush);
+		await triggerSignOut();
+		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
+		expect(order).toEqual(["server-delete", "sign-out", "browser-unsubscribe"]);
+		expect(readPushSubscriptionOwner()).toBeNull();
+		expect(warnSpy).not.toHaveBeenCalled();
+	});
+
+	it("still signs out and warns honestly when server DELETE fails", async () => {
+		const warnSpy = vi.spyOn(toast, "warning");
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path, method) => {
+			if (path === "/api/notifications/subscription" && method === "DELETE") {
+				return { status: 500, body: { message: "boom" } };
+			}
+			if (path === "/api/auth/sign-out") return { status: 200, body: { success: true } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client, makePushProbe({ unsubscribe }));
+		await act(flush);
+		await triggerSignOut();
+		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
+		expect(unsubscribe).toHaveBeenCalledOnce();
+		expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/服务端订阅清理失败/));
+	});
+
+	it("still signs out, marks pendingUnsubscribe, and warns honestly when browser unsubscribe fails", async () => {
+		const warnSpy = vi.spyOn(toast, "warning");
+		const unsubscribe = vi.fn(async () => ({ status: "failed" as const, endpoint: SUB.endpoint }));
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path, method) => {
+			if (path === "/api/notifications/subscription" && method === "DELETE") {
+				return { status: 200, body: { subscriptionCount: 0 } };
+			}
+			if (path === "/api/auth/sign-out") return { status: 200, body: { success: true } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client, makePushProbe({ unsubscribe }));
+		await act(flush);
+		await triggerSignOut();
+		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
+		expect(readPushSubscriptionOwner()).toMatchObject({ endpoint: SUB.endpoint, pendingUnsubscribe: true });
+		expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/浏览器退订未完成/));
+	});
+
+	it("does not unsubscribe the browser and restores server subscription if api.signOut fails", async () => {
+		const errorSpy = vi.spyOn(toast, "error");
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path, method) => {
+			if (path === "/api/notifications/subscription" && method === "DELETE") {
+				return { status: 200, body: { subscriptionCount: 0 } };
+			}
+			if (path === "/api/notifications/subscription" && method === "POST") {
+				return { status: 200, body: { subscriptionCount: 1 } };
+			}
+			if (path === "/api/auth/sign-out") return { status: 500, body: { message: "服务不可用" } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client, makePushProbe({ unsubscribe }));
+		await act(flush);
+		await triggerSignOut();
+		await waitFor(() => expect(errorSpy).toHaveBeenCalled());
+		expect(loginMounts).toBe(0);
+		expect(unsubscribe).not.toHaveBeenCalled();
+		expect(fetchLog.some((r) => r.method === "POST" && r.path === "/api/notifications/subscription")).toBe(true);
+	});
+
+	it("unsubscribes a previous account's browser push subscription when a different user signs in", async () => {
+		writePushSubscriptionOwner("u-prev", SUB.endpoint);
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path) =>
+			path === "/api/tasks/focus" ? { status: 200, body: { items: [], today: "2026-10-09" } } : undefined;
+		renderShell(client, makePushProbe({ unsubscribe }));
+		await waitFor(() => expect(unsubscribe).toHaveBeenCalledOnce());
+		expect(readPushSubscriptionOwner()).toBeNull();
+	});
+
+	it("keeps the browser push subscription when the same user logs back in after 401", async () => {
+		writePushSubscriptionOwner(ME.user.id, SUB.endpoint);
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path) =>
+			path === "/api/tasks/focus" ? { status: 200, body: { items: [], today: "2026-10-09" } } : undefined;
+		renderShell(client, makePushProbe({ unsubscribe }));
+		await act(flush);
+		expect(unsubscribe).not.toHaveBeenCalled();
+		expect(readPushSubscriptionOwner()?.userId).toBe(ME.user.id);
 	});
 });

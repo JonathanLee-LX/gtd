@@ -220,6 +220,11 @@ export const api = {
 			method: "POST",
 			body: JSON.stringify(body),
 		}),
+	deletePushSubscription: (endpoint: string) =>
+		request<{ subscriptionCount: number }>("/api/notifications/subscription", {
+			method: "DELETE",
+			body: JSON.stringify({ endpoint }),
+		}),
 	testNotification: (endpoint: string) =>
 		request<{ ok: boolean }>("/api/notifications/test", {
 			method: "POST",

@@ -73,6 +73,16 @@ import {
 } from "../hooks/use-shell-data";
 import { clearClientSession } from "../lib/client-session";
 import { replayUnsavedAfterLogin } from "../lib/autosave-persist";
+import {
+	browserPushProbe,
+	clearPushSubscriptionOwner,
+	markPushSubscriptionPendingUnsubscribe,
+	pushSignOutCleanupWarning,
+	readPushSubscriptionOwner,
+	reconcilePushSubscriptionForUser,
+	type PushProbe,
+	type PushSubscriptionKeys,
+} from "../lib/push-client";
 import { peekTaskAutosave } from "../lib/task-autosave";
 import { createLoginRedirectOnce, loadErrorMessage, shellLoadOutcome } from "../lib/session";
 import { MobileBottomNav } from "../components/MobileBottomNav";
@@ -85,7 +95,7 @@ const SIDEBAR_MENU_CLASS = "flex w-full min-w-0 flex-col gap-0";
 
 const NO_PROJECTS: Project[] = [];
 
-export function Shell() {
+export function Shell({ pushProbe = browserPushProbe }: { pushProbe?: PushProbe } = {}) {
 	const navigate = useNavigate();
 	const location = useLocation();
 	const queryClient = useQueryClient();
@@ -123,10 +133,13 @@ export function Shell() {
 	);
 
 	// #115：登录后补发 401 时暂存的改动（只补发同一用户的；别的用户的暂存全部丢掉）。
+	// #123：同浏览器换账号或上次退订未完成时，自动退订残留的浏览器推送订阅。
 	const userId = meQuery.data?.user.id;
 	useEffect(() => {
-		if (userId) void replayUnsavedAfterLogin(queryClient, userId);
-	}, [queryClient, userId]);
+		if (!userId) return;
+		void replayUnsavedAfterLogin(queryClient, userId);
+		void reconcilePushSubscriptionForUser(userId, pushProbe);
+	}, [queryClient, userId, pushProbe]);
 
 	const projects = projectsQuery.data?.items ?? NO_PROJECTS;
 	const projectsReady = projectsQuery.data !== undefined;
@@ -184,20 +197,73 @@ export function Shell() {
 	}
 
 	async function doSignOut() {
+		if (signingOut) return;
 		setSigningOut(true);
+		// #123：退出前趁会话还有效，尽力删除本机在服务端的推送订阅；失败不挡退出。
+		let currentSub: PushSubscriptionKeys | null = null;
+		let readPushFailed = false;
+		try {
+			currentSub = await pushProbe.readSubscription();
+		} catch {
+			readPushFailed = true;
+		}
+		const owner = readPushSubscriptionOwner();
+		const fallbackEndpoint =
+			!currentSub && owner && !owner.pendingUnsubscribe && (!userId || !owner.userId || owner.userId === userId)
+				? owner.endpoint
+				: null;
+		const endpointToDelete = currentSub?.endpoint ?? fallbackEndpoint;
+
+		let serverDelete: "skipped" | "ok" | "failed" = "skipped";
+		if (endpointToDelete) {
+			try {
+				await api.deletePushSubscription(endpointToDelete);
+				serverDelete = "ok";
+			} catch {
+				serverDelete = "failed";
+			}
+		}
+
 		try {
 			await api.signOut();
 		} catch (err) {
 			// 退出没成功（如断网）就别假装退出：会话还在，登录页会直接把人送回来。
+			// 不动浏览器推送订阅；若刚才已删服务端订阅，尽力补回。
+			if (serverDelete === "ok" && currentSub) {
+				void api.upsertPushSubscription(currentSub).catch(() => undefined);
+			}
 			toast.error(err instanceof Error ? `退出失败：${err.message}` : "退出失败，请重试");
-			return;
-		} finally {
 			setSigningOut(false);
+			return;
 		}
+
+		// 服务端会话已注销：尽力退订浏览器推送（不弹窗），任何失败都不挡退出跳转。
+		let browserUnsub: "skipped" | "none" | "unsubscribed" | "failed" = "skipped";
+		try {
+			const res = await pushProbe.unsubscribe();
+			browserUnsub = res.status;
+			if (res.status === "failed") {
+				markPushSubscriptionPendingUnsubscribe(res.endpoint || endpointToDelete || "");
+			} else {
+				clearPushSubscriptionOwner();
+			}
+		} catch {
+			browserUnsub = "failed";
+			markPushSubscriptionPendingUnsubscribe(endpointToDelete || "");
+		}
+
+		setSigningOut(false);
 		setConfirmSignOut(false);
 		navigate("/login", { replace: true });
 		// 用户主动退出：未保存的改动按确认丢掉，不暂存。
 		clearClientSession(queryClient, { discardUnsaved: true });
+
+		const warning = pushSignOutCleanupWarning({
+			readFailed: readPushFailed,
+			serverDelete,
+			browserUnsub,
+		});
+		if (warning) toast.warning(warning);
 	}
 
 	const inbox = projects.find((project) => project.isInbox);

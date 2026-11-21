@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { createDb } from "../../db/client";
 import {
+	deletePushSubscriptionInput,
 	pushSubscriptionInput,
 	saveNotificationSettingsInput,
 	testNotificationInput,
@@ -12,6 +13,7 @@ import { handleRoute } from "../lib/route-utils";
 import { requireUser, type AppVariables } from "../middleware/require-user";
 import { createWebPushChannel } from "../services/notification-channel";
 import {
+	deletePushSubscription,
 	getNotificationSettings,
 	saveNotificationSettings,
 	sendTestNotification,
@@ -29,16 +31,18 @@ export const notificationRoutes = new Hono<{
 	Variables: AppVariables;
 }>()
 	.use("*", requireUser)
+	.use("*", async (c, next) => {
+		humanOnly(c.get("source"));
+		await next();
+	})
 	.get("/", (c) =>
 		handleRoute(c, async () => {
-			humanOnly(c.get("source"));
 			const settings = await getNotificationSettings(createDb(c.env.DB), c.get("user").id);
 			return { ...settings, vapidPublicKey: c.env.VAPID_PUBLIC_KEY?.trim() || null };
 		}),
 	)
 	.put("/", zValidator("json", saveNotificationSettingsInput), (c) =>
 		handleRoute(c, async () => {
-			humanOnly(c.get("source"));
 			const settings = await saveNotificationSettings(
 				createDb(c.env.DB),
 				c.get("user").id,
@@ -49,13 +53,16 @@ export const notificationRoutes = new Hono<{
 	)
 	.post("/subscription", zValidator("json", pushSubscriptionInput), (c) =>
 		handleRoute(c, async () => {
-			humanOnly(c.get("source"));
 			return upsertPushSubscription(createDb(c.env.DB), c.get("user").id, c.req.valid("json"));
+		}),
+	)
+	.delete("/subscription", zValidator("json", deletePushSubscriptionInput), (c) =>
+		handleRoute(c, async () => {
+			return deletePushSubscription(createDb(c.env.DB), c.get("user").id, c.req.valid("json").endpoint);
 		}),
 	)
 	.post("/test", zValidator("json", testNotificationInput), (c) =>
 		handleRoute(c, async () => {
-			humanOnly(c.get("source"));
 			await sendTestNotification(
 				createDb(c.env.DB),
 				c.get("user").id,

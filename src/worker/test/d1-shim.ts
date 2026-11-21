@@ -68,6 +68,7 @@ export function createCountingD1(sqlite: BetterSqlite3.Database) {
 	const db = drizzle(d1 as unknown as D1Database, { schema }) as AppDatabase;
 	return {
 		db,
+		d1: d1 as unknown as D1Database,
 		counter,
 		hooks,
 		reset() {

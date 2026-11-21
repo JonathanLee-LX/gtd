@@ -120,10 +120,16 @@ export const quarterHourSchema = z
 	.string()
 	.regex(QUARTER_HOUR, "时间只能选整点或每 15 分钟一档");
 
+const pushEndpointSchema = z.string().min(8).max(2000);
+
 export const pushSubscriptionInput = z.object({
-	endpoint: z.string().min(8).max(2000),
+	endpoint: pushEndpointSchema,
 	p256dh: z.string().min(1).max(200),
 	auth: z.string().min(1).max(200),
+});
+
+export const deletePushSubscriptionInput = z.object({
+	endpoint: pushEndpointSchema,
 });
 
 /** 设置页一次提交完整表单，服务端不用先读再写。subscription 只在这台设备刚订阅时带上。 */
@@ -138,7 +144,7 @@ export const saveNotificationSettingsInput = z.object({
 });
 
 export const testNotificationInput = z.object({
-	endpoint: z.string().min(8).max(2000),
+	endpoint: pushEndpointSchema,
 });
 
 export const processInboxInput = z.object({
@@ -161,3 +167,4 @@ export type CommitAiInput = z.infer<typeof commitAiInput>;
 export type ProcessInboxInput = z.infer<typeof processInboxInput>;
 export type SaveNotificationSettingsInput = z.infer<typeof saveNotificationSettingsInput>;
 export type PushSubscriptionInput = z.infer<typeof pushSubscriptionInput>;
+export type DeletePushSubscriptionInput = z.infer<typeof deletePushSubscriptionInput>;

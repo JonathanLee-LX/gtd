@@ -221,7 +221,7 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 	deletePushSubscription: (endpoint: string) =>
-		request<{ subscriptionCount: number }>("/api/notifications/subscription", {
+		request<{ subscriptionCount: number; deleted: boolean }>("/api/notifications/subscription", {
 			method: "DELETE",
 			body: JSON.stringify({ endpoint }),
 		}),

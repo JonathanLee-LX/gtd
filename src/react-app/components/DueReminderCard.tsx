@@ -9,6 +9,7 @@ import { CheckIcon, CircleAlertIcon, Loader2Icon, ShareIcon } from "lucide-react
 import { quarterHourOptions } from "../../shared/digest";
 import { DEFAULT_TIME_ZONE } from "../../shared/constants";
 import { api, type Me, type NotificationSettings, type PushSubscriptionKeys, type SaveNotificationSettings } from "../api";
+import { useMeQuery } from "../hooks/use-shell-data";
 import { loadErrorMessage } from "../lib/load-state";
 import {
 	browserPushProbe,
@@ -170,6 +171,7 @@ function helpFor(block: PushBlock): ReactNode {
 
 export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProbe }) {
 	const queryClient = useQueryClient();
+	const meQuery = useMeQuery();
 	const query = useQuery({
 		queryKey: settingsKeys.notifications(),
 		queryFn: () => api.notificationSettings(),
@@ -190,24 +192,41 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 	const blocked = block !== "ok";
 	const hasSettings = Boolean(query.data);
 	const serverSubscriptionCount = query.data?.subscriptionCount ?? 0;
+	const currentUserId = meQuery.data?.user.id ?? null;
+	const mePending = meQuery.isPending;
 
 	useEffect(() => {
 		if (query.data && !form) setForm(formFrom(query.data, zone));
 	}, [query.data, form, zone]);
 
+	// 若用户在本机订阅时 /api/me 尚未就绪（写入了 userId: null），等 me 返回后补齐归属 userId。
+	useEffect(() => {
+		if (!currentUserId || !localSub) return;
+		const owner = readPushSubscriptionOwner();
+		if (!owner || (!owner.pendingUnsubscribe && owner.endpoint === localSub.endpoint && owner.userId === null)) {
+			writePushSubscriptionOwner(currentUserId, localSub.endpoint);
+		}
+	}, [currentUserId, localSub]);
+
 	useEffect(() => {
 		if (block !== "ok" || !hasSettings || probedRef.current) return;
+		// 冷启动 /settings 时 /api/notifications 可能先于 /api/me 返回：
+		// 等 me 请求落地后再判定归属，避免 currentUserId === null 绕过跨账号检查并静默接管上一账号订阅。
+		if (mePending) return;
 		let cancelled = false;
-		const currentUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? null;
 		void probe.readSubscription().then(async (sub) => {
 			if (cancelled) return;
-			probedRef.current = true;
-			if (!sub) return;
+			if (!sub) {
+				probedRef.current = true;
+				return;
+			}
 			const owner = readPushSubscriptionOwner();
-			const staleForThisUser =
-				(owner?.pendingUnsubscribe && (!owner.endpoint || owner.endpoint === sub.endpoint)) ||
-				Boolean(owner?.userId && currentUserId && owner.userId !== currentUserId);
-			if (staleForThisUser) {
+			const isPendingUnsub = Boolean(
+				owner?.pendingUnsubscribe && (!owner.endpoint || owner.endpoint === sub.endpoint),
+			);
+			const isForeignOwner = Boolean(owner?.userId && currentUserId && owner.userId !== currentUserId);
+			if (isPendingUnsub || isForeignOwner) {
+				probedRef.current = true;
 				// 上一个账号残留或本机曾退订失败的订阅：不接管、不静默上报，后台重试退订。
 				try {
 					const res = await probe.unsubscribe();
@@ -217,6 +236,9 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 				}
 				return;
 			}
+			// 本地明确记录了归属 userId，但 /api/me 失败拿不到当前用户 id 时，保守不接管不上报（等重试恢复 me 后再判）。
+			if (owner?.userId && !currentUserId) return;
+			probedRef.current = true;
 			// 服务端当前账号没有任何订阅（如 404/410 清理或曾被关闭）时，不把遗留浏览器订阅静默挂回当前账号。
 			if (serverSubscriptionCount === 0) return;
 			setLocalSub(sub);
@@ -234,7 +256,7 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 		return () => {
 			cancelled = true;
 		};
-	}, [block, hasSettings, serverSubscriptionCount, probe, queryClient]);
+	}, [block, hasSettings, mePending, currentUserId, serverSubscriptionCount, probe, queryClient]);
 
 	async function persist(next: FormState, subscription?: PushSubscriptionKeys): Promise<boolean> {
 		const seq = ++saveSeq.current;
@@ -294,9 +316,10 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 			setForm(next);
 			const saved = await persist(next, sub);
 			if (saved) {
+				probedRef.current = true;
 				setLocalSub(sub);
-				const currentUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? null;
-				writePushSubscriptionOwner(currentUserId, sub.endpoint);
+				const resolvedUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? currentUserId;
+				writePushSubscriptionOwner(resolvedUserId, sub.endpoint);
 			}
 		} catch {
 			// 失败不写服务端。开关回到关闭；权限被拒走已有引导，其他错误留在开关下方。
@@ -331,18 +354,20 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 			markThisDeviceDenied();
 			return;
 		}
+		const seq = ++saveSeq.current;
 		setSaveState("saving");
 		try {
 			const result = await api.upsertPushSubscription(sub);
+			probedRef.current = true;
 			setLocalSub(sub);
-			const currentUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? null;
-			writePushSubscriptionOwner(currentUserId, sub.endpoint);
+			const resolvedUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? currentUserId;
+			writePushSubscriptionOwner(resolvedUserId, sub.endpoint);
 			queryClient.setQueryData<NotificationSettings>(settingsKeys.notifications(), (current) =>
 				current ? { ...current, subscriptionCount: result.subscriptionCount } : current,
 			);
-			setSaveState("saved");
+			if (seq === saveSeq.current) setSaveState("saved");
 		} catch (err) {
-			setSaveState("error");
+			if (seq === saveSeq.current) setSaveState("error");
 			setError(err instanceof Error ? err.message : "保存失败");
 		} finally {
 			setDeviceBusy(false);
@@ -352,6 +377,7 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 	async function disableThisDevice() {
 		if (!localSub || deviceBusy) return;
 		const endpoint = localSub.endpoint;
+		const seq = ++saveSeq.current;
 		setDeviceBusy(true);
 		setError(null);
 		setSubscribeFailed(false);
@@ -377,10 +403,10 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 			queryClient.setQueryData<NotificationSettings>(settingsKeys.notifications(), (current) =>
 				current ? { ...current, subscriptionCount: result.subscriptionCount } : current,
 			);
-			setSaveState("saved");
+			if (seq === saveSeq.current) setSaveState("saved");
 		} catch (err) {
 			// 服务端删除失败：不动浏览器订阅，不假装已关闭，让用户看到错误并可重试。
-			setSaveState("error");
+			if (seq === saveSeq.current) setSaveState("error");
 			setError(err instanceof Error ? err.message : "关闭失败，请重试");
 		} finally {
 			setDeviceBusy(false);

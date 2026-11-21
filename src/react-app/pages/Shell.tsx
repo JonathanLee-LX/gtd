@@ -111,6 +111,7 @@ export function Shell({ pushProbe = browserPushProbe }: { pushProbe?: PushProbe 
 	/** #115：退出登录时有未保存的改动，先确认。 */
 	const [confirmSignOut, setConfirmSignOut] = useState(false);
 	const [signingOut, setSigningOut] = useState(false);
+	const signingOutRef = useRef(false);
 
 	// #82 / #101：任何查询（me、projects、页面列表）401 → 回登录页，且同时多个 401 只跳一次。
 	// 断网、5xx 不跳，原地提示重试。
@@ -197,7 +198,8 @@ export function Shell({ pushProbe = browserPushProbe }: { pushProbe?: PushProbe 
 	}
 
 	async function doSignOut() {
-		if (signingOut) return;
+		if (signingOutRef.current) return;
+		signingOutRef.current = true;
 		setSigningOut(true);
 		// #123：退出前趁会话还有效，尽力删除本机在服务端的推送订阅；失败不挡退出。
 		let currentSub: PushSubscriptionKeys | null = null;
@@ -208,17 +210,24 @@ export function Shell({ pushProbe = browserPushProbe }: { pushProbe?: PushProbe 
 			readPushFailed = true;
 		}
 		const owner = readPushSubscriptionOwner();
+		const isPendingUnsub = Boolean(
+			owner?.pendingUnsubscribe && (!currentSub || !owner.endpoint || owner.endpoint === currentSub.endpoint),
+		);
+		const isForeignOwner = Boolean(owner?.userId && userId && owner.userId !== userId);
+		const isNotOwned = isPendingUnsub || isForeignOwner;
 		const fallbackEndpoint =
-			!currentSub && owner && !owner.pendingUnsubscribe && (!userId || !owner.userId || owner.userId === userId)
+			!currentSub && !isNotOwned && owner && (!userId || !owner.userId || owner.userId === userId)
 				? owner.endpoint
 				: null;
-		const endpointToDelete = currentSub?.endpoint ?? fallbackEndpoint;
+		const endpointToDelete = isNotOwned ? null : (currentSub?.endpoint ?? fallbackEndpoint);
 
-		let serverDelete: "skipped" | "ok" | "failed" = "skipped";
+		let serverDelete: "skipped" | "not-owned" | "ok" | "failed" = isNotOwned ? "not-owned" : "skipped";
+		let serverDeletedRow = false;
 		if (endpointToDelete) {
 			try {
-				await api.deletePushSubscription(endpointToDelete);
+				const res = await api.deletePushSubscription(endpointToDelete);
 				serverDelete = "ok";
+				serverDeletedRow = res.deleted === true;
 			} catch {
 				serverDelete = "failed";
 			}
@@ -228,11 +237,24 @@ export function Shell({ pushProbe = browserPushProbe }: { pushProbe?: PushProbe 
 			await api.signOut();
 		} catch (err) {
 			// 退出没成功（如断网）就别假装退出：会话还在，登录页会直接把人送回来。
-			// 不动浏览器推送订阅；若刚才已删服务端订阅，尽力补回。
-			if (serverDelete === "ok" && currentSub) {
-				void api.upsertPushSubscription(currentSub).catch(() => undefined);
+			// 不动浏览器推送订阅；仅当刚才确实删掉了当前用户在服务端的订阅行时才尽力补回。
+			let restoreFailed = false;
+			if (serverDeletedRow) {
+				if (currentSub) {
+					try {
+						await api.upsertPushSubscription(currentSub);
+					} catch {
+						restoreFailed = true;
+					}
+				} else {
+					restoreFailed = true;
+				}
 			}
-			toast.error(err instanceof Error ? `退出失败：${err.message}` : "退出失败，请重试");
+			const baseError = err instanceof Error ? `退出失败：${err.message}` : "退出失败，请重试";
+			toast.error(
+				restoreFailed ? `${baseError}；本机推送订阅未能恢复，请到设置页重新开启` : baseError,
+			);
+			signingOutRef.current = false;
 			setSigningOut(false);
 			return;
 		}
@@ -243,15 +265,16 @@ export function Shell({ pushProbe = browserPushProbe }: { pushProbe?: PushProbe 
 			const res = await pushProbe.unsubscribe();
 			browserUnsub = res.status;
 			if (res.status === "failed") {
-				markPushSubscriptionPendingUnsubscribe(res.endpoint || endpointToDelete || "");
+				markPushSubscriptionPendingUnsubscribe(res.endpoint || endpointToDelete || owner?.endpoint || "");
 			} else {
 				clearPushSubscriptionOwner();
 			}
 		} catch {
 			browserUnsub = "failed";
-			markPushSubscriptionPendingUnsubscribe(endpointToDelete || "");
+			markPushSubscriptionPendingUnsubscribe(endpointToDelete || owner?.endpoint || "");
 		}
 
+		signingOutRef.current = false;
 		setSigningOut(false);
 		setConfirmSignOut(false);
 		navigate("/login", { replace: true });

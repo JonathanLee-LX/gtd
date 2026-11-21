@@ -44,7 +44,11 @@ function probe(partial: Partial<PushProbe> = {}): PushProbe {
 function renderCard(
 	push: PushProbe,
 	settings = SETTINGS,
-	options?: { me?: Me; onDelete?: (endpoint: string) => Promise<Response> | Response },
+	options?: {
+		me?: Me;
+		onMe?: () => Promise<Response> | Response;
+		onDelete?: (endpoint: string) => Promise<Response> | Response;
+	},
 ) {
 	let currentCount = settings.subscriptionCount;
 	const save = vi.fn(async (body: SaveNotificationSettings) => {
@@ -62,7 +66,7 @@ function renderCard(
 	const remove = vi.fn(async (endpoint: string) => {
 		if (options?.onDelete) return options.onDelete(endpoint);
 		currentCount = Math.max(0, currentCount - 1);
-		return new Response(JSON.stringify({ subscriptionCount: currentCount }), {
+		return new Response(JSON.stringify({ subscriptionCount: currentCount, deleted: true }), {
 			status: 200,
 			headers: { "Content-Type": "application/json" },
 		});
@@ -74,6 +78,11 @@ function renderCard(
 			const method = init?.method ?? "GET";
 			const json = (body: unknown, status = 200) =>
 				new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+			if (path === "/api/me" && method === "GET") {
+				if (options?.onMe) return options.onMe();
+				if (options?.me) return json(options.me);
+				return json({}, 404);
+			}
 			if (path === "/api/notifications" && method === "GET") return json(settings);
 			if (path === "/api/notifications" && method === "PUT") {
 				return json(await save(JSON.parse(String(init?.body)) as SaveNotificationSettings));
@@ -95,7 +104,7 @@ function renderCard(
 		}),
 	);
 	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-	if (options?.me) client.setQueryData(shellKeys.me, options.me);
+	if (options?.me && !options?.onMe) client.setQueryData(shellKeys.me, options.me);
 	render(
 		<QueryClientProvider client={client}>
 			<DueReminderCard probe={push} />
@@ -389,5 +398,130 @@ describe("due reminder settings", () => {
 		await waitFor(() => expect(unsubscribe).toHaveBeenCalledOnce());
 		expect(upsert).not.toHaveBeenCalled();
 		expect(screen.queryByRole("button", { name: "在此设备关闭" })).toBeNull();
+	});
+
+	it("waits for /api/me on cold start before checking push ownership so /api/notifications arriving first never hijacks another account's subscription", async () => {
+		writePushSubscriptionOwner("user-a", SUB.endpoint);
+		let resolveMe: (res: Response) => void = () => {};
+		const mePromise = new Promise<Response>((resolve) => {
+			resolveMe = resolve;
+		});
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const readSubscription = vi.fn(async () => SUB);
+		const { upsert } = renderCard(
+			probe({ readSubscription, unsubscribe }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 1 },
+			{ onMe: () => mePromise },
+		);
+
+		// /api/notifications 已返回，但 /api/me 仍在途：此时绝不能把 user-a 的订阅 upsert 给当前账号
+		await screen.findByRole("switch", { name: "到期提醒" });
+		await act(async () => {
+			await Promise.resolve();
+			await new Promise((r) => setTimeout(r, 10));
+		});
+		expect(upsert).not.toHaveBeenCalled();
+		expect(screen.queryByRole("button", { name: "在此设备关闭" })).toBeNull();
+
+		// /api/me 晚到并返回 user-b：识别出跨账号残留，执行浏览器退订且绝不 upsert
+		await act(async () => {
+			resolveMe(
+				new Response(
+					JSON.stringify({ user: { id: "user-b", email: "b@example.com", name: "B" }, source: "human" }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+			);
+			await Promise.resolve();
+		});
+		await waitFor(() => expect(unsubscribe).toHaveBeenCalledOnce());
+		expect(upsert).not.toHaveBeenCalled();
+		expect(readPushSubscriptionOwner()).toBeNull();
+		expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy();
+	});
+
+	it("fails closed without hijacking when /api/me fails and gtd:push-owner belongs to a recorded userId", async () => {
+		writePushSubscriptionOwner("user-a", SUB.endpoint);
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const { upsert } = renderCard(
+			probe({ readSubscription: async () => SUB, unsubscribe }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 1 },
+			{
+				onMe: async () =>
+					new Response(JSON.stringify({ message: "暂时不可用" }), {
+						status: 503,
+						headers: { "Content-Type": "application/json" },
+					}),
+			},
+		);
+		await screen.findByRole("button", { name: "在这台设备上开启" });
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 10));
+		});
+		expect(upsert).not.toHaveBeenCalled();
+		expect(unsubscribe).not.toHaveBeenCalled();
+		expect(screen.queryByRole("button", { name: "在此设备关闭" })).toBeNull();
+	});
+
+	it("backfills gtd:push-owner userId when /api/me resolves after turning on push", async () => {
+		let resolveMe: (res: Response) => void = () => {};
+		const mePromise = new Promise<Response>((resolve) => {
+			resolveMe = resolve;
+		});
+		renderCard(probe({ subscribe: async () => SUB }), SETTINGS, { onMe: () => mePromise });
+		fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
+		await waitFor(() => expect(screen.getByRole("button", { name: "在此设备关闭" })).toBeTruthy());
+		expect(readPushSubscriptionOwner()).toMatchObject({ userId: null, endpoint: SUB.endpoint });
+
+		await act(async () => {
+			resolveMe(
+				new Response(
+					JSON.stringify({ user: { id: "user-b", email: "b@example.com", name: "B" }, source: "human" }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+			);
+			await Promise.resolve();
+		});
+		await waitFor(() =>
+			expect(readPushSubscriptionOwner()).toEqual({
+				userId: "user-b",
+				endpoint: SUB.endpoint,
+				pendingUnsubscribe: false,
+			}),
+		);
+	});
+
+	it("ignores stale PUT subscriptionCount when the user disables this device while a time edit is in flight", async () => {
+		let releasePut: () => void = () => {};
+		const putGate = new Promise<void>((resolve) => {
+			releasePut = resolve;
+		});
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const { save, remove } = renderCard(
+			probe({ readSubscription: async () => SUB, unsubscribe }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 2 },
+		);
+		await screen.findByRole("button", { name: "在此设备关闭" });
+
+		save.mockImplementationOnce(async (body) => {
+			await putGate;
+			// 模拟先发出的 PUT 带回了删除前的旧 subscriptionCount: 2
+			return { ...SETTINGS, ...body, enabled: true, saved: true, vapidPublicKey: "test-public", subscriptionCount: 2 };
+		});
+
+		fireEvent.change(screen.getByLabelText("推送时间"), { target: { value: "10:00" } });
+		fireEvent.click(screen.getByRole("button", { name: "在此设备关闭" }));
+		await waitFor(() => expect(remove).toHaveBeenCalledWith(SUB.endpoint));
+		expect(await screen.findByText("其他 1 台设备已开启")).toBeTruthy();
+
+		// 晚到的旧 PUT 返回后不应把计数覆盖回 2
+		await act(async () => {
+			releasePut();
+			await Promise.resolve();
+		});
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 10));
+		});
+		expect(screen.getByText("其他 1 台设备已开启")).toBeTruthy();
+		expect(screen.queryByText("其他 2 台设备已开启")).toBeNull();
 	});
 });

@@ -118,25 +118,39 @@ export async function reconcilePushSubscriptionForUser(
 
 export type PushSignOutCleanupOutcome = {
 	readFailed: boolean;
-	serverDelete: "skipped" | "ok" | "failed";
+	/**
+	 * - "ok": 已向服务端删除当前用户订阅并成功
+	 * - "failed": 服务端删除请求失败
+	 * - "not-owned": 明确属于其他账号或待退订残留（pendingUnsubscribe），无需删当前用户服务端行
+	 * - "skipped": 未发起服务端删除（本机无订阅，或权限被撤 / 读取失败拿不到 endpoint）
+	 */
+	serverDelete: "skipped" | "not-owned" | "ok" | "failed";
 	browserUnsub: "skipped" | "none" | "unsubscribed" | "failed";
 };
 
 /** 退出登录时清理本机推送失败的提示文案；完全成功或本机无订阅返回 null。 */
 export function pushSignOutCleanupWarning(outcome: PushSignOutCleanupOutcome): string | null {
-	const serverFailed =
-		outcome.serverDelete === "failed" ||
-		(outcome.serverDelete === "skipped" && outcome.browserUnsub === "unsubscribed") ||
-		(outcome.readFailed && outcome.serverDelete !== "ok" && outcome.browserUnsub !== "none");
-	const browserFailed = outcome.browserUnsub === "failed";
-	if (!serverFailed && !browserFailed) return null;
-	if (serverFailed && browserFailed) {
+	if (outcome.browserUnsub === "failed") {
+		// 只有服务端 DELETE 确实成功时，才能宣称「服务端已移除本机订阅」。
+		if (outcome.serverDelete === "ok") {
+			return "已退出登录，服务端已移除本机订阅，但浏览器退订未完成";
+		}
 		return "已退出登录，但这台设备的推送订阅未能退订，请在浏览器通知设置中检查";
 	}
-	if (serverFailed) {
+
+	const serverFailed =
+		outcome.serverDelete === "failed" ||
+		(outcome.serverDelete === "skipped" &&
+			(outcome.browserUnsub === "unsubscribed" || (outcome.readFailed && outcome.browserUnsub === "skipped")));
+	if (!serverFailed) return null;
+
+	if (outcome.browserUnsub === "unsubscribed") {
 		return "已退出登录，本机已退订推送，但服务端订阅清理失败（下次推送时会自动失效）";
 	}
-	return "已退出登录，服务端已移除本机订阅，但浏览器退订未完成";
+	if (outcome.serverDelete === "failed") {
+		return "已退出登录，但服务端推送订阅清理失败（下次推送时会自动失效）";
+	}
+	return "已退出登录，但这台设备的推送订阅未能退订，请在浏览器通知设置中检查";
 }
 
 /** 用户在权限弹窗里拒绝之后，Notification.permission 会停在 denied。 */

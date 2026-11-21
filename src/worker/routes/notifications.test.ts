@@ -164,18 +164,26 @@ describe("DELETE /api/notifications/subscription route", () => {
 			env,
 		);
 
-		// 参数校验：缺 endpoint 或太短 → 400
-		const badRes = await worker.fetch(
-			new Request(`${ORIGIN}/api/notifications/subscription`, {
-				method: "DELETE",
-				headers: { "Content-Type": "application/json", Cookie: alice.cookie },
-				body: JSON.stringify({ endpoint: "short" }),
-			}),
-			env,
-		);
-		expect(badRes.status).toBe(400);
+		// 参数校验：缺 endpoint、太短、超长、非法 JSON / 空 body → 400
+		for (const body of [
+			JSON.stringify({ endpoint: "short" }),
+			JSON.stringify({}),
+			JSON.stringify({ endpoint: `https://fcm.googleapis.com/${"a".repeat(2000)}` }),
+			"{not-json",
+			"",
+		]) {
+			const badRes = await worker.fetch(
+				new Request(`${ORIGIN}/api/notifications/subscription`, {
+					method: "DELETE",
+					headers: { "Content-Type": "application/json", Cookie: alice.cookie },
+					body,
+				}),
+				env,
+			);
+			expect(badRes.status).toBe(400);
+		}
 
-		// 租户隔离：Bob 尝试删 Alice 的设备 → 返回 Bob 自己的计数，Alice 数据不受影响
+		// 租户隔离：Bob 尝试删 Alice 的设备 → 返回 Bob 自己的计数且 deleted: false，Alice 数据不受影响
 		const crossRes = await worker.fetch(
 			new Request(`${ORIGIN}/api/notifications/subscription`, {
 				method: "DELETE",
@@ -185,9 +193,9 @@ describe("DELETE /api/notifications/subscription route", () => {
 			env,
 		);
 		expect(crossRes.status).toBe(200);
-		expect(await crossRes.json()).toEqual({ subscriptionCount: 1 });
+		expect(await crossRes.json()).toEqual({ subscriptionCount: 1, deleted: false });
 
-		// Alice 删除 dev1 → 只删 dev1，保留 dev2 和总开关 enabled=true
+		// Alice 删除 dev1 → 只删 dev1（deleted: true），保留 dev2 和总开关 enabled=true
 		const del1 = await worker.fetch(
 			new Request(`${ORIGIN}/api/notifications/subscription`, {
 				method: "DELETE",
@@ -197,9 +205,9 @@ describe("DELETE /api/notifications/subscription route", () => {
 			env,
 		);
 		expect(del1.status).toBe(200);
-		expect(await del1.json()).toEqual({ subscriptionCount: 1 });
+		expect(await del1.json()).toEqual({ subscriptionCount: 1, deleted: true });
 
-		// 幂等：重复删除 dev1 返回 200 和相同的 subscriptionCount
+		// 幂等：重复删除 dev1 返回 200、相同 subscriptionCount 且 deleted: false
 		const del1Again = await worker.fetch(
 			new Request(`${ORIGIN}/api/notifications/subscription`, {
 				method: "DELETE",
@@ -209,7 +217,7 @@ describe("DELETE /api/notifications/subscription route", () => {
 			env,
 		);
 		expect(del1Again.status).toBe(200);
-		expect(await del1Again.json()).toEqual({ subscriptionCount: 1 });
+		expect(await del1Again.json()).toEqual({ subscriptionCount: 1, deleted: false });
 
 		const [aliceSettings] = await plain
 			.select()
@@ -243,7 +251,7 @@ describe("DELETE /api/notifications/subscription route", () => {
 			env,
 		);
 		expect(aliceLateDelete.status).toBe(200);
-		expect(await aliceLateDelete.json()).toEqual({ subscriptionCount: 0 });
+		expect(await aliceLateDelete.json()).toEqual({ subscriptionCount: 0, deleted: false });
 		const bobSubs = await plain
 			.select()
 			.from(pushSubscriptions)

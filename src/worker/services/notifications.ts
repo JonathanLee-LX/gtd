@@ -207,23 +207,25 @@ export async function upsertPushSubscription(
 /**
  * #123 / #129：删除当前用户在这台设备上的推送订阅（幂等）。
  * 只按 (user_id, endpoint) 删除，不影响总开关、其他设备或其他用户。
- * 1 次 D1 batch（DELETE + 查剩余订阅数）。
+ * 返回 deleted 供前端区分是否真的删到了当前用户的行（仅反映当前用户，不泄露他人数据）。
+ * 1 次 D1 batch（DELETE ... RETURNING + 查剩余订阅数）。
  */
 export async function deletePushSubscription(
 	db: AppDatabase,
 	userId: string,
 	endpoint: string,
-): Promise<{ subscriptionCount: number }> {
-	const [, subs] = (await runQueries(db, [
+): Promise<{ subscriptionCount: number; deleted: boolean }> {
+	const [deletedRows, subs] = (await runQueries(db, [
 		db
 			.delete(pushSubscriptions)
-			.where(and(eq(pushSubscriptions.userId, userId), eq(pushSubscriptions.endpoint, endpoint))),
+			.where(and(eq(pushSubscriptions.userId, userId), eq(pushSubscriptions.endpoint, endpoint)))
+			.returning({ endpoint: pushSubscriptions.endpoint }),
 		db
 			.select({ endpoint: pushSubscriptions.endpoint })
 			.from(pushSubscriptions)
 			.where(eq(pushSubscriptions.userId, userId)),
-	])) as [unknown, { endpoint: string }[]];
-	return { subscriptionCount: subs.length };
+	])) as [{ endpoint: string }[], { endpoint: string }[]];
+	return { subscriptionCount: subs.length, deleted: deletedRows.length > 0 };
 }
 
 /**

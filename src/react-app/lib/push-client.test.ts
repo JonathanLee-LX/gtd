@@ -117,6 +117,22 @@ describe("browserPushProbe.unsubscribe", () => {
 		vi.unstubAllGlobals();
 	});
 
+	it("returns none when PushManager, serviceWorker, or registration is unavailable", async () => {
+		vi.stubGlobal("window", {});
+		vi.stubGlobal("navigator", { serviceWorker: { getRegistration: vi.fn() } });
+		await expect(browserPushProbe.unsubscribe()).resolves.toEqual({ status: "none" });
+
+		vi.stubGlobal("window", { PushManager: {} });
+		vi.stubGlobal("navigator", {});
+		await expect(browserPushProbe.unsubscribe()).resolves.toEqual({ status: "none" });
+
+		vi.stubGlobal("window", { PushManager: {} });
+		vi.stubGlobal("navigator", {
+			serviceWorker: { getRegistration: vi.fn(async () => undefined) },
+		});
+		await expect(browserPushProbe.unsubscribe()).resolves.toEqual({ status: "none" });
+	});
+
 	it("returns none when there is no browser push subscription", async () => {
 		vi.stubGlobal("window", { PushManager: {} });
 		vi.stubGlobal("navigator", {
@@ -247,19 +263,56 @@ describe("push owner reconciliation and sign-out warnings", () => {
 			pushSignOutCleanupWarning({ readFailed: false, serverDelete: "ok", browserUnsub: "unsubscribed" }),
 		).toBeNull();
 		expect(
+			pushSignOutCleanupWarning({ readFailed: false, serverDelete: "ok", browserUnsub: "none" }),
+		).toBeNull();
+		expect(
 			pushSignOutCleanupWarning({ readFailed: false, serverDelete: "skipped", browserUnsub: "skipped" }),
 		).toBeNull();
 		expect(
+			pushSignOutCleanupWarning({ readFailed: false, serverDelete: "skipped", browserUnsub: "none" }),
+		).toBeNull();
+		expect(
+			pushSignOutCleanupWarning({ readFailed: true, serverDelete: "skipped", browserUnsub: "none" }),
+		).toBeNull();
+		expect(
+			pushSignOutCleanupWarning({ readFailed: false, serverDelete: "not-owned", browserUnsub: "unsubscribed" }),
+		).toBeNull();
+		expect(
+			pushSignOutCleanupWarning({ readFailed: false, serverDelete: "not-owned", browserUnsub: "none" }),
+		).toBeNull();
+
+		// 服务端失败 + 浏览器已退订
+		expect(
 			pushSignOutCleanupWarning({ readFailed: false, serverDelete: "failed", browserUnsub: "unsubscribed" }),
-		).toMatch(/服务端订阅清理失败/);
+		).toBe("已退出登录，本机已退订推送，但服务端订阅清理失败（下次推送时会自动失效）");
+
+		// 服务端失败 + 浏览器未退订（skipped / none）：不能误宣称「本机已退订推送」
+		for (const browserUnsub of ["skipped", "none"] as const) {
+			const msg = pushSignOutCleanupWarning({ readFailed: false, serverDelete: "failed", browserUnsub });
+			expect(msg).toMatch(/服务端推送订阅清理失败/);
+			expect(msg).not.toMatch(/本机已退订推送/);
+		}
+
+		// 仅在 serverDelete === "ok" 时才宣称「服务端已移除本机订阅」
 		expect(
 			pushSignOutCleanupWarning({ readFailed: false, serverDelete: "ok", browserUnsub: "failed" }),
-		).toMatch(/浏览器退订未完成/);
-		expect(
-			pushSignOutCleanupWarning({ readFailed: false, serverDelete: "failed", browserUnsub: "failed" }),
-		).toMatch(/未能退订/);
+		).toBe("已退出登录，服务端已移除本机订阅，但浏览器退订未完成");
+
+		// serverDelete === "skipped" 或 "not-owned" 或 "failed" 且 browserUnsub === "failed"：绝不能误报「服务端已移除本机订阅」
+		for (const serverDelete of ["skipped", "not-owned", "failed"] as const) {
+			const msg = pushSignOutCleanupWarning({ readFailed: false, serverDelete, browserUnsub: "failed" });
+			expect(msg).toBe("已退出登录，但这台设备的推送订阅未能退订，请在浏览器通知设置中检查");
+			expect(msg).not.toMatch(/服务端已移除本机订阅/);
+		}
+
 		expect(
 			pushSignOutCleanupWarning({ readFailed: true, serverDelete: "skipped", browserUnsub: "unsubscribed" }),
 		).toMatch(/服务端订阅清理失败/);
+		expect(
+			pushSignOutCleanupWarning({ readFailed: true, serverDelete: "skipped", browserUnsub: "failed" }),
+		).toBe("已退出登录，但这台设备的推送订阅未能退订，请在浏览器通知设置中检查");
+		expect(
+			pushSignOutCleanupWarning({ readFailed: true, serverDelete: "skipped", browserUnsub: "skipped" }),
+		).toBe("已退出登录，但这台设备的推送订阅未能退订，请在浏览器通知设置中检查");
 	});
 });

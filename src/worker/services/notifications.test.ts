@@ -483,7 +483,7 @@ describe("notification settings", () => {
 		// 跨租户删除：Bob 删 Alice 的 endpoint 必须无效，且不泄露 Alice 信息。
 		d1.reset();
 		const crossTenant = await deletePushSubscription(d1.db, other.id, dev1.input.endpoint);
-		expect(crossTenant).toEqual({ subscriptionCount: 1 });
+		expect(crossTenant).toEqual({ subscriptionCount: 1, deleted: false });
 		expect(d1.counter.roundTrips).toBe(1);
 		expect(d1.counter.statements).toBe(2);
 		expect((await getNotificationSettings(d1.db, me.id)).subscriptionCount).toBe(2);
@@ -492,7 +492,7 @@ describe("notification settings", () => {
 		d1.reset();
 		const afterFirst = await deletePushSubscription(d1.db, me.id, dev1.input.endpoint);
 		console.info("[#123/#129] delete subscription round trips", d1.counter.roundTrips, "statements", d1.counter.statements);
-		expect(afterFirst).toEqual({ subscriptionCount: 1 });
+		expect(afterFirst).toEqual({ subscriptionCount: 1, deleted: true });
 		expect(d1.counter.roundTrips).toBe(1);
 		expect(d1.counter.statements).toBe(2);
 		const settings = await getNotificationSettings(d1.db, me.id);
@@ -501,17 +501,24 @@ describe("notification settings", () => {
 		const remaining = await plain.select().from(pushSubscriptions).where(eq(pushSubscriptions.userId, me.id));
 		expect(remaining.map((r) => r.endpoint)).toEqual([dev2.input.endpoint]);
 
-		// 幂等：重复删 dev1 或删不存在的 endpoint 均返回当前剩余数量。
-		expect(await deletePushSubscription(d1.db, me.id, dev1.input.endpoint)).toEqual({ subscriptionCount: 1 });
+		// 幂等：重复删 dev1 或删不存在的 endpoint 均返回当前剩余数量与 deleted: false。
+		expect(await deletePushSubscription(d1.db, me.id, dev1.input.endpoint)).toEqual({
+			subscriptionCount: 1,
+			deleted: false,
+		});
 		expect(await deletePushSubscription(d1.db, me.id, "https://fcm.googleapis.com/fcm/send/missing")).toEqual({
 			subscriptionCount: 1,
+			deleted: false,
 		});
 
 		// 同浏览器切账号：同一个 endpoint 改挂到 Bob 后，Alice 再删也不能删掉 Bob 的行。
 		await upsertPushSubscription(d1.db, other.id, dev2.input, now);
 		expect((await getNotificationSettings(d1.db, me.id)).subscriptionCount).toBe(0);
 		expect((await getNotificationSettings(d1.db, other.id)).subscriptionCount).toBe(2);
-		expect(await deletePushSubscription(d1.db, me.id, dev2.input.endpoint)).toEqual({ subscriptionCount: 0 });
+		expect(await deletePushSubscription(d1.db, me.id, dev2.input.endpoint)).toEqual({
+			subscriptionCount: 0,
+			deleted: false,
+		});
 		expect((await getNotificationSettings(d1.db, other.id)).subscriptionCount).toBe(2);
 	});
 });

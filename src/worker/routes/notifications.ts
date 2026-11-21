@@ -56,11 +56,21 @@ export const notificationRoutes = new Hono<{
 			return upsertPushSubscription(createDb(c.env.DB), c.get("user").id, c.req.valid("json"));
 		}),
 	)
-	.delete("/subscription", zValidator("json", deletePushSubscriptionInput), (c) =>
-		handleRoute(c, async () => {
-			return deletePushSubscription(createDb(c.env.DB), c.get("user").id, c.req.valid("json").endpoint);
-		}),
-	)
+	.delete("/subscription", async (c) => {
+		let raw: unknown;
+		try {
+			raw = await c.req.json();
+		} catch {
+			return c.json({ error: "bad_request", message: "请求体不是合法 JSON" }, 400);
+		}
+		const parsed = deletePushSubscriptionInput.safeParse(raw);
+		if (!parsed.success) {
+			return c.json({ error: "bad_request", message: "参数无效" }, 400);
+		}
+		return handleRoute(c, async () => {
+			return deletePushSubscription(createDb(c.env.DB), c.get("user").id, parsed.data.endpoint);
+		});
+	})
 	.post("/test", zValidator("json", testNotificationInput), (c) =>
 		handleRoute(c, async () => {
 			await sendTestNotification(

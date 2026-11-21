@@ -15,6 +15,7 @@ import { useShellContext } from "../hooks/use-shell-data";
 import { readInboxHint, writeInboxHint } from "../lib/inbox-hint";
 import {
 	clearPushSubscriptionOwner,
+	markPushSubscriptionPendingUnsubscribe,
 	readPushSubscriptionOwner,
 	writePushSubscriptionOwner,
 	type PushProbe,
@@ -497,7 +498,7 @@ describe("Shell sign-out push cleanup & account switch (#123)", () => {
 		autoReply = (path, method) => {
 			if (path === "/api/notifications/subscription" && method === "DELETE") {
 				order.push("server-delete");
-				return { status: 200, body: { subscriptionCount: 0 } };
+				return { status: 200, body: { subscriptionCount: 0, deleted: true } };
 			}
 			if (path === "/api/auth/sign-out") {
 				order.push("sign-out");
@@ -545,7 +546,7 @@ describe("Shell sign-out push cleanup & account switch (#123)", () => {
 		client.setQueryData(["projects"], PROJECTS);
 		autoReply = (path, method) => {
 			if (path === "/api/notifications/subscription" && method === "DELETE") {
-				return { status: 200, body: { subscriptionCount: 0 } };
+				return { status: 200, body: { subscriptionCount: 0, deleted: true } };
 			}
 			if (path === "/api/auth/sign-out") return { status: 200, body: { success: true } };
 			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
@@ -559,7 +560,7 @@ describe("Shell sign-out push cleanup & account switch (#123)", () => {
 		expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/浏览器退订未完成/));
 	});
 
-	it("does not unsubscribe the browser and restores server subscription if api.signOut fails", async () => {
+	it("does not unsubscribe the browser and restores server subscription when DELETE actually deleted a row and api.signOut fails", async () => {
 		const errorSpy = vi.spyOn(toast, "error");
 		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
 		const client = makeClient();
@@ -567,7 +568,7 @@ describe("Shell sign-out push cleanup & account switch (#123)", () => {
 		client.setQueryData(["projects"], PROJECTS);
 		autoReply = (path, method) => {
 			if (path === "/api/notifications/subscription" && method === "DELETE") {
-				return { status: 200, body: { subscriptionCount: 0 } };
+				return { status: 200, body: { subscriptionCount: 0, deleted: true } };
 			}
 			if (path === "/api/notifications/subscription" && method === "POST") {
 				return { status: 200, body: { subscriptionCount: 1 } };
@@ -583,6 +584,278 @@ describe("Shell sign-out push cleanup & account switch (#123)", () => {
 		expect(loginMounts).toBe(0);
 		expect(unsubscribe).not.toHaveBeenCalled();
 		expect(fetchLog.some((r) => r.method === "POST" && r.path === "/api/notifications/subscription")).toBe(true);
+		expect(errorSpy).toHaveBeenCalledWith("退出失败：服务不可用");
+	});
+
+	it("does not resurrect a pendingUnsubscribe leftover on server when api.signOut fails", async () => {
+		markPushSubscriptionPendingUnsubscribe(SUB.endpoint);
+		const errorSpy = vi.spyOn(toast, "error");
+		// 模拟登录后首次后台重试退订仍然失败，因此浏览器仍残留订阅且 pendingUnsubscribe 为 true
+		const unsubscribe = vi.fn(async () => ({ status: "failed" as const, endpoint: SUB.endpoint }));
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path) => {
+			if (path === "/api/auth/sign-out") return { status: 500, body: { message: "网络异常" } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client, makePushProbe({ unsubscribe }));
+		await waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(1));
+		await triggerSignOut();
+		await waitFor(() => expect(errorSpy).toHaveBeenCalled());
+		expect(loginMounts).toBe(0);
+		expect(fetchLog.some((r) => r.path === "/api/notifications/subscription")).toBe(false);
+		expect(unsubscribe).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not delete or hijack another account's leftover browser subscription when api.signOut fails", async () => {
+		writePushSubscriptionOwner("u-prev", SUB.endpoint);
+		const errorSpy = vi.spyOn(toast, "error");
+		// 模拟切号后的后台退订挂起未完成，随后用户立刻点退出且 signOut 失败
+		let releaseReconcile: () => void = () => {};
+		const unsubscribe = vi.fn(
+			() =>
+				new Promise<{ status: "failed"; endpoint: string }>((resolve) => {
+					releaseReconcile = () => resolve({ status: "failed", endpoint: SUB.endpoint });
+				}),
+		);
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path) => {
+			if (path === "/api/auth/sign-out") return { status: 500, body: { message: "服务不可用" } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client, makePushProbe({ unsubscribe }));
+		await act(flush);
+		await triggerSignOut();
+		await waitFor(() => expect(errorSpy).toHaveBeenCalled());
+		expect(loginMounts).toBe(0);
+		expect(fetchLog.some((r) => r.path === "/api/notifications/subscription")).toBe(false);
+		releaseReconcile();
+	});
+
+	it("does not restore subscription when server DELETE matched 0 rows (deleted: false) and api.signOut fails", async () => {
+		const errorSpy = vi.spyOn(toast, "error");
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path, method) => {
+			if (path === "/api/notifications/subscription" && method === "DELETE") {
+				return { status: 200, body: { subscriptionCount: 0, deleted: false } };
+			}
+			if (path === "/api/auth/sign-out") return { status: 500, body: { message: "服务不可用" } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client, makePushProbe({ unsubscribe }));
+		await act(flush);
+		await triggerSignOut();
+		await waitFor(() => expect(errorSpy).toHaveBeenCalled());
+		expect(fetchLog.some((r) => r.method === "DELETE" && r.path === "/api/notifications/subscription")).toBe(true);
+		expect(fetchLog.some((r) => r.method === "POST" && r.path === "/api/notifications/subscription")).toBe(false);
+		expect(errorSpy).toHaveBeenCalledWith("退出失败：服务不可用");
+	});
+
+	it("shows an honest error notice when api.signOut fails and restoring the deleted subscription also fails", async () => {
+		const errorSpy = vi.spyOn(toast, "error");
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path, method) => {
+			if (path === "/api/notifications/subscription" && method === "DELETE") {
+				return { status: 200, body: { subscriptionCount: 0, deleted: true } };
+			}
+			if (path === "/api/notifications/subscription" && method === "POST") {
+				return { status: 500, body: { message: "写入失败" } };
+			}
+			if (path === "/api/auth/sign-out") return { status: 500, body: { message: "网络中断" } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client, makePushProbe({ unsubscribe }));
+		await act(flush);
+		await triggerSignOut();
+		await waitFor(() => expect(errorSpy).toHaveBeenCalled());
+		expect(loginMounts).toBe(0);
+		expect(unsubscribe).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/本机推送订阅未能恢复.*设置页重新开启/));
+	});
+
+	it("cleans up a pendingUnsubscribe browser leftover on sign-out without a false server-delete warning", async () => {
+		markPushSubscriptionPendingUnsubscribe(SUB.endpoint);
+		const warnSpy = vi.spyOn(toast, "warning");
+		const unsubscribe = vi
+			.fn()
+			.mockResolvedValueOnce({ status: "failed" as const, endpoint: SUB.endpoint })
+			.mockResolvedValueOnce({ status: "unsubscribed" as const, endpoint: SUB.endpoint });
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path) => {
+			if (path === "/api/auth/sign-out") return { status: 200, body: { success: true } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client, makePushProbe({ unsubscribe }));
+		await waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(1));
+		await triggerSignOut();
+		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
+		expect(unsubscribe).toHaveBeenCalledTimes(2);
+		expect(fetchLog.some((r) => r.method === "DELETE" && r.path === "/api/notifications/subscription")).toBe(false);
+		expect(readPushSubscriptionOwner()).toBeNull();
+		expect(warnSpy).not.toHaveBeenCalled();
+	});
+
+	it("does not falsely claim server removed subscription when readSubscription returns null (no owner) and browser unsubscribe fails", async () => {
+		const warnSpy = vi.spyOn(toast, "warning");
+		const unsubscribe = vi.fn(async () => ({ status: "failed" as const, endpoint: SUB.endpoint }));
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path) => {
+			if (path === "/api/auth/sign-out") return { status: 200, body: { success: true } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client, makePushProbe({ readSubscription: async () => null, unsubscribe }));
+		await act(flush);
+		await triggerSignOut();
+		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
+		expect(fetchLog.some((r) => r.method === "DELETE" && r.path === "/api/notifications/subscription")).toBe(false);
+		expect(warnSpy).toHaveBeenCalledWith("已退出登录，但这台设备的推送订阅未能退订，请在浏览器通知设置中检查");
+	});
+
+	it("falls back to gtd:push-owner endpoint for DELETE when readSubscription returns null", async () => {
+		writePushSubscriptionOwner(ME.user.id, SUB.endpoint);
+		const warnSpy = vi.spyOn(toast, "warning");
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path, method) => {
+			if (path === "/api/notifications/subscription" && method === "DELETE") {
+				return { status: 200, body: { subscriptionCount: 0, deleted: true } };
+			}
+			if (path === "/api/auth/sign-out") return { status: 200, body: { success: true } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client, makePushProbe({ readSubscription: async () => null, unsubscribe }));
+		await act(flush);
+		await triggerSignOut();
+		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
+		const delCall = fetchLog.find((r) => r.method === "DELETE" && r.path === "/api/notifications/subscription");
+		expect(delCall?.body).toBe(JSON.stringify({ endpoint: SUB.endpoint }));
+		expect(warnSpy).not.toHaveBeenCalled();
+	});
+
+	it("warns honestly when readSubscription throws or when both server DELETE and browser unsubscribe fail", async () => {
+		const warnSpy = vi.spyOn(toast, "warning");
+		const client1 = makeClient();
+		client1.setQueryData(["me"], ME);
+		client1.setQueryData(["projects"], PROJECTS);
+		autoReply = (path) => {
+			if (path === "/api/auth/sign-out") return { status: 200, body: { success: true } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(
+			client1,
+			makePushProbe({
+				readSubscription: async () => {
+					throw new Error("SW broken");
+				},
+				unsubscribe: async () => ({ status: "unsubscribed", endpoint: SUB.endpoint }),
+			}),
+		);
+		await act(flush);
+		await triggerSignOut();
+		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
+		expect(warnSpy).toHaveBeenLastCalledWith(expect.stringMatching(/服务端订阅清理失败/));
+
+		cleanup();
+		warnSpy.mockClear();
+		const client2 = makeClient();
+		client2.setQueryData(["me"], ME);
+		client2.setQueryData(["projects"], PROJECTS);
+		autoReply = (path, method) => {
+			if (path === "/api/notifications/subscription" && method === "DELETE") {
+				return { status: 500, body: { message: "boom" } };
+			}
+			if (path === "/api/auth/sign-out") return { status: 200, body: { success: true } };
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(
+			client2,
+			makePushProbe({
+				unsubscribe: async () => ({ status: "failed", endpoint: SUB.endpoint }),
+			}),
+		);
+		await act(flush);
+		await triggerSignOut();
+		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
+		expect(warnSpy).toHaveBeenCalledWith("已退出登录，但这台设备的推送订阅未能退订，请在浏览器通知设置中检查");
+	});
+
+	it("runs push cleanup when confirming sign-out from the #115 unsaved-changes dialog", async () => {
+		const order: string[] = [];
+		const unsubscribe = vi.fn(async () => {
+			order.push("browser-unsubscribe");
+			return { status: "unsubscribed" as const, endpoint: SUB.endpoint };
+		});
+		const client = makeClient();
+		client.setQueryData(["me"], ME);
+		client.setQueryData(["projects"], PROJECTS);
+		autoReply = (path, method) => {
+			if (path === "/api/notifications/subscription" && method === "DELETE") {
+				order.push("server-delete");
+				return { status: 200, body: { subscriptionCount: 0, deleted: true } };
+			}
+			if (path === "/api/auth/sign-out") {
+				order.push("sign-out");
+				return { status: 200, body: { success: true } };
+			}
+			if (path === "/api/tasks/focus") return { status: 200, body: { items: [], today: "2026-10-09" } };
+			return undefined;
+		};
+		renderShell(client, makePushProbe({ unsubscribe }));
+		await act(flush);
+		getTaskAutosave(client).edit(
+			{
+				id: "t1",
+				title: "写周报",
+				notes: null,
+				status: "next",
+				priority: "none",
+				dueAt: null,
+				startAt: null,
+				waitingOn: null,
+				projectId: "inbox",
+				projectName: "收件箱",
+				parentId: null,
+				source: "human",
+				createdAt: "2026-10-09T00:00:00.000Z",
+				updatedAt: "2026-10-09T00:00:00.000Z",
+				completedAt: null,
+				deletedAt: null,
+				tags: [],
+			},
+			{ notes: "未保存" },
+			{ debounce: true },
+		);
+		await triggerSignOut();
+		await act(async () => {
+			fireEvent.click(await screen.findByRole("button", { name: "仍然退出" }));
+			await flush();
+		});
+		await waitFor(() => expect(screen.getByText("登录页")).toBeTruthy());
+		expect(order).toEqual(["server-delete", "sign-out", "browser-unsubscribe"]);
 	});
 
 	it("unsubscribes a previous account's browser push subscription when a different user signs in", async () => {

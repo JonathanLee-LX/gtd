@@ -225,3 +225,45 @@ describe("TaskAutosaveQueue edge cases (#93)", () => {
 		expect(queue.getSnapshot("real-93-1").status).toBe("saved");
 	});
 });
+
+describe("TaskAutosaveQueue keepalive dedup (#118)", () => {
+	it("inFlight 期间连续多次 keepalive flush：相同增量只发一次；若返回成功，afterSettle 也不重发", async () => {
+		const resolvers: Array<() => void> = [];
+		api.updateTask.mockImplementation(
+			(id: string, body: Record<string, unknown>) =>
+				new Promise((resolve) =>
+					resolvers.push(() => resolve({ task: { ...task({ id }), ...body } })),
+				),
+		);
+
+		queue.edit(task(), { notes: "第一个请求" });
+		queue.edit(task(), { title: "增量标题" }, { debounce: true });
+
+		queue.flushAll({ keepalive: true });
+		queue.flushAll({ keepalive: true });
+		queue.flushAll({ keepalive: true });
+		expect(api.updateTask).toHaveBeenCalledTimes(2);
+		expect(api.updateTask).toHaveBeenNthCalledWith(1, "t1", { notes: "第一个请求" });
+		expect(api.updateTask).toHaveBeenNthCalledWith(2, "t1", { title: "增量标题" }, { keepalive: true });
+
+		// 增量 keepalive 先返回，随后第一个请求返回：不再发第三次重复 PATCH。
+		resolvers[1]!();
+		await vi.advanceTimersByTimeAsync(0);
+		resolvers[0]!();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.updateTask).toHaveBeenCalledTimes(2);
+		expect(queue.getSnapshot("t1").status).toBe("saved");
+	});
+
+	it("inFlight 期间已发过 keepalive 后用户又改了新值：新值仍会发出", () => {
+		api.updateTask.mockImplementation(() => new Promise(() => {}));
+		queue.edit(task(), { notes: "在飞" });
+		queue.edit(task(), { title: "标题 v1" }, { debounce: true });
+		queue.flushAll({ keepalive: true });
+		queue.edit(task(), { title: "标题 v2" }, { debounce: true });
+		queue.flushAll({ keepalive: true });
+		expect(api.updateTask).toHaveBeenCalledTimes(3);
+		expect(api.updateTask).toHaveBeenNthCalledWith(2, "t1", { title: "标题 v1" }, { keepalive: true });
+		expect(api.updateTask).toHaveBeenNthCalledWith(3, "t1", { title: "标题 v2" }, { keepalive: true });
+	});
+});

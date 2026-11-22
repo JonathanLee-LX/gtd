@@ -1,3 +1,4 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { CheckIcon, Loader2Icon, TriangleAlertIcon } from "lucide-react";
 import { useTaskAutosave, useTaskSaveStatus } from "../hooks/use-task-autosave";
@@ -30,11 +31,22 @@ export function TaskSaveStatus({ taskId, className }: { taskId: string; classNam
 					>
 						重试
 					</button>
-				) : (
-					<span className="min-w-0 truncate text-muted-foreground" title={error ?? undefined}>
-						{error}
-					</span>
-				)}
+				) : error ? (
+					<Tooltip>
+						<TooltipTrigger
+							type="button"
+							delay={0}
+							closeOnClick={false}
+							data-save-error-trigger=""
+							className="min-w-0 cursor-help truncate rounded-sm text-left text-muted-foreground underline decoration-dotted underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+						>
+							{error}
+						</TooltipTrigger>
+						<TooltipContent side="bottom" align="end" className="max-w-xs break-words whitespace-normal">
+							{error}
+						</TooltipContent>
+					</Tooltip>
+				) : null}
 			</>
 		);
 	} else if (status === "saving") {

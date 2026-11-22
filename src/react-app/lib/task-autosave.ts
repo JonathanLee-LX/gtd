@@ -182,6 +182,8 @@ type Entry = {
 	rejected: Partial_;
 	rejectedMessage: string | null;
 	titleInvalid: boolean;
+	/** #118：本轮隐藏 / 卸载期间已通过 keepalive（或卸载开始时已在飞）发出的字段值，避免重复 PATCH。 */
+	keepaliveSent: Partial_;
 };
 
 type Listener = () => void;
@@ -193,6 +195,8 @@ export class TaskAutosaveQueue {
 	private keepaliveInflightBytes = 0;
 	private seq = 0;
 	private disposed = false;
+	/** #118：beforeunload / pagehide 卸载期间为 true，避免普通请求被卸载中止后重复发 keepalive PATCH。 */
+	private unloading = false;
 	/**
 	 * 401 时没能把改动暂存到本机（localStorage 满了等）：队列先留着、不再发请求，beforeunload 一直拦，
 	 * 重新登录后（同一用户）再补发。`userId` 是当时的用户（不知道就是 null，重新登录后不补发）。
@@ -261,6 +265,7 @@ export class TaskAutosaveQueue {
 			rejected: {},
 			rejectedMessage: null,
 			titleInvalid: false,
+			keepaliveSent: {},
 		};
 		this.entries.set(task.id, entry);
 		return entry;
@@ -281,6 +286,31 @@ export class TaskAutosaveQueue {
 			if (!sameAutosaveValue(field, value as never, entry.confirmed[field] as never)) {
 				(out as Record<string, unknown>)[field] = value;
 			}
+		}
+		return out;
+	}
+
+	/** #118：keepalive flush 待发字段，跳过已在飞或本轮已发出且值相同的字段。 */
+	private keepaliveDiff(entry: Entry): Partial_ {
+		const patch = this.diff(entry);
+		const out: Partial_ = {};
+		for (const field of FIELDS) {
+			if (!(field in patch)) continue;
+			const value = patch[field];
+			if (
+				entry.sending &&
+				field in entry.sending &&
+				sameAutosaveValue(field, value as never, entry.sending[field] as never)
+			) {
+				continue;
+			}
+			if (
+				field in entry.keepaliveSent &&
+				sameAutosaveValue(field, value as never, entry.keepaliveSent[field] as never)
+			) {
+				continue;
+			}
+			(out as Record<string, unknown>)[field] = value;
 		}
 		return out;
 	}
@@ -383,10 +413,17 @@ export class TaskAutosaveQueue {
 	 * 改回服务端值就不再算改动。
 	 */
 	edit(task: Task, values: Partial_, opts: { debounce?: boolean } = {}) {
+		this.unloading = false;
 		const entry = this.ensure(task);
 		for (const field of FIELDS) {
 			if (!(field in values)) continue;
 			const value = values[field];
+			if (
+				field in entry.keepaliveSent &&
+				!sameAutosaveValue(field, value as never, entry.keepaliveSent[field] as never)
+			) {
+				delete entry.keepaliveSent[field];
+			}
 			if (field in entry.rejected) {
 				// 用户在改被拒绝的字段：重新排队（改回服务端值就等于放弃这次改动）。
 				delete entry.rejected[field];
@@ -483,6 +520,9 @@ export class TaskAutosaveQueue {
 
 	/** 「保存失败 · 重试」：重发所有和服务端还不一样的字段。 */
 	retry(id: string) {
+		this.unloading = false;
+		const entry = this.lookup(id);
+		if (entry) entry.keepaliveSent = {};
 		this.flush(id);
 	}
 
@@ -560,15 +600,34 @@ export class TaskAutosaveQueue {
 				this.foldIntoCreate(entry);
 				return;
 			}
-			// 页面要关了：在飞的那个可能回不来，把剩下的改动用 keepalive 先发出去（重复发同样的值无害）。
+			// 页面要关了：只把还没在飞 / 还没通过 keepalive 发出的增量改动发出去，跳过重复 patch（#118）。
 			if (opts.keepalive && !isTempTaskId(entry.key)) {
-				void this.request(entry, entry.key, toApiPatch(entry.edits), true).catch(() => undefined);
+				const extra = this.keepaliveDiff(entry);
+				if (Object.keys(extra).length > 0) {
+					Object.assign(entry.keepaliveSent, extra);
+					void this.request(entry, entry.key, toApiPatch(extra), true).then(
+						(res) => this.onKeepaliveExtraSuccess(entry, extra, res.task),
+						() => {
+							if (!this.unloading) {
+								for (const field of Object.keys(extra) as AutosaveField[]) {
+									if (sameAutosaveValue(field, entry.keepaliveSent[field] as never, extra[field] as never)) {
+										delete entry.keepaliveSent[field];
+									}
+								}
+							}
+						},
+					);
+				}
 			}
 			if (entry.snapshot.status !== "error") this.setStatus(entry, "saving");
 			return;
 		}
-		const patch = this.diff(entry);
+		const patch = opts.keepalive ? this.keepaliveDiff(entry) : this.diff(entry);
 		if (Object.keys(patch).length === 0) {
+			if (opts.keepalive && Object.keys(this.diff(entry)).length > 0) {
+				// #118：相同的改动已在卸载前 / 本轮 keepalive 发过，跳过重复 PATCH。
+				return;
+			}
 			// 改回了原值：没有要发的。
 			entry.edits = {};
 			// #93：保存失败或 4xx 被拒的字段改回服务端值后，清掉失败提示。
@@ -636,6 +695,7 @@ export class TaskAutosaveQueue {
 			const patch = this.diff(entry);
 			if (entry.discarded || Object.keys(patch).length === 0) return Promise.resolve(null);
 			entry.sending = patch;
+			if (opts.keepalive) Object.assign(entry.keepaliveSent, patch);
 			for (const field of Object.keys(patch) as AutosaveField[]) delete entry.edits[field];
 			this.maybeRekey(entry);
 			const body = toApiPatch(patch);
@@ -721,6 +781,26 @@ export class TaskAutosaveQueue {
 			});
 	}
 
+	/** #118：inFlight 期间附带发出的 keepalive 请求若在页面存活时返回，更新 confirmed 并避免重复发。 */
+	private onKeepaliveExtraSuccess(entry: Entry, sent: Partial_, task: Task) {
+		if (this.disposed || entry.discarded) return;
+		for (const field of Object.keys(sent) as AutosaveField[]) {
+			(entry.confirmed as Record<string, unknown>)[field] = sent[field];
+			if (field in entry.edits && sameAutosaveValue(field, entry.edits[field] as never, sent[field] as never)) {
+				delete entry.edits[field];
+			}
+			if (
+				field in entry.keepaliveSent &&
+				sameAutosaveValue(field, entry.keepaliveSent[field] as never, sent[field] as never)
+			) {
+				delete entry.keepaliveSent[field];
+			}
+		}
+		this.maybeRekey(entry);
+		this.writeServerTask(entry, task);
+		if (!entry.inFlight && !entry.waitingForCreate) this.afterSettle(entry, true);
+	}
+
 	private onSuccess(entry: Entry, data: { task: Task } | null | typeof SKIPPED_BY_DELETE) {
 		entry.inFlight = false;
 		// 已退出 / 换了账号：缓存属于下一个人了，别写回去。
@@ -733,6 +813,14 @@ export class TaskAutosaveQueue {
 		entry.sending = null;
 		if (entry.discarded) return;
 		Object.assign(entry.confirmed, sent);
+		for (const field of Object.keys(sent) as AutosaveField[]) {
+			if (
+				field in entry.keepaliveSent &&
+				sameAutosaveValue(field, entry.keepaliveSent[field] as never, sent[field] as never)
+			) {
+				delete entry.keepaliveSent[field];
+			}
+		}
 		this.maybeRekey(entry);
 		if (data) this.writeServerTask(entry, data.task);
 		this.afterSettle(entry, true);
@@ -748,6 +836,16 @@ export class TaskAutosaveQueue {
 		const sent = entry.sending ?? {};
 		entry.sending = null;
 		if (entry.discarded) return;
+		if (!this.unloading) {
+			for (const field of Object.keys(sent) as AutosaveField[]) {
+				if (
+					field in entry.keepaliveSent &&
+					sameAutosaveValue(field, entry.keepaliveSent[field] as never, sent[field] as never)
+				) {
+					delete entry.keepaliveSent[field];
+				}
+			}
+		}
 		if (err instanceof ApiError && err.status === 404) {
 			// 任务已经不在了（别处删了）：放弃这条的改动。
 			this.discard(entry.key);
@@ -898,9 +996,26 @@ export class TaskAutosaveQueue {
 	// ------------------------------------------------------------------ lifecycle
 
 	private installLifecycle() {
+		const markInFlightForUnload = () => {
+			this.unloading = true;
+			for (const entry of this.entries.values()) {
+				if (!entry.discarded && entry.inFlight && entry.sending) {
+					Object.assign(entry.keepaliveSent, entry.sending);
+				}
+			}
+		};
+		const resetKeepaliveDedupe = () => {
+			this.unloading = false;
+			for (const entry of this.entries.values()) entry.keepaliveSent = {};
+		};
 		const onHide = () => this.flushAll({ keepalive: true });
+		const onPageHide = () => {
+			markInFlightForUnload();
+			onHide();
+		};
 		const onVisibility = () => {
 			if (document.visibilityState === "hidden") onHide();
+			else resetKeepaliveDedupe();
 		};
 		const onBeforeUnload = (event: BeforeUnloadEvent) => {
 			// 失败过的、或还发不出去（等真实 id）的改动：提示一下；其它的直接 keepalive 发出去。
@@ -910,6 +1025,7 @@ export class TaskAutosaveQueue {
 					((entry.waitingForCreate || isAwaitingRealId(entry.key)) &&
 						(this.hasEdits(entry) || entry.inFlight || entry.waitingForCreate)),
 			);
+			markInFlightForUnload();
 			onHide();
 			// keepalive 发不了、改用普通请求（页面关掉可能被取消）的：也拦，直到普通请求成功。
 			const guarded =
@@ -919,11 +1035,13 @@ export class TaskAutosaveQueue {
 			event.preventDefault();
 			event.returnValue = "";
 		};
-		window.addEventListener("pagehide", onHide);
+		window.addEventListener("pagehide", onPageHide);
+		window.addEventListener("pageshow", resetKeepaliveDedupe);
 		document.addEventListener("visibilitychange", onVisibility);
 		window.addEventListener("beforeunload", onBeforeUnload);
 		this.disposeLifecycle = () => {
-			window.removeEventListener("pagehide", onHide);
+			window.removeEventListener("pagehide", onPageHide);
+			window.removeEventListener("pageshow", resetKeepaliveDedupe);
 			document.removeEventListener("visibilitychange", onVisibility);
 			window.removeEventListener("beforeunload", onBeforeUnload);
 		};

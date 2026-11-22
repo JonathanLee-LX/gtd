@@ -750,3 +750,106 @@ describe("task detail error clearing and delete-failure recovery (#93)", () => {
 		expect(server.get("t1")?.title).toBe("删除前改的标题");
 	});
 });
+
+describe("autosave 4xx tooltip & keepalive dedup (#118)", () => {
+	const hide = () => {
+		const spy = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+		document.dispatchEvent(new Event("visibilitychange"));
+		spy.mockRestore();
+	};
+
+	it("(a) 4xx 失败原因截断时：悬停与键盘聚焦均可打开 Tooltip 查看完整原因", async () => {
+		const longReason = "QA模拟：等待对象不合法，不能包含特殊控制字符或超长内容";
+		mount([task()]);
+		failNext.push(new ApiError(longReason, 422, "validation_error"));
+		type(waitingInput(), "非法对象");
+		fireEvent.blur(waitingInput());
+		await settle();
+
+		const trigger = document.querySelector("[data-save-error-trigger]") as HTMLButtonElement | null;
+		expect(trigger).not.toBeNull();
+		expect(trigger!.tagName).toBe("BUTTON");
+		expect(trigger!.getAttribute("type")).toBe("button");
+		expect(trigger!.tabIndex).toBe(0);
+		expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
+
+		// 键盘聚焦：Tooltip 展开显示完整原因
+		await act(async () => {
+			trigger!.focus();
+			fireEvent.focus(trigger!);
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		const popupAfterFocus = document.querySelector('[data-slot="tooltip-content"]');
+		expect(popupAfterFocus?.hasAttribute("data-open")).toBe(true);
+		expect(popupAfterFocus?.textContent).toBe(longReason);
+
+		// 失焦后关闭
+		await act(async () => {
+			trigger!.blur();
+			fireEvent.blur(trigger!);
+			await vi.advanceTimersByTimeAsync(200);
+		});
+		const popupAfterBlur = document.querySelector('[data-slot="tooltip-content"]');
+		expect(popupAfterBlur === null || popupAfterBlur.hasAttribute("data-closed")).toBe(true);
+
+		// 指针悬停：Tooltip 展开显示完整原因
+		await act(async () => {
+			fireEvent.pointerEnter(trigger!, { pointerType: "mouse" });
+			fireEvent.mouseEnter(trigger!);
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		const popupAfterHover = document.querySelector('[data-slot="tooltip-content"]');
+		expect(popupAfterHover?.hasAttribute("data-open")).toBe(true);
+		expect(popupAfterHover?.textContent).toBe(longReason);
+	});
+
+	it("(b) 改标题后立即刷新（失焦 + beforeunload + 卸载中止 + visibilitychange + pagehide）：只发一次 PATCH", async () => {
+		mount([task()]);
+		manual = true;
+		type(titleInput(), "原标题-刚改完");
+		// 点击浏览器刷新按钮导致输入框先失焦发出普通 PATCH
+		fireEvent.blur(titleInput());
+		expect(calls).toEqual([{ id: "t1", body: { title: "原标题-刚改完" }, keepalive: false }]);
+
+		// 浏览器依次触发 beforeunload → 中止普通 fetch → visibilitychange(hidden) → pagehide
+		const beforeUnload = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(beforeUnload);
+		expect(beforeUnload.defaultPrevented).toBe(false);
+		await act(async () => {
+			held.shift()!.reject(new TypeError("Failed to fetch"));
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		hide();
+		window.dispatchEvent(new Event("pagehide"));
+
+		expect(calls).toHaveLength(1);
+	});
+
+	it("(b) 改标题后直接快捷键刷新（beforeunload + visibilitychange + pagehide）：只发一次 keepalive PATCH", () => {
+		mount([task()]);
+		manual = true;
+		type(titleInput(), "快捷键刷新标题");
+		window.dispatchEvent(new Event("beforeunload", { cancelable: true }));
+		hide();
+		window.dispatchEvent(new Event("pagehide"));
+		expect(calls).toEqual([{ id: "t1", body: { title: "快捷键刷新标题" }, keepalive: true }]);
+	});
+
+	it("(b) 前一个 PATCH 在飞时改标题并立即刷新：keepalive 增量 PATCH 只发一次（不随多事件重复）", () => {
+		mount([task()]);
+		manual = true;
+		type(notesInput(), "先发一个在飞的备注");
+		fireEvent.blur(notesInput());
+		expect(calls).toHaveLength(1);
+
+		type(titleInput(), "飞行中改的标题");
+		window.dispatchEvent(new Event("beforeunload", { cancelable: true }));
+		hide();
+		window.dispatchEvent(new Event("pagehide"));
+
+		expect(calls).toEqual([
+			{ id: "t1", body: { notes: "先发一个在飞的备注" }, keepalive: false },
+			{ id: "t1", body: { title: "飞行中改的标题" }, keepalive: true },
+		]);
+	});
+});

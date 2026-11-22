@@ -1,13 +1,71 @@
-import { and, eq, inArray } from "drizzle-orm";
-import { tags, taskTags } from "../../db/schema";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { activityLog, tags, tasks, taskTags } from "../../db/schema";
 import type { AppDatabase } from "../../db/client";
 import type { TaskSource } from "../../shared/schemas";
+import { notFound } from "../lib/errors";
 import { newId, nowIso } from "../lib/ids";
 import { chunks, D1_MAX_BOUND_PARAMS, runBatch } from "../lib/batch";
 import { logActivity } from "./activity";
 
 export async function listTags(db: AppDatabase, userId: string) {
-	return db.select().from(tags).where(eq(tags.userId, userId));
+	// #122：单次 SQL 返回各标签关联的未删除任务数，保持 1 次 D1 往返。
+	const rows = await db
+		.select({
+			id: tags.id,
+			userId: tags.userId,
+			name: tags.name,
+			createdAt: tags.createdAt,
+			taskCount: sql<number>`count(${tasks.id})`,
+		})
+		.from(tags)
+		.leftJoin(taskTags, eq(taskTags.tagId, tags.id))
+		.leftJoin(
+			tasks,
+			and(
+				eq(tasks.id, taskTags.taskId),
+				eq(tasks.userId, userId),
+				isNull(tasks.deletedAt),
+			),
+		)
+		.where(eq(tags.userId, userId))
+		.groupBy(tags.id, tags.userId, tags.name, tags.createdAt)
+		.orderBy(asc(tags.name), asc(tags.id));
+	return rows.map((row) => ({ ...row, taskCount: Number(row.taskCount) }));
+}
+
+export async function deleteTag(
+	db: AppDatabase,
+	userId: string,
+	tagId: string,
+	source: TaskSource,
+) {
+	const existing = await db
+		.select()
+		.from(tags)
+		.where(and(eq(tags.id, tagId), eq(tags.userId, userId)))
+		.limit(1);
+	const tag = existing[0];
+	if (!tag) throw notFound("标签");
+
+	// #122：task_tags.tag_id 已有 ON DELETE CASCADE（D1 默认开启外键）；
+	// 显式删关联行、删标签、写活动放进同一个 batch（1 次往返，原子提交/回滚），
+	// 在未开启 PRAGMA foreign_keys 的 SQLite 连接下同样保证级联清理。
+	await runBatch(db, [
+		db.delete(taskTags).where(eq(taskTags.tagId, tag.id)),
+		db.delete(tags).where(and(eq(tags.id, tag.id), eq(tags.userId, userId))),
+		db.insert(activityLog).values({
+			id: newId(),
+			userId,
+			actorType: source,
+			actorId: userId,
+			action: "tag.delete",
+			entityType: "tag",
+			entityId: tag.id,
+			summary: `删除标签「${tag.name}」`,
+			createdAt: nowIso(),
+		}),
+	]);
+	return { ok: true as const };
 }
 
 export async function createTag(

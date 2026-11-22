@@ -4,6 +4,7 @@ import { ApiError } from "./lib/session";
 export { ApiError } from "./lib/session";
 
 export type Tag = { id: string; name: string };
+export type TagItem = Tag & { createdAt?: string; taskCount: number };
 
 export type Project = {
 	id: string;
@@ -206,11 +207,15 @@ export const api = {
 			`/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}`,
 			{ method: "DELETE" },
 		),
-	tags: () => request<{ items: Tag[] }>("/api/tags"),
+	tags: () => request<{ items: TagItem[] }>("/api/tags"),
 	createTag: (name: string) =>
 		request<{ tag: Tag }>("/api/tags", {
 			method: "POST",
 			body: JSON.stringify({ name }),
+		}),
+	deleteTag: (id: string) =>
+		request<{ ok: true }>(`/api/tags/${encodeURIComponent(id)}`, {
+			method: "DELETE",
 		}),
 	tokens: () =>
 		request<{

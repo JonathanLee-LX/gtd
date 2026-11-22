@@ -12,6 +12,7 @@
 |---|---|
 | `today_focus` | 逾期 + 今天 + 下一步 + P1，只出可执行叶子 |
 | `list_projects` / `create_project` / `update_project` | 项目（`list_projects` 默认不含已归档） |
+| `list_tags` / `create_tag` / `delete_tag` | 标签（`list_tags` 含关联未删任务数 `taskCount`；`delete_tag` 同步从所有任务移除） |
 | `list_tasks` / `get_task` / `search_tasks` | 查询（`get_task` 包含标签与附件列表） |
 | `create_task` | 创建（建议 `idempotencyKey`；可选 `parentId` 挂子任务） |
 | `update_task` | 部分更新（可改 `parentId`，`null` 取消父子） |
@@ -50,6 +51,12 @@
 - `upload_attachment`: 传 `taskId`、`fileName`、`content`（文件的 base64 字符串，支持纯 base64 或 `data:image/...;base64,...`），可选 `mimeType`。单文件上限 10MB，支持格式：JPG、PNG、GIF、WebP、HEIC、PDF。
 - `delete_attachment`: 传 `taskId` 与附件 `id`，从数据库与 R2 存储中同步删除。
 - `get_task`: 返回的任务对象中包含 `attachments: AttachmentDto[]` 列表，方便助手直接查看附件元数据与下载地址。
+
+### 标签管理（#122）
+
+- `list_tags`: 返回当前用户的所有标签，每条带 `taskCount`（关联的未删除任务数，含已完成/已取消，不含回收站中的软删任务）。
+- `create_tag`: 传 `name` 创建标签；同名已存在时返回已有标签。
+- `delete_tag`: 传标签 `id` 删除当前用户的标签，自动从所有关联任务上移除该标签（不可恢复），并记入 `activity_log`；不存在或不属于当前用户时返回错误。
 
 ## 客户端配置示例
 

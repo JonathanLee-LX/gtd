@@ -76,6 +76,10 @@ export const createTagInput = z.object({
 	name: z.string().trim().min(1).max(40),
 });
 
+export const deleteTagInput = z.object({
+	id: z.string().trim().min(1),
+});
+
 export const createTokenInput = z.object({
 	name: z.string().trim().min(1).max(40),
 });
@@ -168,3 +172,4 @@ export type ProcessInboxInput = z.infer<typeof processInboxInput>;
 export type SaveNotificationSettingsInput = z.infer<typeof saveNotificationSettingsInput>;
 export type PushSubscriptionInput = z.infer<typeof pushSubscriptionInput>;
 export type DeletePushSubscriptionInput = z.infer<typeof deletePushSubscriptionInput>;
+export type DeleteTagInput = z.infer<typeof deleteTagInput>;

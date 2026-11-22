@@ -16,6 +16,7 @@ import {
 } from "../hooks/use-task-mutations";
 import { useTaskList } from "../hooks/use-task-queries";
 import { silentInvalidateTasks } from "../lib/task-cache";
+import { tagKeys } from "../lib/task-query-keys";
 import { useShellContext } from "../hooks/use-shell-data";
 
 export function SearchPage() {
@@ -34,7 +35,7 @@ export function SearchPage() {
 		{ enabled },
 	);
 	const tagsQuery = useQuery({
-		queryKey: ["tags"],
+		queryKey: tagKeys.all,
 		queryFn: () => api.tags(),
 	});
 	const createTask = useCreateTask(projects);

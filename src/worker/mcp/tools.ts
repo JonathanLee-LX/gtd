@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { createTagInput, createTaskInput, updateProjectInput, updateTaskInput } from "../../shared/schemas";
+import {
+	createTagInput,
+	createTaskInput,
+	deleteTagInput,
+	updateProjectInput,
+	updateTaskInput,
+} from "../../shared/schemas";
 import type { AppDatabase } from "../../db/client";
 import { AppError } from "../lib/errors";
 import {
@@ -14,7 +20,7 @@ import {
 	updateTask,
 } from "../services/tasks";
 import { createProject, listProjects, updateProject } from "../services/projects";
-import { createTag, listTags } from "../services/tags";
+import { createTag, deleteTag, listTags } from "../services/tags";
 import {
 	attachmentUsage,
 	deleteAttachment,
@@ -86,7 +92,7 @@ export const MCP_TOOLS = [
 	},
 	{
 		name: "list_tags",
-		description: "列出当前用户的所有标签。了解今天该做什么请优先用 today_focus。",
+		description: "列出当前用户的所有标签（含各标签关联未删任务数 taskCount）。了解今天该做什么请优先用 today_focus。",
 		inputSchema: { type: "object", properties: {}, additionalProperties: false },
 	},
 	{
@@ -96,6 +102,16 @@ export const MCP_TOOLS = [
 			type: "object",
 			properties: { name: { type: "string" } },
 			required: ["name"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "delete_tag",
+		description: "删除标签，并自动从所有关联任务上移除该标签（不可恢复）。",
+		inputSchema: {
+			type: "object",
+			properties: { id: { type: "string", description: "标签 id" } },
+			required: ["id"],
 			additionalProperties: false,
 		},
 	},
@@ -365,6 +381,10 @@ export async function callMcpTool(
 		case "create_tag": {
 			const input = createTagInput.parse(args);
 			return { tag: await createTag(db, userId, input.name, "mcp") };
+		}
+		case "delete_tag": {
+			const input = deleteTagInput.parse(args);
+			return deleteTag(db, userId, input.id, "mcp");
 		}
 		case "list_tasks":
 			return listTasks(db, userId, listTasksToolInput.parse(args));

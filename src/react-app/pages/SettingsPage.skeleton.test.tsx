@@ -11,6 +11,7 @@ vi.mock("../api", () => ({
 	api: {
 		tokens: vi.fn(() => never()),
 		deletedTasks: vi.fn(() => never()),
+		tags: vi.fn(() => never()),
 		health: vi.fn(() => never()),
 		notificationSettings: vi.fn(() => never()),
 	},

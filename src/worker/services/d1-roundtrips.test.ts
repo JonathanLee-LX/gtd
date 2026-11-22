@@ -4,7 +4,7 @@ import { createCountingD1 } from "../test/d1-shim";
 import { FakeR2, PNG_BYTES } from "../test/fake-r2";
 import { callMcpTool } from "../mcp/tools";
 import { listTaskActivity } from "./activity";
-import { createTag } from "./tags";
+import { createTag, deleteTag, listTags } from "./tags";
 import { createTask, getTask, updateTask } from "./tasks";
 
 /** #119：PATCH / GET /api/tasks/:id 的 D1 往返次数（不含鉴权查 session）。 */
@@ -109,5 +109,23 @@ describe("D1 round trips", () => {
 		await expect(updateTask(db, me.id, task.id, { title: "不该生效" }, "human")).rejects.toThrow();
 		sqlite.exec("DROP TRIGGER boom;");
 		expect((await getTask(db, me.id, task.id)).title).toBe("写周报");
+	});
+
+	it("GET /api/tags（含未删任务数，一次往返）与 DELETE /api/tags/:id（两次往返）(#122)", async () => {
+		const { db, counter, reset, me, task } = await setup();
+		const tag = await createTag(db, me.id, "qa119a", "human");
+		await updateTask(db, me.id, task.id, { tagIds: [tag.id] }, "human");
+
+		reset();
+		const listed = await listTags(db, me.id);
+		expect(listed).toEqual([expect.objectContaining({ id: tag.id, name: "qa119a", taskCount: 1 })]);
+		console.info("[#122] GET /api/tags round trips", counter.roundTrips);
+		expect(counter.roundTrips).toBeLessThanOrEqual(1);
+
+		reset();
+		const deleted = await deleteTag(db, me.id, tag.id, "human");
+		expect(deleted).toEqual({ ok: true });
+		console.info("[#122] DELETE /api/tags/:id round trips", counter.roundTrips);
+		expect(counter.roundTrips).toBeLessThanOrEqual(2);
 	});
 });

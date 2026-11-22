@@ -74,6 +74,13 @@ export type PendingCreateSnapshot = {
 	sentBody?: Record<string, unknown>;
 };
 
+type SkippedAction = {
+	run: (realId: string) => Promise<unknown>;
+	onReplaySuccess?: (data: unknown, realId: string) => void;
+	onReplayError?: (err: unknown, realId: string) => void;
+	onDeleteSucceeded?: () => void;
+};
+
 type Entry = {
 	tempId: string;
 	queryClient?: QueryClient;
@@ -94,6 +101,12 @@ type Entry = {
 	deleted: boolean;
 	/** 已排队完成：401 补发时保留完成状态。 */
 	completed: boolean;
+	/** #93：被排队的删除跳过的前置操作；删除成功后丢弃，删除失败后按序补发。 */
+	skippedByDelete: SkippedAction[];
+	/** #93：删除失败后正在（或即将）补发被跳过的前置操作。 */
+	replaying: boolean;
+	/** #93：等待删除 onError 回滚完成后再启动的补发触发器。 */
+	startReplay: (() => void) | null;
 	/** 这条任务的操作队列尾部：所有操作按点击顺序串行发出。 */
 	tail: Promise<unknown>;
 	/** 队列里还没结束的操作数。 */
@@ -147,6 +160,9 @@ export function registerPendingCreate(
 		removed: false,
 		deleted: false,
 		completed: false,
+		skippedByDelete: [],
+		replaying: false,
+		startReplay: null,
 		tail: promise.catch(() => undefined),
 		queued: 0,
 		createSent: false,
@@ -218,17 +234,95 @@ function entryForTask(id: string): Entry | undefined {
 /** 排队的操作因为后面已经排了删除而不必发出。 */
 export const SKIPPED_BY_DELETE = Symbol("skipped-by-delete");
 
+export type EnqueueTaskActionOptions<T = unknown> = {
+	skipIfDeleted?: boolean;
+	/** 标记此操作为删除 / 丢掉：成功时丢弃被跳过的前置操作，失败时自动按序补发。 */
+	isDelete?: boolean;
+	/** #93：前面被删除跳过的操作，在删除失败后自动补发成功时的回调。 */
+	onReplaySuccess?: (data: T, realId: string) => void;
+	/** #93：前面被删除跳过的操作，在删除失败后自动补发失败时的回调。 */
+	onReplayError?: (err: unknown, realId: string) => void;
+	/** #93：排在后面的删除最终成功时回调（让暂停等待的 autosave 彻底丢弃）。 */
+	onDeleteSucceeded?: () => void;
+};
+
+/** #93：删除失败后，把被跳过的前置操作挂回这条任务的队列尾部按原序补发。 */
+function prepareSkippedReplay(entry: Entry, realId: string, skipped: SkippedAction[]) {
+	entry.replaying = true;
+	let started = false;
+	const start = () => {
+		if (started) return;
+		started = true;
+		if (entry.startReplay === start) entry.startReplay = null;
+		let remaining = skipped.length;
+		for (const action of skipped) {
+			entry.queued += 1;
+			const step = entry.tail.then(() => {
+				if (entry.deleted) {
+					// 补发期间用户又删了一次：重新暂存，等新删除的结果。
+					entry.skippedByDelete.push(action);
+					remaining -= 1;
+					if (remaining === 0) entry.replaying = false;
+					return;
+				}
+				return action.run(realId).then(
+					(data) => {
+						remaining -= 1;
+						if (remaining === 0) entry.replaying = false;
+						action.onReplaySuccess?.(data, realId);
+					},
+					(err: unknown) => {
+						remaining -= 1;
+						if (remaining === 0) entry.replaying = false;
+						action.onReplayError?.(err, realId);
+					},
+				);
+			});
+			const settled = step.then(
+				() => undefined,
+				() => undefined,
+			);
+			entry.tail = settled;
+			void settled.then(() => {
+				entry.queued -= 1;
+			});
+		}
+	};
+	entry.startReplay = start;
+	// 兜底：即使调用方未显式调用 flushSkippedReplay，也在 onError 之后自动启动补发。
+	void Promise.resolve()
+		.then(() => Promise.resolve())
+		.then(start);
+}
+
+/** #93：删除 onError 回滚完成后立刻启动被跳过前置操作的补发，保证回滚顺序不倒置。 */
+export function flushSkippedReplay(id: string): void {
+	const entry = isTempTaskId(id)
+		? entries.get(id)
+		: [...entries.values()].find((item) => item.created?.id === id);
+	entry?.startReplay?.();
+}
+
+/** #93：这条任务是否正在补发因删除失败而被跳过的前置操作。 */
+export function hasPendingSkippedReplay(id: string): boolean {
+	const entry = isTempTaskId(id)
+		? entries.get(id)
+		: [...entries.values()].find((item) => item.created?.id === id);
+	return Boolean(entry?.replaying);
+}
+
 /**
  * #90：对刚新建（临时 id）的任务的操作按点击顺序排进这条任务的队列，
  * 真实 id 到了以后逐个发出（每个都已经先乐观改过缓存）。
  * - 新建失败：队列里所有操作都以 PendingCreateFailedError 结束（只由新建提示一次）。
  * - 真实 id 已到、但队列还没跑完时，对真实 id 的新操作也排在后面，保证顺序。
- * - 后面已经排了删除时，`skipIfDeleted` 的操作直接跳过（返回 SKIPPED_BY_DELETE）。
+ * - 后面已经排了删除时，`skipIfDeleted` 的操作先跳过（返回 SKIPPED_BY_DELETE），
+ *   并暂存起来；若删除失败则按原序补发，删除成功则丢弃（#93）。
  */
 export function enqueueTaskAction<T>(
 	id: string,
 	run: (realId: string) => Promise<T>,
-	opts: { skipIfDeleted?: boolean } = {},
+	opts: EnqueueTaskActionOptions<T> = {},
 ): Promise<T | typeof SKIPPED_BY_DELETE> {
 	const entry = entryForTask(id);
 	if (!entry) {
@@ -241,8 +335,32 @@ export function enqueueTaskAction<T>(
 	entry.queued += 1;
 	const result = entry.tail.then<T | typeof SKIPPED_BY_DELETE>(() => {
 		if (entry.state !== "created" || !entry.created) throw new PendingCreateFailedError(entry.tempId);
-		if (opts.skipIfDeleted && entry.deleted) return SKIPPED_BY_DELETE;
-		return run(entry.created.id);
+		const realId = entry.created.id;
+		if (opts.skipIfDeleted && entry.deleted) {
+			entry.skippedByDelete.push({
+				run,
+				onReplaySuccess: opts.onReplaySuccess as ((data: unknown, realId: string) => void) | undefined,
+				onReplayError: opts.onReplayError,
+				onDeleteSucceeded: opts.onDeleteSucceeded,
+			});
+			return SKIPPED_BY_DELETE;
+		}
+		const promise = run(realId);
+		if (!opts.isDelete) return promise;
+		return promise.then(
+			(value) => {
+				const skipped = entry.skippedByDelete.splice(0);
+				for (const action of skipped) action.onDeleteSucceeded?.();
+				return value;
+			},
+			(err: unknown) => {
+				entry.deleted = false;
+				entry.removed = false;
+				const skipped = entry.skippedByDelete.splice(0);
+				if (skipped.length > 0) prepareSkippedReplay(entry, realId, skipped);
+				throw err;
+			},
+		);
 	});
 	const settled = result.then(
 		() => undefined,

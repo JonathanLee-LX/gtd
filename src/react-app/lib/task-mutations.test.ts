@@ -21,6 +21,7 @@ import {
 	createTaskMutationOptions,
 	deleteTaskMutationOptions,
 	processInboxMutationOptions,
+	resetCompletingTasksForTests,
 	updateTaskMutationOptions,
 } from "./task-mutations";
 import { taskKeys } from "./task-query-keys";
@@ -92,6 +93,7 @@ beforeEach(() => {
 	qc.setQueryData(inboxKey, { items: [serverTask({ id: "old", title: "旧任务" })], nextCursor: null });
 	qc.setQueryData(nextKey, { items: [], nextCursor: null });
 	resetPendingCreatesForTests();
+	resetCompletingTasksForTests();
 	for (const fn of Object.values(api)) fn.mockReset();
 	toast.error.mockReset();
 });
@@ -321,5 +323,186 @@ describe("task activity invalidation (#111)", () => {
 		await run(processInboxMutationOptions(qc), { id: "old", body: { action: "next" } });
 		expect(stale(activityKey("old"))).toBe(true);
 		expect(stale(activityKey("other"))).toBe(false);
+	});
+});
+
+describe("optimistic queue failure edge cases (#93)", () => {
+	it("edit fails while complete is in flight: rollback does not resurrect the completing task", async () => {
+		const createReq = deferred<{ task: Task }>();
+		const editReq = deferred<{ task: Task }>();
+		const completeReq = deferred<{ task: Task }>();
+		api.createTask.mockReturnValue(createReq.promise);
+		api.updateTask.mockReturnValue(editReq.promise);
+		api.completeTask.mockReturnValue(completeReq.promise);
+
+		const created = create({ title: "买牛奶", status: "inbox" });
+		const tempId = items()[0]!.id;
+		const updated = run(updateTaskMutationOptions(qc), { id: tempId, patch: { title: "买燕麦奶" } });
+		await flush();
+		const completed = run(completeTaskMutationOptions(qc), tempId);
+		await flush();
+		expect(titles()).toEqual(["旧任务"]);
+
+		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+		createReq.resolve({ task: serverTask({ id: "real-1", title: "买牛奶" }) });
+		await created;
+		await flush();
+		invalidateSpy.mockClear();
+
+		// 前面的编辑失败，但完成还在队列 / 进行中：不能把任务回滚成未完成插回列表，也不提前刷新列表。
+		editReq.reject(new Error("编辑失败"));
+		expect((await updated).ok).toBe(false);
+		expect(items().map((task) => task.id)).toEqual(["old"]);
+		expect(invalidateSpy).not.toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["tasks"] }));
+
+		// 完成成功：任务保持已移除。
+		completeReq.resolve({
+			task: serverTask({ id: "real-1", title: "买牛奶", status: "completed", completedAt: "2026-10-09T00:00:01.000Z" }),
+		});
+		expect((await completed).ok).toBe(true);
+		expect(items().map((task) => task.id)).toEqual(["old"]);
+	});
+
+	it("edit fails then complete also fails: task rolls back once complete settles", async () => {
+		const createReq = deferred<{ task: Task }>();
+		const editReq = deferred<{ task: Task }>();
+		const completeReq = deferred<{ task: Task }>();
+		api.createTask.mockReturnValue(createReq.promise);
+		api.updateTask.mockReturnValue(editReq.promise);
+		api.completeTask.mockReturnValue(completeReq.promise);
+
+		const created = create({ title: "买牛奶", status: "inbox" });
+		const tempId = items()[0]!.id;
+		const updated = run(updateTaskMutationOptions(qc), { id: tempId, patch: { title: "买燕麦奶" } });
+		await flush();
+		const completed = run(completeTaskMutationOptions(qc), tempId);
+		await flush();
+
+		createReq.resolve({ task: serverTask({ id: "real-1", title: "买牛奶" }) });
+		await created;
+		await flush();
+
+		editReq.reject(new Error("编辑失败"));
+		await updated;
+		expect(items().map((task) => task.id)).toEqual(["old"]);
+
+		completeReq.reject(new Error("完成失败"));
+		expect((await completed).ok).toBe(false);
+		expect(items().map((task) => task.id)).toEqual(["real-1", "old"]);
+	});
+
+	it("real task completing while an earlier edit fails: rollback does not overwrite completing state", async () => {
+		const editReq = deferred<{ task: Task }>();
+		const completeReq = deferred<{ task: Task }>();
+		api.updateTask.mockReturnValue(editReq.promise);
+		api.completeTask.mockReturnValue(completeReq.promise);
+
+		const updated = run(updateTaskMutationOptions(qc), { id: "old", patch: { title: "新标题" } });
+		await flush();
+		const completed = run(completeTaskMutationOptions(qc), "old");
+		await flush();
+		expect(items()).toEqual([]);
+
+		editReq.reject(new Error("编辑失败"));
+		await updated;
+		expect(items()).toEqual([]);
+
+		completeReq.resolve({ task: serverTask({ id: "old", status: "completed" }) });
+		await completed;
+		expect(items()).toEqual([]);
+	});
+
+	it("create -> edit -> delete where delete fails: replays the skipped edit with the real id", async () => {
+		const createReq = deferred<{ task: Task }>();
+		const deleteReq = deferred<unknown>();
+		const replayEditReq = deferred<{ task: Task }>();
+		api.createTask.mockReturnValue(createReq.promise);
+		api.deleteTask.mockReturnValue(deleteReq.promise);
+		api.updateTask.mockReturnValue(replayEditReq.promise);
+
+		const created = create({ title: "原任务", status: "inbox" });
+		const tempId = items()[0]!.id;
+		const updated = run(updateTaskMutationOptions(qc), { id: tempId, patch: { title: "改后标题" } });
+		await flush();
+		const deleted = run(deleteTaskMutationOptions(qc), tempId);
+		await flush();
+		expect(titles()).toEqual(["旧任务"]);
+
+		createReq.resolve({ task: serverTask({ id: "real-1", title: "原任务" }) });
+		await created;
+		await updated; // skipped while delete is queued
+		expect(api.updateTask).not.toHaveBeenCalled();
+		expect(api.deleteTask).toHaveBeenCalledWith("real-1");
+
+		// 删除失败：任务带着编辑后的标题回到列表，且被跳过的编辑被补发到服务端。
+		deleteReq.reject(new Error("删除失败了"));
+		expect((await deleted).ok).toBe(false);
+		await flush();
+		expect(items().map((task) => [task.id, task.title])).toEqual([
+			["real-1", "改后标题"],
+			["old", "旧任务"],
+		]);
+		expect(api.updateTask).toHaveBeenCalledTimes(1);
+		expect(api.updateTask).toHaveBeenCalledWith("real-1", { title: "改后标题" });
+
+		replayEditReq.resolve({ task: serverTask({ id: "real-1", title: "改后标题" }) });
+		await flush();
+		expect(items().map((task) => [task.id, task.title])).toEqual([
+			["real-1", "改后标题"],
+			["old", "旧任务"],
+		]);
+	});
+
+	it("create -> edit -> inbox discard where discard fails: replays the skipped edit", async () => {
+		const createReq = deferred<{ task: Task }>();
+		api.createTask.mockReturnValue(createReq.promise);
+		api.processInbox.mockRejectedValue(new Error("丢掉失败"));
+		api.updateTask.mockImplementation(async (id: string, patch: { title: string }) => ({
+			task: serverTask({ id, title: patch.title }),
+		}));
+
+		const created = create({ title: "原任务", status: "inbox" });
+		const tempId = items()[0]!.id;
+		const updated = run(updateTaskMutationOptions(qc), { id: tempId, patch: { title: "改后标题" } });
+		await flush();
+		const discarded = run(processInboxMutationOptions(qc), { id: tempId, body: { action: "discard" } });
+		await flush();
+
+		createReq.resolve({ task: serverTask({ id: "real-2", title: "原任务" }) });
+		await created;
+		await updated;
+		expect((await discarded).ok).toBe(false);
+		await flush();
+		expect(api.updateTask).toHaveBeenCalledWith("real-2", { title: "改后标题" });
+		expect(items().map((task) => [task.id, task.title])).toEqual([
+			["real-2", "改后标题"],
+			["old", "旧任务"],
+		]);
+	});
+
+	it("create -> edit -> delete where delete fails and replayed edit also fails: rolls back to pre-edit value", async () => {
+		const createReq = deferred<{ task: Task }>();
+		api.createTask.mockReturnValue(createReq.promise);
+		api.deleteTask.mockRejectedValue(new Error("删除失败了"));
+		api.updateTask.mockRejectedValue(new Error("保存失败了"));
+
+		const created = create({ title: "原任务", status: "inbox" });
+		const tempId = items()[0]!.id;
+		const updated = run(updateTaskMutationOptions(qc), { id: tempId, patch: { title: "改后标题" } });
+		await flush();
+		const deleted = run(deleteTaskMutationOptions(qc), tempId);
+		await flush();
+
+		createReq.resolve({ task: serverTask({ id: "real-3", title: "原任务" }) });
+		await created;
+		await updated;
+		await deleted;
+		await flush();
+		expect(api.updateTask).toHaveBeenCalledWith("real-3", { title: "改后标题" });
+		expect(items().map((task) => [task.id, task.title])).toEqual([
+			["real-3", "原任务"],
+			["old", "旧任务"],
+		]);
+		expect(toast.error).toHaveBeenCalledWith("保存失败了");
 	});
 });

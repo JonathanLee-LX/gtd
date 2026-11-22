@@ -110,7 +110,13 @@ let qc: QueryClient;
 const listKey = taskKeys.list({});
 
 /** 像 TaskBoard 一样：从列表缓存里取任务（临时 id / 真实 id 都认），标题旁是保存状态。 */
-function Harness({ id }: { id: string | null }) {
+function Harness({
+	id,
+	onDelete = async () => {},
+}: {
+	id: string | null;
+	onDelete?: () => Promise<void>;
+}) {
 	const { data } = useQuery({
 		queryKey: listKey,
 		queryFn: () => api.tasks({}) as Promise<{ items: Task[]; nextCursor: null }>,
@@ -128,23 +134,27 @@ function Harness({ id }: { id: string | null }) {
 				projects={projects}
 				tasks={data?.items ?? []}
 				onComplete={async () => {}}
-				onDelete={async () => {}}
+				onDelete={onDelete}
 			/>
 		</div>
 	);
 }
 
-function mount(initial: Task[], id: string | null = initial[0]?.id ?? null) {
+function mount(
+	initial: Task[],
+	id: string | null = initial[0]?.id ?? null,
+	onDelete?: () => Promise<void>,
+) {
 	qc.setQueryData(listKey, { items: initial, nextCursor: null });
 	const view = render(
 		<QueryClientProvider client={qc}>
-			<Harness id={id} />
+			<Harness id={id} onDelete={onDelete} />
 		</QueryClientProvider>,
 	);
 	return (nextId: string | null) =>
 		view.rerender(
 			<QueryClientProvider client={qc}>
-				<Harness id={nextId} />
+				<Harness id={nextId} onDelete={onDelete} />
 			</QueryClientProvider>,
 		);
 }
@@ -659,5 +669,84 @@ describe("task detail autosave (#115)", () => {
 		cleanup();
 		mount([task()]);
 		expect(screen.getByText(/来源/)).toBeTruthy();
+	});
+});
+
+describe("task detail error clearing and delete-failure recovery (#93)", () => {
+	it("保存失败后改回服务端值，失败提示清掉", async () => {
+		mount([task()]);
+		failNext.push(new Error("服务器出错了"));
+		type(titleInput(), "新标题");
+		fireEvent.blur(titleInput());
+		await settle();
+		expect(status()).toBe("保存失败重试");
+
+		// 改回服务端原标题并失焦：表单重新与服务端一致，失败提示清掉。
+		type(titleInput(), "原标题");
+		fireEvent.blur(titleInput());
+		expect(status()).toBe("已保存");
+		expect(calls).toHaveLength(1);
+	});
+
+	it("保存失败后服务端同步为相同值，失败提示清掉；服务端仍是旧值则保留输入与提示（#116）", async () => {
+		mount([task()]);
+		failNext.push(new Error("请求超时"));
+		type(titleInput(), "新标题");
+		fireEvent.blur(titleInput());
+		await settle();
+		expect(status()).toBe("保存失败重试");
+
+		// 服务端仍返回旧值：保留用户输入与失败提示。
+		await act(async () => {
+			qc.setQueryData(listKey, { items: [task({ title: "原标题", updatedAt: "2026-10-09T00:00:02.000Z" })], nextCursor: null });
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(titleInput().value).toBe("新标题");
+		expect(status()).toBe("保存失败重试");
+
+		// 服务端已包含该编辑（例如超时请求实际落库或 MCP 同步）：清掉失败提示。
+		await act(async () => {
+			qc.setQueryData(listKey, { items: [task({ title: "新标题", updatedAt: "2026-10-09T00:00:03.000Z" })], nextCursor: null });
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(titleInput().value).toBe("新标题");
+		expect(status()).toBe("已保存");
+	});
+
+	it("本地错误（如添加标签失败）在表单重新同步服务端后清掉", async () => {
+		mount([task()]);
+		api.createTag.mockRejectedValueOnce(new Error("添加标签失败了"));
+		const tagInput = screen.getByLabelText("标签");
+		fireEvent.change(tagInput, { target: { value: "@电脑" } });
+		fireEvent.keyDown(tagInput, { key: "Enter" });
+		await settle();
+		expect(screen.getByText("添加标签失败了")).toBeTruthy();
+
+		await act(async () => {
+			qc.setQueryData(listKey, {
+				items: [task({ notes: "服务端同步的备注", updatedAt: "2026-10-09T00:00:05.000Z" })],
+				nextCursor: null,
+			});
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(notesInput().value).toBe("服务端同步的备注");
+		expect(screen.queryByText("添加标签失败了")).toBeNull();
+	});
+
+	it("编辑后点删除，删除失败时补发未保存的编辑", async () => {
+		const onDelete = vi.fn().mockRejectedValueOnce(new Error("删除失败了"));
+		mount([task()], "t1", onDelete);
+		type(titleInput(), "删除前改的标题");
+		// 还没到 800ms 防抖就点删除
+		fireEvent.click(screen.getByRole("button", { name: "删除" }));
+		await settle();
+		const confirmBtn = screen.getByRole("button", { name: "确认删除" });
+		await act(async () => {
+			fireEvent.click(confirmBtn);
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(onDelete).toHaveBeenCalledTimes(1);
+		expect(calls).toEqual([{ id: "t1", body: { title: "删除前改的标题" }, keepalive: false }]);
+		expect(server.get("t1")?.title).toBe("删除前改的标题");
 	});
 });

@@ -345,6 +345,12 @@ export async function listTasks(
 	const filters = [eq(tasks.userId, userId), isNull(tasks.deletedAt)];
 
 	if (query.projectId) filters.push(eq(tasks.projectId, query.projectId));
+	// #105：同一条 SELECT 里用子查询限定「当前用户的收件箱」，不额外往返，也不碰别人的项目。
+	if (query.inbox === "1") {
+		filters.push(
+			sql`${tasks.projectId} in (select ${projects.id} from ${projects} where ${projects.userId} = ${userId} and ${projects.isInbox} = 1)`,
+		);
+	}
 	if (query.status) filters.push(eq(tasks.status, query.status));
 	if (query.priority) filters.push(eq(tasks.priority, query.priority));
 	if (query.includeCompleted !== "true" && !query.status) {

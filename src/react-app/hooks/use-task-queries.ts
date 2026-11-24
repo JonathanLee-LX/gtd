@@ -35,6 +35,7 @@ export function useTaskList(filters: TaskListFilters, options?: { enabled?: bool
 				includeCompleted: filters.includeCompleted,
 				priority: filters.priority,
 				due: filters.due,
+				inbox: filters.inbox ? "1" : undefined,
 			}), listPendingCreates()),
 		enabled: options?.enabled ?? true,
 	});

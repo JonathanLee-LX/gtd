@@ -12,7 +12,10 @@ import { toast } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { api } from "../api";
 import { useShellContext } from "../hooks/use-shell-data";
-import { readInboxHint, writeInboxHint } from "../lib/inbox-hint";
+import { LEGACY_INBOX_PROJECT_ID_KEY } from "../lib/client-session";
+
+const writeInboxHint = (id: string) => localStorage.setItem(LEGACY_INBOX_PROJECT_ID_KEY, id);
+const readInboxHint = () => localStorage.getItem(LEGACY_INBOX_PROJECT_ID_KEY);
 import {
 	clearPushSubscriptionOwner,
 	markPushSubscriptionPendingUnsubscribe,

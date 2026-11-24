@@ -70,6 +70,8 @@ export const listTasksQuery = z.object({
 	limit: z.coerce.number().int().min(1).max(100).optional(),
 	cursor: z.string().optional(),
 	tz: z.string().max(64).optional(),
+	/** #105：只返回当前用户收件箱项目里的任务。不传则行为与原来一致。 */
+	inbox: z.literal("1").optional(),
 });
 
 export const createTagInput = z.object({

@@ -5,7 +5,7 @@ import { FakeR2, PNG_BYTES } from "../test/fake-r2";
 import { callMcpTool } from "../mcp/tools";
 import { listTaskActivity } from "./activity";
 import { createTag, deleteTag, listTags } from "./tags";
-import { createTask, getTask, updateTask } from "./tasks";
+import { createTask, getTask, listTasks, updateTask } from "./tasks";
 
 /** #119：PATCH / GET /api/tasks/:id 的 D1 往返次数（不含鉴权查 session）。 */
 describe("D1 round trips", () => {
@@ -24,6 +24,20 @@ describe("D1 round trips", () => {
 		const task = await createTask(d1.db, me.id, { title: "写周报" }, "human");
 		return { ...d1, sqlite, me, task };
 	}
+
+	it("GET /api/tasks?inbox=1 不比普通列表多往返 (#105)", async () => {
+		const { db, counter, reset, me } = await setup();
+		reset();
+		const plain = await listTasks(db, me.id, {});
+		const plainTrips = counter.roundTrips;
+		expect(plain.items.length).toBeGreaterThan(0);
+
+		reset();
+		const inbox = await listTasks(db, me.id, { inbox: "1" });
+		expect(inbox.items.map((item) => item.id)).toEqual(plain.items.map((item) => item.id));
+		console.info("[#105] GET /api/tasks?inbox=1 round trips", counter.roundTrips, "plain", plainTrips);
+		expect(counter.roundTrips).toBe(plainTrips);
+	});
 
 	it("GET /api/tasks/:id", async () => {
 		const { db, counter, me, task } = await setup();

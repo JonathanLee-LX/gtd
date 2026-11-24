@@ -2,7 +2,6 @@ import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { Me } from "../api";
 import { buildUnsavedCreateRecords, persistUnsavedBatch } from "./autosave-persist";
-import { clearInboxHint } from "./inbox-hint";
 import { clearPendingCreates, exportPendingCreates } from "./pending-creates";
 import { shellKeys } from "./shell-keys";
 import { clearSkeletonCounts } from "./skeleton";
@@ -21,7 +20,7 @@ export type ClearClientSessionOptions = {
 /**
  * #101：清掉这个浏览器里「属于当前登录用户」的客户端状态 —— 唯一入口。
  * - 查询缓存（me / projects / 任务列表 / 设置…），下一个登录的人不会先看到上一个人的数据；
- * - 收件箱项目 id 提示（`gtd:inbox-project-id`）；
+ * - 旧版收件箱项目 id（`gtd:inbox-project-id`，#105 起不再写入，这里只负责清掉残留）；
  * - #99 骨架行数记录（`gtd:skeleton-count:*`，只按前缀删，别的 localStorage 不动）；
  * - #115 / #117 任务自动保存队列与未完成新建任务（见 options）。
  *
@@ -53,6 +52,17 @@ export function clearClientSession(queryClient: QueryClient, options: ClearClien
 	if (!keep && queue) releaseTaskAutosave(queryClient);
 	clearPendingCreates(queryClient);
 	queryClient.clear();
-	clearInboxHint();
+	clearLegacyInboxProjectId();
 	clearSkeletonCounts();
+}
+
+/** #101 曾把收件箱项目 id 存在本机。#105 不再使用；换账号 / 退出时清掉残留。 */
+export const LEGACY_INBOX_PROJECT_ID_KEY = "gtd:inbox-project-id";
+
+function clearLegacyInboxProjectId(): void {
+	try {
+		localStorage.removeItem(LEGACY_INBOX_PROJECT_ID_KEY);
+	} catch {
+		// 存储不可用：没有残留可清
+	}
 }

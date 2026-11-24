@@ -49,6 +49,23 @@ describe("task service", () => {
 		expect(listed.items.map((item) => item.title)).toEqual(["写周报"]);
 	});
 
+	it("inbox=1 returns only the current user's inbox project tasks (#105)", async () => {
+		const { db } = createTestDb();
+		const a = await seedUser(db, "a@example.com");
+		const b = await seedUser(db, "b@example.com");
+		const other = await createProject(db as never, a.id, { name: "装修" }, "human");
+		await createTask(db as never, a.id, { title: "收件箱里的" }, "human");
+		await createTask(db as never, a.id, { title: "项目里的", projectId: other.id, status: "next" }, "human");
+		await createTask(db as never, b.id, { title: "别人的收件箱" }, "human");
+
+		const listed = await listTasks(db as never, a.id, { inbox: "1" });
+		expect(listed.items.map((item) => item.title)).toEqual(["收件箱里的"]);
+		expect(listed.items.every((item) => item.projectName === "收件箱")).toBe(true);
+
+		const otherUser = await listTasks(db as never, b.id, { inbox: "1" });
+		expect(otherUser.items.map((item) => item.title)).toEqual(["别人的收件箱"]);
+	});
+
 	it("completes tasks and builds today focus", async () => {
 		const { db } = createTestDb();
 		const me = await seedUser(db);

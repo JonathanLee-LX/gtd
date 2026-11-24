@@ -1,4 +1,5 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { INBOX_NAME } from "../../shared/constants";
 import { isFocusTask } from "../../shared/today";
 import type { Task } from "../api";
 import { taskKeys, type TaskListFilters } from "./task-query-keys";
@@ -28,6 +29,10 @@ export function taskMatchesListFilters(task: Task, filters: TaskListFilters): bo
 	if (task.deletedAt) return false;
 	if (filters.status && task.status !== filters.status) return false;
 	if (filters.projectId && task.projectId !== filters.projectId) return false;
+	if (filters.inbox) {
+		// 没带 projectId 的乐观新建会进收件箱。已经落库的收件箱任务 projectName 固定是「收件箱」。
+		if (task.projectId && task.projectName !== INBOX_NAME) return false;
+	}
 	if (filters.priority && task.priority !== filters.priority) return false;
 	if (filters.tagId && !task.tags.some((tag) => tag.id === filters.tagId)) return false;
 	if (filters.includeCompleted !== "true") {

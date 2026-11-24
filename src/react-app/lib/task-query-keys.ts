@@ -7,6 +7,8 @@ export type TaskListFilters = {
 	includeCompleted?: string;
 	priority?: string;
 	due?: string;
+	/** #105：收件箱列表。查询 key 不依赖收件箱项目 id。 */
+	inbox?: boolean;
 };
 
 export const taskKeys = {

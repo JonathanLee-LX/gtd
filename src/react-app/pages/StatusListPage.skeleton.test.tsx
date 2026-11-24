@@ -104,10 +104,10 @@ describe("task list skeleton (#99)", () => {
 		mount(newClient());
 		expect(screen.getByRole("heading", { name: "下一步" })).not.toBeNull();
 		expect(screen.queryByText(/加载.*…/)).toBeNull();
-		expect(skeleton()).toBeNull();
+		expect(skeleton()?.getAttribute("data-skeleton-visible")).toBe("false");
 		expect(emptyState()).toBeNull();
 		await wait(200);
-		expect(skeleton()).not.toBeNull();
+		expect(skeleton()?.getAttribute("data-skeleton-visible")).toBe("true");
 		expect(skeletonRows()).toHaveLength(5);
 		expect(emptyState()).toBeNull();
 		d.resolve({ items: [task("a"), task("b")], nextCursor: null });
@@ -138,14 +138,16 @@ describe("task list skeleton (#99)", () => {
 		tasksMock.mockImplementation(
 			() => new Promise((r) => setTimeout(() => r({ items: [task("a")], nextCursor: null }), 40)),
 		);
-		const seen: boolean[] = [];
-		const observer = new MutationObserver(() => seen.push(Boolean(skeleton())));
-		observer.observe(document.body, { childList: true, subtree: true });
+		const seenVisible: boolean[] = [];
+		const observer = new MutationObserver(() => {
+			seenVisible.push(skeleton()?.getAttribute("data-skeleton-visible") === "true");
+		});
+		observer.observe(document.body, { childList: true, subtree: true, attributes: true });
 		mount(newClient());
 		await screen.findByText("任务 a");
 		await wait(200);
 		observer.disconnect();
-		expect(seen.includes(true)).toBe(false);
+		expect(seenVisible.includes(true)).toBe(false);
 		expect(skeleton()).toBeNull();
 	});
 

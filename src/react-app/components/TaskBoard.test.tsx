@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Project, Task } from "../api";
+import { readSkeletonShape } from "../lib/skeleton";
 
 vi.mock("../api", () => ({
 	api: {
@@ -13,13 +14,23 @@ vi.mock("../api", () => ({
 		updateTask: vi.fn(() => new Promise(() => {})),
 	},
 }));
+const onMockDropUpload = vi.hoisted(() => vi.fn());
 vi.mock("./TaskAttachments", () => ({
-	TaskAttachments: () => (
-		<label>
-			添加附件
-			<input type="file" aria-label="附件文件" />
-		</label>
-	),
+	TaskAttachments: ({
+		uploadFilesRef,
+	}: {
+		uploadFilesRef?: { current: ((files: FileList | File[]) => void) | null };
+	}) => {
+		if (uploadFilesRef) {
+			uploadFilesRef.current = (files) => onMockDropUpload(Array.from(files));
+		}
+		return (
+			<label>
+				添加附件
+				<input type="file" aria-label="附件文件" />
+			</label>
+		);
+	},
 }));
 
 import { TaskBoard } from "./TaskBoard";
@@ -62,6 +73,7 @@ function setWidth(next: number) {
 beforeEach(() => {
 	width = 1280;
 	listeners.clear();
+	onMockDropUpload.mockReset();
 	vi.stubGlobal(
 		"matchMedia",
 		vi.fn((query: string) => {
@@ -185,5 +197,182 @@ describe("TaskBoard resizable detail panel (#96)", () => {
 		openTask();
 		await screen.findByRole("dialog", { name: "任务详情" });
 		expect(handle()).toBeNull();
+	});
+});
+
+describe("TaskBoard wide-to-narrow history & detail-wide file drop (#93)", () => {
+	it("wide -> narrow pushes history once so browser back closes detail instead of leaving page", async () => {
+		const pushSpy = vi.spyOn(window.history, "pushState");
+		const backSpy = vi.spyOn(window.history, "back").mockImplementation(() => {});
+		try {
+			width = 1280;
+			mountBoard();
+			openTask();
+			expect(aside()).not.toBeNull();
+			expect(pushSpy).not.toHaveBeenCalled();
+
+			// 从宽拖到窄：自动补一条 history 记录
+			setWidth(800);
+			await screen.findByRole("dialog", { name: "任务详情" });
+			expect(pushSpy).toHaveBeenCalledTimes(1);
+			expect(pushSpy).toHaveBeenCalledWith({ gtdMobileTaskDetail: "t1" }, "");
+
+			// 拖宽再拖窄不会重复 push
+			setWidth(1280);
+			await act(async () => {});
+			setWidth(800);
+			await screen.findByRole("dialog", { name: "任务详情" });
+			expect(pushSpy).toHaveBeenCalledTimes(1);
+
+			// 浏览器返回（popstate）：关掉详情，不二次 history.back()
+			act(() => {
+				window.dispatchEvent(new PopStateEvent("popstate"));
+			});
+			await act(async () => {});
+			expect(screen.queryByLabelText("标题")).toBeNull();
+			expect(backSpy).not.toHaveBeenCalled();
+		} finally {
+			pushSpy.mockRestore();
+			backSpy.mockRestore();
+		}
+	});
+
+	it("wide -> narrow then clicking in-app back pops the pushed history entry", async () => {
+		const pushSpy = vi.spyOn(window.history, "pushState");
+		const backSpy = vi.spyOn(window.history, "back").mockImplementation(() => {});
+		try {
+			width = 1280;
+			mountBoard();
+			openTask();
+			setWidth(800);
+			await screen.findByRole("dialog", { name: "任务详情" });
+			expect(pushSpy).toHaveBeenCalledTimes(1);
+
+			fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
+			await act(async () => {});
+			expect(screen.queryByLabelText("标题")).toBeNull();
+			expect(backSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			pushSpy.mockRestore();
+			backSpy.mockRestore();
+		}
+	});
+
+	it("desktop detail: dragging a file over title/notes highlights the panel and dropping uploads it", () => {
+		width = 1280;
+		mountBoard();
+		openTask();
+		const notes = screen.getByLabelText("备注");
+		const file = new File(["img"], "shot.png", { type: "image/png" });
+
+		const dragOver = new Event("dragover", { bubbles: true, cancelable: true }) as DragEvent;
+		Object.defineProperty(dragOver, "dataTransfer", {
+			value: { types: ["Files"], files: [], dropEffect: "none" },
+		});
+		act(() => {
+			notes.dispatchEvent(dragOver);
+		});
+		expect(dragOver.defaultPrevented).toBe(true);
+		expect(screen.getByTestId("detail-drop-overlay")).toBeTruthy();
+
+		// 拖到详情标题栏（仍属详情面板内）：保持高亮；移出到列表则取消高亮
+		const headerTitle = screen.getByText("任务详情");
+		const leaveToChild = new Event("dragleave", { bubbles: true, cancelable: true }) as DragEvent;
+		Object.defineProperty(leaveToChild, "relatedTarget", { value: headerTitle });
+		act(() => {
+			notes.dispatchEvent(leaveToChild);
+		});
+		expect(screen.getByTestId("detail-drop-overlay")).toBeTruthy();
+
+		const drop = new Event("drop", { bubbles: true, cancelable: true }) as DragEvent;
+		Object.defineProperty(drop, "dataTransfer", {
+			value: { types: ["Files"], files: [file] },
+		});
+		act(() => {
+			headerTitle.dispatchEvent(drop);
+		});
+		expect(drop.defaultPrevented).toBe(true);
+		expect(screen.queryByTestId("detail-drop-overlay")).toBeNull();
+		expect(onMockDropUpload).toHaveBeenCalledWith([file]);
+	});
+
+	it("narrow fullscreen detail: dragging and dropping a file anywhere in the sheet uploads it", async () => {
+		width = 800;
+		mountBoard();
+		openTask();
+		await screen.findByRole("dialog", { name: "任务详情" });
+		const title = screen.getByLabelText("标题");
+		const file = new File(["pdf"], "receipt.pdf", { type: "application/pdf" });
+
+		const dragOver = new Event("dragover", { bubbles: true, cancelable: true }) as DragEvent;
+		Object.defineProperty(dragOver, "dataTransfer", {
+			value: { types: ["Files"], files: [], dropEffect: "none" },
+		});
+		act(() => {
+			title.dispatchEvent(dragOver);
+		});
+		expect(screen.getByTestId("detail-drop-overlay")).toBeTruthy();
+
+		const drop = new Event("drop", { bubbles: true, cancelable: true }) as DragEvent;
+		Object.defineProperty(drop, "dataTransfer", {
+			value: { types: ["Files"], files: [file] },
+		});
+		act(() => {
+			title.dispatchEvent(drop);
+		});
+		expect(screen.queryByTestId("detail-drop-overlay")).toBeNull();
+		expect(onMockDropUpload).toHaveBeenCalledWith([file]);
+	});
+});
+
+describe("inbox skeleton follows task type (#102)", () => {
+	it("remembers which rows have process actions and draws the next skeleton that way", () => {
+		const key = ["tasks", "list", { inbox: true }] as const;
+		const mixed: Task[] = [
+			tasks[0]!,
+			{ ...tasks[0]!, id: "t2", title: "下一步", status: "next" },
+			{ ...tasks[0]!, id: "t3", title: "再一条", status: "inbox" },
+			{ ...tasks[0]!, id: "t4", title: "在等", status: "waiting" },
+		];
+		const client = new QueryClient();
+		const view = render(
+			<QueryClientProvider client={client}>
+				<TaskBoard
+					title="收件箱"
+					placeholder="加一条"
+					query={{ data: { items: mixed }, error: null }}
+					loadKey={key}
+					projects={projects}
+					emptyText="空"
+					enableInboxProcess
+					onCreate={async () => {}}
+					onComplete={async () => {}}
+					onDelete={async () => {}}
+				/>
+			</QueryClientProvider>,
+		);
+		expect(readSkeletonShape(key)).toBe("1010");
+		view.rerender(
+			<QueryClientProvider client={client}>
+				<TaskBoard
+					title="收件箱"
+					placeholder="加一条"
+					query={{ data: undefined, error: null }}
+					loadKey={key}
+					projects={projects}
+					emptyText="空"
+					enableInboxProcess
+					onCreate={async () => {}}
+					onComplete={async () => {}}
+					onDelete={async () => {}}
+				/>
+			</QueryClientProvider>,
+		);
+		const list = screen.getByTestId("skeleton-list");
+		expect(list.getAttribute("data-skeleton-visible")).toBe("false");
+		const flags = [...list.querySelectorAll(":scope > div")]
+			.map((row) => (row.textContent?.includes("丢掉") ? "1" : "0"))
+			.join("");
+		expect(flags).toBe("1010");
 	});
 });

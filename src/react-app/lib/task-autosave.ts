@@ -24,6 +24,7 @@ import {
 	foldIntoPendingCreate,
 	isAwaitingRealId,
 	isTempTaskId,
+	nextWriteSeq,
 	PendingCreateFailedError,
 	realIdFor,
 	SKIPPED_BY_DELETE,
@@ -37,7 +38,7 @@ import {
 	upsertTaskInCaches,
 } from "./task-cache";
 import { invalidateTaskActivity } from "./task-activity";
-import { mutationErrorMessage } from "./task-mutations";
+import { isTaskCompleting, mutationErrorMessage } from "./task-mutations";
 import { ApiError } from "./session";
 import { shellKeys } from "./shell-keys";
 
@@ -105,6 +106,11 @@ export function sameAutosaveValue<F extends AutosaveField>(
 	return a === b;
 }
 
+/** 自动保存内部字段名 → 请求体字段名。目前只有 tags 会改名。 */
+export function toApiFieldKey(field: string): string {
+	return field === "tags" ? "tagIds" : field;
+}
+
 /** 内部值 → PATCH 请求体（tags → tagIds）。 */
 export function toApiPatch(values: Partial_): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
@@ -112,6 +118,22 @@ export function toApiPatch(values: Partial_): Record<string, unknown> {
 		if (!(field in values)) continue;
 		if (field === "tags") out.tagIds = (values.tags ?? []).map((tag) => tag.id);
 		else out[field] = values[field];
+	}
+	return out;
+}
+
+/**
+ * 与 toApiPatch 同一套字段名。`tags` 的写入序号记到 `tagIds` 上；
+ * 同一个请求字段有多条序号时保留较晚的一条。
+ */
+export function toApiSeq(seq: Record<string, number> | undefined): Record<string, number> | undefined {
+	if (!seq) return undefined;
+	const out: Record<string, number> = {};
+	for (const [key, value] of Object.entries(seq)) {
+		if (typeof value !== "number") continue;
+		const apiKey = toApiFieldKey(key);
+		const prev = out[apiKey];
+		if (prev === undefined || value >= prev) out[apiKey] = value;
 	}
 	return out;
 }
@@ -133,6 +155,15 @@ const IDLE: AutosaveSnapshot = { status: "idle", error: null, titleInvalid: fals
 export type UnsavedRecord = {
 	taskId: string;
 	fields: Partial<Record<AutosaveField, { value: unknown; base: unknown }>>;
+};
+
+/** #117：401 时暂存到本机、重新登录后补发的一条未完成新建任务（已合并 fold 与排队改动）。 */
+export type UnsavedCreateRecord = {
+	idempotencyKey: string;
+	tempId?: string;
+	body: Record<string, unknown> & { title: string; idempotencyKey: string };
+	/** 原 POST 在 401 前已发出后又排队的改动：若服务端已按 idempotencyKey 创建旧版，补发后回填。 */
+	postCreatePatch?: Record<string, unknown>;
 };
 
 /** 这些 4xx 是请求本身不对（校验失败等），重发没用。401 / 404 / 408 / 429 另外处理。 */
@@ -162,6 +193,8 @@ type Entry = {
 	timer: ReturnType<typeof setTimeout> | null;
 	snapshot: AutosaveSnapshot;
 	discarded: boolean;
+	/** #93：删除进行中时暂停发 PATCH，保留 confirmed 与 edits，删除失败可恢复补发。 */
+	suspendedForDelete: boolean;
 	/**
 	 * keepalive 发不了（太大 / 失败）而改用普通请求时记下的序号：页面关掉时这个普通请求可能被取消，
 	 * 所以 beforeunload 要拦。之后开始的某次非 keepalive 发送成功就清掉。
@@ -171,6 +204,10 @@ type Entry = {
 	rejected: Partial_;
 	rejectedMessage: string | null;
 	titleInvalid: boolean;
+	/** #118：本轮隐藏 / 卸载期间已通过 keepalive（或卸载开始时已在飞）发出的字段值，避免重复 PATCH。 */
+	keepaliveSent: Partial_;
+	/** 每个未确认字段最后一次写入的序号，401 暂存时和排队改动比先后。 */
+	editSeq: Partial<Record<AutosaveField, number>>;
 };
 
 type Listener = () => void;
@@ -182,11 +219,15 @@ export class TaskAutosaveQueue {
 	private keepaliveInflightBytes = 0;
 	private seq = 0;
 	private disposed = false;
+	/** #118：beforeunload / pagehide 卸载期间为 true，避免普通请求被卸载中止后重复发 keepalive PATCH。 */
+	private unloading = false;
 	/**
 	 * 401 时没能把改动暂存到本机（localStorage 满了等）：队列先留着、不再发请求，beforeunload 一直拦，
 	 * 重新登录后（同一用户）再补发。`userId` 是当时的用户（不知道就是 null，重新登录后不补发）。
 	 */
 	private heldFor: { userId: string | null } | null = null;
+	/** #117：401 暂存失败（localStorage 满/不可用）时留在内存里的未完成新建。 */
+	private heldCreates: UnsavedCreateRecord[] = [];
 	private disposeLifecycle: (() => void) | null = null;
 
 	constructor(
@@ -243,10 +284,13 @@ export class TaskAutosaveQueue {
 			timer: null,
 			snapshot: IDLE,
 			discarded: false,
+			suspendedForDelete: false,
 			guardSeq: null,
 			rejected: {},
 			rejectedMessage: null,
 			titleInvalid: false,
+			keepaliveSent: {},
+			editSeq: {},
 		};
 		this.entries.set(task.id, entry);
 		return entry;
@@ -267,6 +311,31 @@ export class TaskAutosaveQueue {
 			if (!sameAutosaveValue(field, value as never, entry.confirmed[field] as never)) {
 				(out as Record<string, unknown>)[field] = value;
 			}
+		}
+		return out;
+	}
+
+	/** #118：keepalive flush 待发字段，跳过已在飞或本轮已发出且值相同的字段。 */
+	private keepaliveDiff(entry: Entry): Partial_ {
+		const patch = this.diff(entry);
+		const out: Partial_ = {};
+		for (const field of FIELDS) {
+			if (!(field in patch)) continue;
+			const value = patch[field];
+			if (
+				entry.sending &&
+				field in entry.sending &&
+				sameAutosaveValue(field, value as never, entry.sending[field] as never)
+			) {
+				continue;
+			}
+			if (
+				field in entry.keepaliveSent &&
+				sameAutosaveValue(field, value as never, entry.keepaliveSent[field] as never)
+			) {
+				continue;
+			}
+			(out as Record<string, unknown>)[field] = value;
 		}
 		return out;
 	}
@@ -350,6 +419,7 @@ export class TaskAutosaveQueue {
 
 	/** 有没有失败的保存或还没发出的改动。 */
 	hasUnsaved(id?: string): boolean {
+		if (!id && this.heldCreates.length > 0) return true;
 		const list = id ? [this.lookup(id)].filter(Boolean) : [...this.entries.values()];
 		return (list as Entry[]).some(
 			(entry) =>
@@ -368,10 +438,17 @@ export class TaskAutosaveQueue {
 	 * 改回服务端值就不再算改动。
 	 */
 	edit(task: Task, values: Partial_, opts: { debounce?: boolean } = {}) {
+		this.unloading = false;
 		const entry = this.ensure(task);
 		for (const field of FIELDS) {
 			if (!(field in values)) continue;
 			const value = values[field];
+			if (
+				field in entry.keepaliveSent &&
+				!sameAutosaveValue(field, value as never, entry.keepaliveSent[field] as never)
+			) {
+				delete entry.keepaliveSent[field];
+			}
 			if (field in entry.rejected) {
 				// 用户在改被拒绝的字段：重新排队（改回服务端值就等于放弃这次改动）。
 				delete entry.rejected[field];
@@ -379,8 +456,10 @@ export class TaskAutosaveQueue {
 			}
 			if (sameAutosaveValue(field, value as never, this.baseline(entry, field) as never)) {
 				delete entry.edits[field];
+				delete entry.editSeq[field];
 			} else {
 				(entry.edits as Record<string, unknown>)[field] = value;
+				entry.editSeq[field] = nextWriteSeq();
 			}
 		}
 		if (opts.debounce) this.schedule(entry);
@@ -397,21 +476,57 @@ export class TaskAutosaveQueue {
 		}
 	}
 
-	/** 后台刷新 / MCP 改过：没改动的字段跟上服务端（不碰待发 / 在飞的字段）。 */
+	/**
+	 * 后台刷新 / MCP 改过：没改动的字段跟上服务端（不碰待发 / 在飞的字段）。
+	 * #93：如果服务端已经同步成和本地未确认/被拒改动一致的值，清理对应脏状态与失败提示，
+	 * 不影响 #116「服务端仍是旧值时保留表单输入与失败提示」的规则。
+	 */
 	observeServer(task: Task) {
 		const entry = this.lookup(task.id);
 		if (!entry || entry.waitingForCreate || isTempTaskId(task.id)) return;
 		const server = autosaveValuesFromTask(task);
+		let clearedDirty = false;
 		for (const field of FIELDS) {
-			if (
-				field in entry.edits ||
-				(entry.sending && field in entry.sending) ||
-				field in entry.folded ||
-				field in entry.rejected
-			) {
+			if ((entry.sending && field in entry.sending) || field in entry.folded) {
+				continue;
+			}
+			if (field in entry.edits) {
+				if (sameAutosaveValue(field, entry.edits[field] as never, server[field] as never)) {
+					(entry.confirmed as Record<string, unknown>)[field] = server[field];
+					delete entry.edits[field];
+					clearedDirty = true;
+				}
+				continue;
+			}
+			if (field in entry.rejected) {
+				if (sameAutosaveValue(field, entry.rejected[field] as never, server[field] as never)) {
+					(entry.confirmed as Record<string, unknown>)[field] = server[field];
+					delete entry.rejected[field];
+					if (Object.keys(entry.rejected).length === 0) entry.rejectedMessage = null;
+					clearedDirty = true;
+				}
 				continue;
 			}
 			(entry.confirmed as Record<string, unknown>)[field] = server[field];
+		}
+		if (
+			clearedDirty &&
+			!entry.inFlight &&
+			!entry.waitingForCreate &&
+			Object.keys(this.diff(entry)).length === 0
+		) {
+			if (entry.timer) {
+				clearTimeout(entry.timer);
+				entry.timer = null;
+			}
+			entry.edits = {};
+			if (
+				entry.snapshot.status === "error" ||
+				entry.snapshot.status === "rejected" ||
+				entry.snapshot.status === "saving"
+			) {
+				this.settledStatus(entry);
+			}
 		}
 	}
 
@@ -432,6 +547,9 @@ export class TaskAutosaveQueue {
 
 	/** 「保存失败 · 重试」：重发所有和服务端还不一样的字段。 */
 	retry(id: string) {
+		this.unloading = false;
+		const entry = this.lookup(id);
+		if (entry) entry.keepaliveSent = {};
 		this.flush(id);
 	}
 
@@ -460,8 +578,43 @@ export class TaskAutosaveQueue {
 		}
 	}
 
+	/**
+	 * #93：删除期间暂停保存队列（阻止防抖 / 关详情卸载 flush 中途发 PATCH），
+	 * 但保留 confirmed 基线与未发改动：删除成功调用 commit() 丢弃，失败调用 restore() 补发。
+	 */
+	suspendForDelete(id: string): { commit: () => void; restore: () => void } {
+		const entry = this.lookup(id);
+		if (!entry) return { commit: () => {}, restore: () => {} };
+		if (entry.timer) {
+			clearTimeout(entry.timer);
+			entry.timer = null;
+		}
+		entry.suspendedForDelete = true;
+		let done = false;
+		return {
+			commit: () => {
+				if (done) return;
+				done = true;
+				entry.suspendedForDelete = false;
+				this.discard(entry.key);
+			},
+			restore: () => {
+				if (done) return;
+				done = true;
+				entry.suspendedForDelete = false;
+				if (entry.discarded || this.disposed) return;
+				this.maybeRekey(entry);
+				const patch = this.diff(entry);
+				if (Object.keys(patch).length > 0) {
+					this.applyToCache(entry.key, patch);
+					this.flushEntry(entry);
+				}
+			},
+		};
+	}
+
 	private flushEntry(entry: Entry, opts: { keepalive?: boolean } = {}) {
-		if (entry.discarded || this.disposed || this.heldFor) return;
+		if (entry.discarded || entry.suspendedForDelete || this.disposed || this.heldFor) return;
 		if (entry.timer) {
 			clearTimeout(entry.timer);
 			entry.timer = null;
@@ -474,20 +627,40 @@ export class TaskAutosaveQueue {
 				this.foldIntoCreate(entry);
 				return;
 			}
-			// 页面要关了：在飞的那个可能回不来，把剩下的改动用 keepalive 先发出去（重复发同样的值无害）。
+			// 页面要关了：只把还没在飞 / 还没通过 keepalive 发出的增量改动发出去，跳过重复 patch（#118）。
 			if (opts.keepalive && !isTempTaskId(entry.key)) {
-				void this.request(entry, entry.key, toApiPatch(entry.edits), true).catch(() => undefined);
+				const extra = this.keepaliveDiff(entry);
+				if (Object.keys(extra).length > 0) {
+					Object.assign(entry.keepaliveSent, extra);
+					void this.request(entry, entry.key, toApiPatch(extra), true).then(
+						(res) => this.onKeepaliveExtraSuccess(entry, extra, res.task),
+						(err: unknown) => {
+							// 卸载中止（TypeError）保留去重标记；明确失败（5xx / 留页后）要清掉，否则下次刷新会跳过。
+							if (this.keepKeepaliveMark(err)) return;
+							for (const field of Object.keys(extra) as AutosaveField[]) {
+								if (sameAutosaveValue(field, entry.keepaliveSent[field] as never, extra[field] as never)) {
+									delete entry.keepaliveSent[field];
+								}
+							}
+						},
+					);
+				}
 			}
 			if (entry.snapshot.status !== "error") this.setStatus(entry, "saving");
 			return;
 		}
-		const patch = this.diff(entry);
+		const patch = opts.keepalive ? this.keepaliveDiff(entry) : this.diff(entry);
 		if (Object.keys(patch).length === 0) {
+			if (opts.keepalive && Object.keys(this.diff(entry)).length > 0) {
+				// #118：相同的改动已在卸载前 / 本轮 keepalive 发过，跳过重复 PATCH。
+				return;
+			}
 			// 改回了原值：没有要发的。
 			entry.edits = {};
-			// 也包括：被拒绝的字段又改回了服务端值 → 不再显示失败原因。
+			// #93：保存失败或 4xx 被拒的字段改回服务端值后，清掉失败提示。
 			if (
 				entry.snapshot.status === "saving" ||
+				entry.snapshot.status === "error" ||
 				(entry.snapshot.status === "rejected" && Object.keys(entry.rejected).length === 0)
 			) {
 				this.settledStatus(entry);
@@ -533,19 +706,55 @@ export class TaskAutosaveQueue {
 		// 别让发出之前就开始的后台刷新把旧值写回来。
 		void this.queryClient.cancelQueries({ queryKey: ["tasks"] });
 		const idForQueue = entry.tempId && isTempTaskId(entry.key) ? entry.tempId : entry.key;
+		let skippedByDelete = false;
 		const run = (realId: string) => {
+			if (skippedByDelete) {
+				// #93：前面被删除跳过、现在删除失败触发补发；若已由 restore() 或其它路径发走则跳过。
+				if (entry.discarded || entry.inFlight || this.disposed) return Promise.resolve(null);
+				entry.suspendedForDelete = false;
+				const replayPatch = this.diff(entry);
+				if (Object.keys(replayPatch).length === 0) return Promise.resolve(null);
+				entry.inFlight = true;
+				this.setStatus(entry, "saving");
+				this.applyToCache(realId, replayPatch);
+			}
 			// 真正发出的这一刻才算 patch：排队等真实 id 期间的多次改动合并成 1 个 PATCH。
-			const patch = this.diff(entry);
+			// keepalive 只带还没发过的字段；删除失败后的补发仍用完整 diff（#118 / #93）。
+			const patch = skippedByDelete || !opts.keepalive ? this.diff(entry) : this.keepaliveDiff(entry);
 			if (entry.discarded || Object.keys(patch).length === 0) return Promise.resolve(null);
 			entry.sending = patch;
+			if (opts.keepalive) Object.assign(entry.keepaliveSent, patch);
 			for (const field of Object.keys(patch) as AutosaveField[]) delete entry.edits[field];
 			this.maybeRekey(entry);
 			const body = toApiPatch(patch);
 			return this.request(entry, realId, body, Boolean(opts.keepalive));
 		};
 		// 普通任务 enqueueTaskAction 直接发；临时任务排进 #90 的队列，等真实 id。
-		void enqueueTaskAction(idForQueue, run, { skipIfDeleted: true }).then(
-			(data) => this.onSuccess(entry, data),
+		void enqueueTaskAction(idForQueue, run, {
+			skipIfDeleted: true,
+			onDeleteSucceeded: () => {
+				entry.suspendedForDelete = false;
+				this.discard(entry.key);
+			},
+			onReplaySuccess: (data) => {
+				if (data === null) return;
+				this.onSuccess(entry, data);
+			},
+			onReplayError: (err) => {
+				this.onFailure(entry, err);
+			},
+		}).then(
+			(data) => {
+				if (data === SKIPPED_BY_DELETE) {
+					skippedByDelete = true;
+					entry.inFlight = false;
+					if (this.disposed || entry.discarded) return;
+					entry.suspendedForDelete = true;
+					this.setStatus(entry, "idle");
+					return;
+				}
+				this.onSuccess(entry, data);
+			},
 			(err: unknown) => this.onFailure(entry, err),
 		);
 	}
@@ -600,6 +809,26 @@ export class TaskAutosaveQueue {
 			});
 	}
 
+	/** #118：inFlight 期间附带发出的 keepalive 请求若在页面存活时返回，更新 confirmed 并避免重复发。 */
+	private onKeepaliveExtraSuccess(entry: Entry, sent: Partial_, task: Task) {
+		if (this.disposed || entry.discarded) return;
+		for (const field of Object.keys(sent) as AutosaveField[]) {
+			(entry.confirmed as Record<string, unknown>)[field] = sent[field];
+			if (field in entry.edits && sameAutosaveValue(field, entry.edits[field] as never, sent[field] as never)) {
+				delete entry.edits[field];
+			}
+			if (
+				field in entry.keepaliveSent &&
+				sameAutosaveValue(field, entry.keepaliveSent[field] as never, sent[field] as never)
+			) {
+				delete entry.keepaliveSent[field];
+			}
+		}
+		this.maybeRekey(entry);
+		this.writeServerTask(entry, task);
+		if (!entry.inFlight && !entry.waitingForCreate) this.afterSettle(entry, true);
+	}
+
 	private onSuccess(entry: Entry, data: { task: Task } | null | typeof SKIPPED_BY_DELETE) {
 		entry.inFlight = false;
 		// 已退出 / 换了账号：缓存属于下一个人了，别写回去。
@@ -612,6 +841,14 @@ export class TaskAutosaveQueue {
 		entry.sending = null;
 		if (entry.discarded) return;
 		Object.assign(entry.confirmed, sent);
+		for (const field of Object.keys(sent) as AutosaveField[]) {
+			if (
+				field in entry.keepaliveSent &&
+				sameAutosaveValue(field, entry.keepaliveSent[field] as never, sent[field] as never)
+			) {
+				delete entry.keepaliveSent[field];
+			}
+		}
 		this.maybeRekey(entry);
 		if (data) this.writeServerTask(entry, data.task);
 		this.afterSettle(entry, true);
@@ -627,6 +864,18 @@ export class TaskAutosaveQueue {
 		const sent = entry.sending ?? {};
 		entry.sending = null;
 		if (entry.discarded) return;
+		// 只有卸载把普通请求中止（TypeError）时才保留 keepalive 去重标记。5xx / 断网以外的明确失败必须清掉，
+		// 否则用户点「留在此页」后这些字段再也不会补发。
+		if (!this.keepKeepaliveMark(err)) {
+			for (const field of Object.keys(sent) as AutosaveField[]) {
+				if (
+					field in entry.keepaliveSent &&
+					sameAutosaveValue(field, entry.keepaliveSent[field] as never, sent[field] as never)
+				) {
+					delete entry.keepaliveSent[field];
+				}
+			}
+		}
 		if (err instanceof ApiError && err.status === 404) {
 			// 任务已经不在了（别处删了）：放弃这条的改动。
 			this.discard(entry.key);
@@ -691,7 +940,7 @@ export class TaskAutosaveQueue {
 			this.settledStatus(entry);
 			// 队列清空且都成功：活动只拉一次（服务端已把连续编辑合并成一条）。
 			if (!isTempTaskId(entry.key)) void invalidateTaskActivity(this.queryClient, entry.key);
-			void silentInvalidateTasks(this.queryClient);
+			if (!isTaskCompleting(entry.key)) void silentInvalidateTasks(this.queryClient);
 		}
 	}
 
@@ -719,13 +968,47 @@ export class TaskAutosaveQueue {
 		return out;
 	}
 
+	/** #117：导出某条临时任务还没被服务端确认的改动（不含 4xx 被拒绝的），供 401 暂存并进新建请求体。 */
+	exportTempEdits(tempId: string): Partial<AutosaveValues> {
+		const entry = this.lookup(tempId);
+		if (!entry || entry.discarded) return {};
+		return { ...entry.folded, ...(entry.sending ?? {}), ...entry.edits };
+	}
+
+	/** 临时任务未确认字段的写入序号（没有序号的字段在合并时沿用旧的「后层覆盖」）。 */
+	exportTempEditSeq(tempId: string): Record<string, number> {
+		const entry = this.lookup(tempId);
+		if (!entry || entry.discarded) return {};
+		const values = this.exportTempEdits(tempId);
+		const out: Record<string, number> = {};
+		for (const field of Object.keys(values)) {
+			const seq = entry.editSeq[field as AutosaveField];
+			if (typeof seq === "number") out[field] = seq;
+		}
+		return out;
+	}
+
 	/** 暂存失败：队列留在内存里、停止发送，beforeunload 一直拦，等同一用户重新登录。 */
-	hold(userId: string | null) {
+	hold(userId: string | null, creates: UnsavedCreateRecord[] = []) {
 		this.heldFor = { userId };
+		this.heldCreates = creates.map((record) => ({
+			...record,
+			body: { ...record.body },
+			...(record.postCreatePatch ? { postCreatePatch: { ...record.postCreatePatch } } : {}),
+		}));
 		for (const entry of this.entries.values()) {
 			if (entry.timer) clearTimeout(entry.timer);
 			entry.timer = null;
 		}
+	}
+
+	/** #117：导出因 localStorage 写不进去而留在内存里的未完成新建。 */
+	exportHeldCreates(): UnsavedCreateRecord[] {
+		return this.heldCreates.map((record) => ({
+			...record,
+			body: { ...record.body },
+			...(record.postCreatePatch ? { postCreatePatch: { ...record.postCreatePatch } } : {}),
+		}));
 	}
 
 	heldUserId(): string | null | undefined {
@@ -737,7 +1020,8 @@ export class TaskAutosaveQueue {
 		const fromId = entry.tempId && findCachedTask(this.queryClient, entry.tempId) ? entry.tempId : task.id;
 		const cached = findCachedTask(this.queryClient, fromId);
 		if (!cached) return;
-		const pending = { ...entry.folded, ...entry.edits };
+		// 主请求还在飞时，增量 keepalive 可能先返回；服务端 task 仍带主请求字段的旧值，要盖上 sending。
+		const pending = { ...entry.folded, ...(entry.sending ?? {}), ...entry.edits };
 		const next: Task = {
 			...task,
 			...sanitizeClientPatch(toApiPatch(pending), task),
@@ -748,17 +1032,54 @@ export class TaskAutosaveQueue {
 	}
 
 	private applyToCache(id: string, values: Partial_) {
-		if (Object.keys(values).length === 0) return;
+		if (Object.keys(values).length === 0 || isTaskCompleting(id)) return;
 		const next = applyOptimisticTaskPatch(this.queryClient, id, toApiPatch(values));
 		if (next && values.tags) upsertTaskInCaches(this.queryClient, { ...next, tags: values.tags });
+	}
+
+	/** 卸载中止才保留去重标记；留在页面上的 5xx / 其它失败要能再发。 */
+	private keepKeepaliveMark(err: unknown): boolean {
+		return this.unloading && err instanceof TypeError;
+	}
+
+	/**
+	 * beforeunload 弹窗被取消（留在此页）后复位。在飞的请求先留着标记，等它自己的成功 / 失败处理；
+	 * 已经失败、字段回到 edits 的，清掉标记，避免下次 pagehide 把它们跳过。
+	 */
+	private releaseUnloadingAfterStay() {
+		if (this.disposed) return;
+		this.unloading = false;
+		for (const entry of this.entries.values()) {
+			if (entry.inFlight) continue;
+			for (const field of Object.keys(entry.keepaliveSent) as AutosaveField[]) {
+				if (field in entry.edits || field in entry.rejected) delete entry.keepaliveSent[field];
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------ lifecycle
 
 	private installLifecycle() {
+		const markInFlightForUnload = () => {
+			this.unloading = true;
+			for (const entry of this.entries.values()) {
+				if (!entry.discarded && entry.inFlight && entry.sending) {
+					Object.assign(entry.keepaliveSent, entry.sending);
+				}
+			}
+		};
+		const resetKeepaliveDedupe = () => {
+			this.unloading = false;
+			for (const entry of this.entries.values()) entry.keepaliveSent = {};
+		};
 		const onHide = () => this.flushAll({ keepalive: true });
+		const onPageHide = () => {
+			markInFlightForUnload();
+			onHide();
+		};
 		const onVisibility = () => {
 			if (document.visibilityState === "hidden") onHide();
+			else resetKeepaliveDedupe();
 		};
 		const onBeforeUnload = (event: BeforeUnloadEvent) => {
 			// 失败过的、或还发不出去（等真实 id）的改动：提示一下；其它的直接 keepalive 发出去。
@@ -768,20 +1089,25 @@ export class TaskAutosaveQueue {
 					((entry.waitingForCreate || isAwaitingRealId(entry.key)) &&
 						(this.hasEdits(entry) || entry.inFlight || entry.waitingForCreate)),
 			);
+			markInFlightForUnload();
 			onHide();
 			// keepalive 发不了、改用普通请求（页面关掉可能被取消）的：也拦，直到普通请求成功。
 			const guarded =
 				[...this.entries.values()].some((entry) => entry.guardSeq !== null) ||
-				Boolean(this.heldFor && this.exportUnsaved().length > 0);
+				Boolean(this.heldFor && (this.exportUnsaved().length > 0 || this.heldCreates.length > 0));
 			if (!blocked && !guarded) return;
 			event.preventDefault();
 			event.returnValue = "";
+			// 选择「留在此页」时通常不会再有 pageshow / visibilitychange。真正卸载后宏任务不执行。
+			window.setTimeout(() => this.releaseUnloadingAfterStay(), 0);
 		};
-		window.addEventListener("pagehide", onHide);
+		window.addEventListener("pagehide", onPageHide);
+		window.addEventListener("pageshow", resetKeepaliveDedupe);
 		document.addEventListener("visibilitychange", onVisibility);
 		window.addEventListener("beforeunload", onBeforeUnload);
 		this.disposeLifecycle = () => {
-			window.removeEventListener("pagehide", onHide);
+			window.removeEventListener("pagehide", onPageHide);
+			window.removeEventListener("pageshow", resetKeepaliveDedupe);
 			document.removeEventListener("visibilitychange", onVisibility);
 			window.removeEventListener("beforeunload", onBeforeUnload);
 		};
@@ -790,6 +1116,7 @@ export class TaskAutosaveQueue {
 	dispose() {
 		this.disposed = true;
 		this.heldFor = null;
+		this.heldCreates = [];
 		this.disposeLifecycle?.();
 		this.disposeLifecycle = null;
 		for (const entry of this.entries.values()) if (entry.timer) clearTimeout(entry.timer);

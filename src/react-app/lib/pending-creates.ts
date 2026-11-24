@@ -6,6 +6,7 @@
  * （会 404 并触发回滚），所以它们的 mutationFn 走 `enqueueTaskAction`：按点击顺序排进这条任务的队列，
  * 等真实 id 到了再依次发出（排队，而不是禁用按钮）；新建失败则一起放弃。
  */
+import type { QueryClient } from "@tanstack/react-query";
 import type { Task } from "../api";
 
 const TEMP_PREFIX = "tmp-";
@@ -24,6 +25,34 @@ export function newTempTaskId(): string {
 	return `${TEMP_PREFIX}${counter}-${random}`;
 }
 
+/** #117：为每次新建生成幂等键（8~80 字符，符合 createTaskInput），避免 401 重登补发或并发重放重复创建。 */
+export function newCreateIdempotencyKey(): string {
+	const random =
+		typeof crypto !== "undefined" && "randomUUID" in crypto
+			? crypto.randomUUID()
+			: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+	return `create-${random}`.slice(0, 80);
+}
+
+function stripSource(body: Record<string, unknown>): Record<string, unknown> {
+	const rest = { ...body };
+	delete rest.source;
+	return rest;
+}
+
+function defaultBodyFromTask(task: Task): Record<string, unknown> {
+	const out: Record<string, unknown> = { title: task.title, status: task.status };
+	if (task.notes) out.notes = task.notes;
+	if (task.priority && task.priority !== "none") out.priority = task.priority;
+	if (task.dueAt) out.dueAt = task.dueAt;
+	if (task.startAt) out.startAt = task.startAt;
+	if (task.waitingOn) out.waitingOn = task.waitingOn;
+	if (task.projectId) out.projectId = task.projectId;
+	if (task.parentId) out.parentId = task.parentId;
+	if (Array.isArray(task.tags) && task.tags.length > 0) out.tagIds = task.tags.map((tag) => tag.id);
+	return out;
+}
+
 /** 新建失败时，排在它后面的操作统一抛这个错（新建本身已经提示过，不再重复 toast）。 */
 export class PendingCreateFailedError extends Error {
 	constructor(readonly tempId: string) {
@@ -32,11 +61,40 @@ export class PendingCreateFailedError extends Error {
 	}
 }
 
+export type PendingCreateSnapshot = {
+	tempId: string;
+	idempotencyKey: string;
+	optimisticTitle: string;
+	body: Record<string, unknown>;
+	sentFold: Record<string, unknown>;
+	fold: Record<string, unknown>;
+	queuedPatch: Record<string, unknown>;
+	/** 每个排队字段最后一次写入的序号。和自动保存的序号比，晚写的胜出。 */
+	queuedPatchSeq?: Record<string, number>;
+	completed: boolean;
+	/** 点完成时的序号。比 status 字段更晚才强制 completed。 */
+	completedSeq?: number;
+	createSent: boolean;
+	sentBody?: Record<string, unknown>;
+};
+
+type SkippedAction = {
+	run: (realId: string) => Promise<unknown>;
+	onReplaySuccess?: (data: unknown, realId: string) => void;
+	onReplayError?: (err: unknown, realId: string) => void;
+	onDeleteSucceeded?: () => void;
+};
+
 type Entry = {
 	tempId: string;
+	queryClient?: QueryClient;
 	/** 最初插入缓存的乐观记录（缓存里找不到时兜底）。 */
 	optimistic: Task;
-	state: "pending" | "created" | "failed";
+	/** 原始创建请求体（不含 source），供 401 暂存补发（#117）。 */
+	body: Record<string, unknown>;
+	/** 稳定幂等键（#117），同一条新建重放不重复创建。 */
+	idempotencyKey: string;
+	state: "pending" | "unauthorized" | "created" | "failed";
 	/** 服务端返回的真实记录。 */
 	created?: Task;
 	/** 已有操作改过这条临时任务（乐观 patch / 排队等真实 id 的完成、保存、删除…）。 */
@@ -45,6 +103,14 @@ type Entry = {
 	removed: boolean;
 	/** 已排队删除（删除 / 收件箱丢掉）：排在它前面、还没发出的其它操作不必再发。 */
 	deleted: boolean;
+	/** 已排队完成：401 补发时保留完成状态。 */
+	completed: boolean;
+	/** #93：被排队的删除跳过的前置操作；删除成功后丢弃，删除失败后按序补发。 */
+	skippedByDelete: SkippedAction[];
+	/** #93：删除失败后正在（或即将）补发被跳过的前置操作。 */
+	replaying: boolean;
+	/** #93：等待删除 onError 回滚完成后再启动的补发触发器。 */
+	startReplay: (() => void) | null;
 	/** 这条任务的操作队列尾部：所有操作按点击顺序串行发出。 */
 	tail: Promise<unknown>;
 	/** 队列里还没结束的操作数。 */
@@ -55,6 +121,14 @@ type Entry = {
 	 */
 	createSent: boolean;
 	fold: Record<string, unknown>;
+	/** #117：takePendingCreateFold 发出前已并入的改动副本，避免 401 时丢失。 */
+	sentFold: Record<string, unknown>;
+	/** #117：真正传给 api.createTask 的请求体快照。 */
+	sentBody?: Record<string, unknown>;
+	/** #117：非自动保存路径（如收件箱处理 / updateTask）对临时任务排队的改动。 */
+	queuedPatch: Record<string, unknown>;
+	queuedPatchSeq: Record<string, number>;
+	completedSeq: number;
 	promise: Promise<string>;
 	resolve: (id: string) => void;
 	reject: (error: Error) => void;
@@ -63,7 +137,10 @@ type Entry = {
 const entries = new Map<string, Entry>();
 const MAX_SETTLED = 200;
 
-export function registerPendingCreate(task: Task): void {
+export function registerPendingCreate(
+	task: Task,
+	opts: { body?: Record<string, unknown>; queryClient?: QueryClient } = {},
+): void {
 	let resolve!: (id: string) => void;
 	let reject!: (error: Error) => void;
 	const promise = new Promise<string>((res, rej) => {
@@ -72,17 +149,34 @@ export function registerPendingCreate(task: Task): void {
 	});
 	// 没人等的时候失败也不该变成 unhandled rejection。
 	promise.catch(() => undefined);
+	const cleanBody = stripSource(opts.body ? { ...opts.body } : defaultBodyFromTask(task));
+	const existingKey = cleanBody.idempotencyKey;
+	const idempotencyKey =
+		typeof existingKey === "string" && existingKey.length >= 8 && existingKey.length <= 80
+			? existingKey
+			: newCreateIdempotencyKey();
 	entries.set(task.id, {
 		tempId: task.id,
+		queryClient: opts.queryClient,
 		optimistic: task,
+		body: cleanBody,
+		idempotencyKey,
 		state: "pending",
 		touched: false,
 		removed: false,
 		deleted: false,
+		completed: false,
+		skippedByDelete: [],
+		replaying: false,
+		startReplay: null,
 		tail: promise.catch(() => undefined),
 		queued: 0,
 		createSent: false,
 		fold: {},
+		sentFold: {},
+		queuedPatch: {},
+		queuedPatchSeq: {},
+		completedSeq: 0,
 		promise,
 		resolve,
 		reject,
@@ -94,7 +188,7 @@ function pruneSettled() {
 	if (entries.size <= MAX_SETTLED) return;
 	for (const [id, entry] of entries) {
 		if (entries.size <= MAX_SETTLED) break;
-		if (entry.state !== "pending" && entry.queued === 0) entries.delete(id);
+		if ((entry.state === "created" || entry.state === "failed") && entry.queued === 0) entries.delete(id);
 	}
 }
 
@@ -109,7 +203,7 @@ export function listPendingCreates(): Readonly<Entry>[] {
 
 /** 所有已有结果的新建（回滚快照后用来把残留的临时行换成真实记录 / 删掉）。 */
 export function listSettledCreates(): Readonly<Entry>[] {
-	return [...entries.values()].filter((entry) => entry.state !== "pending");
+	return [...entries.values()].filter((entry) => entry.state === "created" || entry.state === "failed");
 }
 
 export function isPendingCreateTouched(tempId: string): boolean {
@@ -119,18 +213,37 @@ export function isPendingCreateTouched(tempId: string): boolean {
 /** 在乐观 onMutate 里调用：这条临时任务被改过 / 将被拿掉，新建返回时别用服务端原始记录覆盖。 */
 export function touchPendingCreate(
 	tempId: string,
-	opts: { removed?: boolean; deleted?: boolean } = {},
+	opts: { removed?: boolean; deleted?: boolean; completed?: boolean; patch?: Record<string, unknown> } = {},
 ): void {
 	const entry = entries.get(tempId);
-	if (!entry || entry.state !== "pending") return;
+	if (!entry || (entry.state !== "pending" && entry.state !== "unauthorized")) return;
 	entry.touched = true;
 	if (opts.removed || opts.deleted) entry.removed = true;
 	if (opts.deleted) entry.deleted = true;
+	if (opts.completed) {
+		entry.completed = true;
+		entry.completedSeq = nextWriteSeq();
+	}
+	if (opts.patch) {
+		const clean = stripSource(opts.patch);
+		const seq = nextWriteSeq();
+		Object.assign(entry.queuedPatch, clean);
+		for (const key of Object.keys(clean)) entry.queuedPatchSeq[key] = seq;
+	}
+}
+
+/** 自动保存和排队改动共用的写入序号，用来在 401 暂存时按时间合并。 */
+let writeSeq = 0;
+export function nextWriteSeq(): number {
+	writeSeq += 1;
+	return writeSeq;
 }
 
 /** 还在等真实 id 的临时任务：它上面的操作排队，不加锁、不禁用按钮。 */
 export function isAwaitingRealId(id: string): boolean {
-	return isTempTaskId(id) && entries.get(id)?.state === "pending";
+	if (!isTempTaskId(id)) return false;
+	const state = entries.get(id)?.state;
+	return state === "pending" || state === "unauthorized";
 }
 
 function entryForTask(id: string): Entry | undefined {
@@ -144,17 +257,95 @@ function entryForTask(id: string): Entry | undefined {
 /** 排队的操作因为后面已经排了删除而不必发出。 */
 export const SKIPPED_BY_DELETE = Symbol("skipped-by-delete");
 
+export type EnqueueTaskActionOptions<T = unknown> = {
+	skipIfDeleted?: boolean;
+	/** 标记此操作为删除 / 丢掉：成功时丢弃被跳过的前置操作，失败时自动按序补发。 */
+	isDelete?: boolean;
+	/** #93：前面被删除跳过的操作，在删除失败后自动补发成功时的回调。 */
+	onReplaySuccess?: (data: T, realId: string) => void;
+	/** #93：前面被删除跳过的操作，在删除失败后自动补发失败时的回调。 */
+	onReplayError?: (err: unknown, realId: string) => void;
+	/** #93：排在后面的删除最终成功时回调（让暂停等待的 autosave 彻底丢弃）。 */
+	onDeleteSucceeded?: () => void;
+};
+
+/** #93：删除失败后，把被跳过的前置操作挂回这条任务的队列尾部按原序补发。 */
+function prepareSkippedReplay(entry: Entry, realId: string, skipped: SkippedAction[]) {
+	entry.replaying = true;
+	let started = false;
+	const start = () => {
+		if (started) return;
+		started = true;
+		if (entry.startReplay === start) entry.startReplay = null;
+		let remaining = skipped.length;
+		for (const action of skipped) {
+			entry.queued += 1;
+			const step = entry.tail.then(() => {
+				if (entry.deleted) {
+					// 补发期间用户又删了一次：重新暂存，等新删除的结果。
+					entry.skippedByDelete.push(action);
+					remaining -= 1;
+					if (remaining === 0) entry.replaying = false;
+					return;
+				}
+				return action.run(realId).then(
+					(data) => {
+						remaining -= 1;
+						if (remaining === 0) entry.replaying = false;
+						action.onReplaySuccess?.(data, realId);
+					},
+					(err: unknown) => {
+						remaining -= 1;
+						if (remaining === 0) entry.replaying = false;
+						action.onReplayError?.(err, realId);
+					},
+				);
+			});
+			const settled = step.then(
+				() => undefined,
+				() => undefined,
+			);
+			entry.tail = settled;
+			void settled.then(() => {
+				entry.queued -= 1;
+			});
+		}
+	};
+	entry.startReplay = start;
+	// 兜底：即使调用方未显式调用 flushSkippedReplay，也在 onError 之后自动启动补发。
+	void Promise.resolve()
+		.then(() => Promise.resolve())
+		.then(start);
+}
+
+/** #93：删除 onError 回滚完成后立刻启动被跳过前置操作的补发，保证回滚顺序不倒置。 */
+export function flushSkippedReplay(id: string): void {
+	const entry = isTempTaskId(id)
+		? entries.get(id)
+		: [...entries.values()].find((item) => item.created?.id === id);
+	entry?.startReplay?.();
+}
+
+/** #93：这条任务是否正在补发因删除失败而被跳过的前置操作。 */
+export function hasPendingSkippedReplay(id: string): boolean {
+	const entry = isTempTaskId(id)
+		? entries.get(id)
+		: [...entries.values()].find((item) => item.created?.id === id);
+	return Boolean(entry?.replaying);
+}
+
 /**
  * #90：对刚新建（临时 id）的任务的操作按点击顺序排进这条任务的队列，
  * 真实 id 到了以后逐个发出（每个都已经先乐观改过缓存）。
  * - 新建失败：队列里所有操作都以 PendingCreateFailedError 结束（只由新建提示一次）。
  * - 真实 id 已到、但队列还没跑完时，对真实 id 的新操作也排在后面，保证顺序。
- * - 后面已经排了删除时，`skipIfDeleted` 的操作直接跳过（返回 SKIPPED_BY_DELETE）。
+ * - 后面已经排了删除时，`skipIfDeleted` 的操作先跳过（返回 SKIPPED_BY_DELETE），
+ *   并暂存起来；若删除失败则按原序补发，删除成功则丢弃（#93）。
  */
 export function enqueueTaskAction<T>(
 	id: string,
 	run: (realId: string) => Promise<T>,
-	opts: { skipIfDeleted?: boolean } = {},
+	opts: EnqueueTaskActionOptions<T> = {},
 ): Promise<T | typeof SKIPPED_BY_DELETE> {
 	const entry = entryForTask(id);
 	if (!entry) {
@@ -167,8 +358,32 @@ export function enqueueTaskAction<T>(
 	entry.queued += 1;
 	const result = entry.tail.then<T | typeof SKIPPED_BY_DELETE>(() => {
 		if (entry.state !== "created" || !entry.created) throw new PendingCreateFailedError(entry.tempId);
-		if (opts.skipIfDeleted && entry.deleted) return SKIPPED_BY_DELETE;
-		return run(entry.created.id);
+		const realId = entry.created.id;
+		if (opts.skipIfDeleted && entry.deleted) {
+			entry.skippedByDelete.push({
+				run,
+				onReplaySuccess: opts.onReplaySuccess as ((data: unknown, realId: string) => void) | undefined,
+				onReplayError: opts.onReplayError,
+				onDeleteSucceeded: opts.onDeleteSucceeded,
+			});
+			return SKIPPED_BY_DELETE;
+		}
+		const promise = run(realId);
+		if (!opts.isDelete) return promise;
+		return promise.then(
+			(value) => {
+				const skipped = entry.skippedByDelete.splice(0);
+				for (const action of skipped) action.onDeleteSucceeded?.();
+				return value;
+			},
+			(err: unknown) => {
+				entry.deleted = false;
+				entry.removed = false;
+				const skipped = entry.skippedByDelete.splice(0);
+				if (skipped.length > 0) prepareSkippedReplay(entry, realId, skipped);
+				throw err;
+			},
+		);
 	});
 	const settled = result.then(
 		() => undefined,
@@ -210,7 +425,55 @@ export function takePendingCreateFold(tempId: string): Record<string, unknown> {
 	const fold = { ...entry.fold };
 	entry.fold = {};
 	if (fold.notes === null) delete fold.notes;
+	Object.assign(entry.sentFold, fold);
 	return fold;
+}
+
+/** #117：记录实际传给 POST /api/tasks 的请求体（供 401 时计算后续排队改动）。 */
+export function recordPendingCreateSentBody(tempId: string, body: Record<string, unknown>): void {
+	const entry = entries.get(tempId);
+	if (!entry) return;
+	entry.sentBody = { ...body };
+}
+
+/** #117：新建请求遇 401，暂停等待 clearClientSession 暂存，不触发 reject / 丢弃排队编辑。 */
+export function markPendingCreateUnauthorized(tempId: string): void {
+	const entry = entries.get(tempId);
+	if (!entry || entry.state !== "pending") return;
+	entry.state = "unauthorized";
+}
+
+/** #117：导出仍在途或已遇 401、且未被用户删除的未完成新建（供 clearClientSession 暂存）。 */
+export function exportPendingCreates(queryClient?: QueryClient): PendingCreateSnapshot[] {
+	const out: PendingCreateSnapshot[] = [];
+	for (const entry of entries.values()) {
+		if (entry.state !== "pending" && entry.state !== "unauthorized") continue;
+		if (entry.deleted) continue;
+		if (queryClient && entry.queryClient && entry.queryClient !== queryClient) continue;
+		out.push({
+			tempId: entry.tempId,
+			idempotencyKey: entry.idempotencyKey,
+			optimisticTitle: entry.optimistic.title,
+			body: { ...entry.body },
+			sentFold: { ...entry.sentFold },
+			fold: { ...entry.fold },
+			queuedPatch: { ...entry.queuedPatch },
+			queuedPatchSeq: { ...entry.queuedPatchSeq },
+			completed: entry.completed,
+			completedSeq: entry.completedSeq,
+			createSent: entry.createSent,
+			...(entry.sentBody ? { sentBody: { ...entry.sentBody } } : {}),
+		});
+	}
+	return out;
+}
+
+/** #117：会话清理（401 / 退出 / 登录页挂载）时移除当前会话的临时新建登记，防止旧请求回写新会话。 */
+export function clearPendingCreates(queryClient?: QueryClient): void {
+	for (const [id, entry] of entries) {
+		if (queryClient && entry.queryClient && entry.queryClient !== queryClient) continue;
+		entries.delete(id);
+	}
 }
 
 /** 等这条新建出结果（成功给真实 id，失败抛 PendingCreateFailedError）。 */
@@ -260,4 +523,5 @@ export async function resolveTaskId(id: string): Promise<string> {
 export function resetPendingCreatesForTests(): void {
 	entries.clear();
 	counter = 0;
+	writeSeq = 0;
 }

@@ -75,12 +75,24 @@ describe("skeleton count (#99)", () => {
 
 	it("skeletonPlanFor: lastEmpty only when stored 0, or no record with fallback 0 (#99)", () => {
 		const k = ["settings", "plan"];
-		expect(skeletonPlanFor(k, { fallback: 1 })).toEqual({ count: 1, lastEmpty: false });
-		expect(skeletonPlanFor(k, { fallback: 0 })).toEqual({ count: 1, lastEmpty: true });
+		expect(skeletonPlanFor(k, { fallback: 1 })).toEqual({ count: 1, lastEmpty: false, shape: null });
+		expect(skeletonPlanFor(k, { fallback: 0 })).toEqual({ count: 1, lastEmpty: true, shape: null });
 		writeSkeletonCount(k, 0);
-		expect(skeletonPlanFor(k, { fallback: 1 })).toEqual({ count: 1, lastEmpty: true });
+		expect(skeletonPlanFor(k, { fallback: 1 })).toEqual({ count: 1, lastEmpty: true, shape: null });
 		writeSkeletonCount(k, 4);
-		expect(skeletonPlanFor(k, { fallback: 0, max: 3 })).toEqual({ count: 3, lastEmpty: false });
+		expect(skeletonPlanFor(k, { fallback: 0, max: 3 })).toEqual({ count: 3, lastEmpty: false, shape: null });
+	});
+
+	it("remembers which inbox rows had process actions (#102)", () => {
+		const k = taskKeys.list({ inbox: true });
+		writeSkeletonCount(k, 4, "1010");
+		expect(readSkeletonCount(k)).toBe(4);
+		expect(skeletonPlanFor(k).shape).toBe("1010");
+		writeSkeletonCount(k, 4, "nope");
+		expect(readSkeletonCount(k)).toBe(4);
+		expect(skeletonPlanFor(k).shape).toBeNull();
+		writeSkeletonCount(k, 2);
+		expect(skeletonPlanFor(k).shape).toBeNull();
 	});
 
 	it("clearSkeletonCounts removes only gtd:skeleton-count:* keys", () => {

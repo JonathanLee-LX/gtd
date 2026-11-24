@@ -110,7 +110,13 @@ let qc: QueryClient;
 const listKey = taskKeys.list({});
 
 /** 像 TaskBoard 一样：从列表缓存里取任务（临时 id / 真实 id 都认），标题旁是保存状态。 */
-function Harness({ id }: { id: string | null }) {
+function Harness({
+	id,
+	onDelete = async () => {},
+}: {
+	id: string | null;
+	onDelete?: () => Promise<void>;
+}) {
 	const { data } = useQuery({
 		queryKey: listKey,
 		queryFn: () => api.tasks({}) as Promise<{ items: Task[]; nextCursor: null }>,
@@ -128,23 +134,27 @@ function Harness({ id }: { id: string | null }) {
 				projects={projects}
 				tasks={data?.items ?? []}
 				onComplete={async () => {}}
-				onDelete={async () => {}}
+				onDelete={onDelete}
 			/>
 		</div>
 	);
 }
 
-function mount(initial: Task[], id: string | null = initial[0]?.id ?? null) {
+function mount(
+	initial: Task[],
+	id: string | null = initial[0]?.id ?? null,
+	onDelete?: () => Promise<void>,
+) {
 	qc.setQueryData(listKey, { items: initial, nextCursor: null });
 	const view = render(
 		<QueryClientProvider client={qc}>
-			<Harness id={id} />
+			<Harness id={id} onDelete={onDelete} />
 		</QueryClientProvider>,
 	);
 	return (nextId: string | null) =>
 		view.rerender(
 			<QueryClientProvider client={qc}>
-				<Harness id={nextId} />
+				<Harness id={nextId} onDelete={onDelete} />
 			</QueryClientProvider>,
 		);
 }
@@ -610,6 +620,7 @@ describe("task detail autosave (#115)", () => {
 			title: "离线记的",
 			notes: "离线时写的备注",
 			waitingOn: "老李",
+			idempotencyKey: expect.stringMatching(/^create-.+/),
 		});
 		expect(calls).toHaveLength(0);
 		expect(status()).toBe("已保存");
@@ -658,5 +669,187 @@ describe("task detail autosave (#115)", () => {
 		cleanup();
 		mount([task()]);
 		expect(screen.getByText(/来源/)).toBeTruthy();
+	});
+});
+
+describe("task detail error clearing and delete-failure recovery (#93)", () => {
+	it("保存失败后改回服务端值，失败提示清掉", async () => {
+		mount([task()]);
+		failNext.push(new Error("服务器出错了"));
+		type(titleInput(), "新标题");
+		fireEvent.blur(titleInput());
+		await settle();
+		expect(status()).toBe("保存失败重试");
+
+		// 改回服务端原标题并失焦：表单重新与服务端一致，失败提示清掉。
+		type(titleInput(), "原标题");
+		fireEvent.blur(titleInput());
+		expect(status()).toBe("已保存");
+		expect(calls).toHaveLength(1);
+	});
+
+	it("保存失败后服务端同步为相同值，失败提示清掉；服务端仍是旧值则保留输入与提示（#116）", async () => {
+		mount([task()]);
+		failNext.push(new Error("请求超时"));
+		type(titleInput(), "新标题");
+		fireEvent.blur(titleInput());
+		await settle();
+		expect(status()).toBe("保存失败重试");
+
+		// 服务端仍返回旧值：保留用户输入与失败提示。
+		await act(async () => {
+			qc.setQueryData(listKey, { items: [task({ title: "原标题", updatedAt: "2026-10-09T00:00:02.000Z" })], nextCursor: null });
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(titleInput().value).toBe("新标题");
+		expect(status()).toBe("保存失败重试");
+
+		// 服务端已包含该编辑（例如超时请求实际落库或 MCP 同步）：清掉失败提示。
+		await act(async () => {
+			qc.setQueryData(listKey, { items: [task({ title: "新标题", updatedAt: "2026-10-09T00:00:03.000Z" })], nextCursor: null });
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(titleInput().value).toBe("新标题");
+		expect(status()).toBe("已保存");
+	});
+
+	it("本地错误（如添加标签失败）在表单重新同步服务端后清掉", async () => {
+		mount([task()]);
+		api.createTag.mockRejectedValueOnce(new Error("添加标签失败了"));
+		const tagInput = screen.getByLabelText("标签");
+		fireEvent.change(tagInput, { target: { value: "@电脑" } });
+		fireEvent.keyDown(tagInput, { key: "Enter" });
+		await settle();
+		expect(screen.getByText("添加标签失败了")).toBeTruthy();
+
+		await act(async () => {
+			qc.setQueryData(listKey, {
+				items: [task({ notes: "服务端同步的备注", updatedAt: "2026-10-09T00:00:05.000Z" })],
+				nextCursor: null,
+			});
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(notesInput().value).toBe("服务端同步的备注");
+		expect(screen.queryByText("添加标签失败了")).toBeNull();
+	});
+
+	it("编辑后点删除，删除失败时补发未保存的编辑", async () => {
+		const onDelete = vi.fn().mockRejectedValueOnce(new Error("删除失败了"));
+		mount([task()], "t1", onDelete);
+		type(titleInput(), "删除前改的标题");
+		// 还没到 800ms 防抖就点删除
+		fireEvent.click(screen.getByRole("button", { name: "删除" }));
+		await settle();
+		const confirmBtn = screen.getByRole("button", { name: "确认删除" });
+		await act(async () => {
+			fireEvent.click(confirmBtn);
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(onDelete).toHaveBeenCalledTimes(1);
+		expect(calls).toEqual([{ id: "t1", body: { title: "删除前改的标题" }, keepalive: false }]);
+		expect(server.get("t1")?.title).toBe("删除前改的标题");
+	});
+});
+
+describe("autosave 4xx tooltip & keepalive dedup (#118)", () => {
+	const hide = () => {
+		const spy = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+		document.dispatchEvent(new Event("visibilitychange"));
+		spy.mockRestore();
+	};
+
+	it("(a) 4xx 失败原因截断时：悬停与键盘聚焦均可打开 Tooltip 查看完整原因", async () => {
+		const longReason = "QA模拟：等待对象不合法，不能包含特殊控制字符或超长内容";
+		mount([task()]);
+		failNext.push(new ApiError(longReason, 422, "validation_error"));
+		type(waitingInput(), "非法对象");
+		fireEvent.blur(waitingInput());
+		await settle();
+
+		const trigger = document.querySelector("[data-save-error-trigger]") as HTMLButtonElement | null;
+		expect(trigger).not.toBeNull();
+		expect(trigger!.tagName).toBe("BUTTON");
+		expect(trigger!.getAttribute("type")).toBe("button");
+		expect(trigger!.tabIndex).toBe(0);
+		expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
+
+		// 键盘聚焦：Tooltip 展开显示完整原因
+		await act(async () => {
+			trigger!.focus();
+			fireEvent.focus(trigger!);
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		const popupAfterFocus = document.querySelector('[data-slot="tooltip-content"]');
+		expect(popupAfterFocus?.hasAttribute("data-open")).toBe(true);
+		expect(popupAfterFocus?.textContent).toBe(longReason);
+
+		// 失焦后关闭
+		await act(async () => {
+			trigger!.blur();
+			fireEvent.blur(trigger!);
+			await vi.advanceTimersByTimeAsync(200);
+		});
+		const popupAfterBlur = document.querySelector('[data-slot="tooltip-content"]');
+		expect(popupAfterBlur === null || popupAfterBlur.hasAttribute("data-closed")).toBe(true);
+
+		// 指针悬停：Tooltip 展开显示完整原因
+		await act(async () => {
+			fireEvent.pointerEnter(trigger!, { pointerType: "mouse" });
+			fireEvent.mouseEnter(trigger!);
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		const popupAfterHover = document.querySelector('[data-slot="tooltip-content"]');
+		expect(popupAfterHover?.hasAttribute("data-open")).toBe(true);
+		expect(popupAfterHover?.textContent).toBe(longReason);
+	});
+
+	it("(b) 改标题后立即刷新（失焦 + beforeunload + 卸载中止 + visibilitychange + pagehide）：只发一次 PATCH", async () => {
+		mount([task()]);
+		manual = true;
+		type(titleInput(), "原标题-刚改完");
+		// 点击浏览器刷新按钮导致输入框先失焦发出普通 PATCH
+		fireEvent.blur(titleInput());
+		expect(calls).toEqual([{ id: "t1", body: { title: "原标题-刚改完" }, keepalive: false }]);
+
+		// 浏览器依次触发 beforeunload → 中止普通 fetch → visibilitychange(hidden) → pagehide
+		const beforeUnload = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(beforeUnload);
+		expect(beforeUnload.defaultPrevented).toBe(false);
+		await act(async () => {
+			held.shift()!.reject(new TypeError("Failed to fetch"));
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		hide();
+		window.dispatchEvent(new Event("pagehide"));
+
+		expect(calls).toHaveLength(1);
+	});
+
+	it("(b) 改标题后直接快捷键刷新（beforeunload + visibilitychange + pagehide）：只发一次 keepalive PATCH", () => {
+		mount([task()]);
+		manual = true;
+		type(titleInput(), "快捷键刷新标题");
+		window.dispatchEvent(new Event("beforeunload", { cancelable: true }));
+		hide();
+		window.dispatchEvent(new Event("pagehide"));
+		expect(calls).toEqual([{ id: "t1", body: { title: "快捷键刷新标题" }, keepalive: true }]);
+	});
+
+	it("(b) 前一个 PATCH 在飞时改标题并立即刷新：keepalive 增量 PATCH 只发一次（不随多事件重复）", () => {
+		mount([task()]);
+		manual = true;
+		type(notesInput(), "先发一个在飞的备注");
+		fireEvent.blur(notesInput());
+		expect(calls).toHaveLength(1);
+
+		type(titleInput(), "飞行中改的标题");
+		window.dispatchEvent(new Event("beforeunload", { cancelable: true }));
+		hide();
+		window.dispatchEvent(new Event("pagehide"));
+
+		expect(calls).toEqual([
+			{ id: "t1", body: { notes: "先发一个在飞的备注" }, keepalive: false },
+			{ id: "t1", body: { title: "飞行中改的标题" }, keepalive: true },
+		]);
 	});
 });

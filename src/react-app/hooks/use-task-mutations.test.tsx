@@ -21,6 +21,7 @@ vi.mock("sonner", () => ({ toast }));
 vi.mock("../lib/complete-feedback", () => ({ toastTaskCompleted: vi.fn() }));
 
 import { resetPendingCreatesForTests } from "../lib/pending-creates";
+import { resetCompletingTasksForTests } from "../lib/task-mutations";
 import { resetTaskMutationLockForTests } from "../lib/task-mutation-lock";
 import { taskKeys } from "../lib/task-query-keys";
 import {
@@ -93,6 +94,7 @@ beforeEach(() => {
 	qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
 	qc.setQueryData(inboxKey, { items: [task(), task({ id: "other", title: "别的任务" })], nextCursor: null });
 	resetPendingCreatesForTests();
+	resetCompletingTasksForTests();
 	resetTaskMutationLockForTests();
 	for (const fn of Object.values(api)) fn.mockReset();
 	api.tasks.mockImplementation(() => new Promise(() => {})); // background refetch never lands in these tests
@@ -418,6 +420,29 @@ describe("temp task queues every action in order (#90 re-review)", () => {
 			await complete;
 		});
 		expect(calls).toEqual(["update:real-x:X 改", "complete:real-x"]);
+	});
+
+	it("create -> edit -> delete where delete fails (real hooks): replays the skipped edit", async () => {
+		const { create, calls, hook, tempId, created } = setupCreate();
+		api.deleteTask.mockRejectedValueOnce(new Error("删除失败"));
+		let edit!: Promise<unknown>;
+		let del!: Promise<unknown>;
+		await act(async () => {
+			edit = hook.result.current.update.mutateAsync({ id: tempId, patch: { title: "X 改" } });
+			await Promise.resolve();
+			del = hook.result.current.remove.mutateAsync(tempId).catch((e) => e);
+			await Promise.resolve();
+		});
+		await act(async () => {
+			create.resolve({ task: task({ id: "real-x", title: "X" }) });
+			await created();
+			await edit;
+			await del;
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		expect(calls).toEqual(["update:real-x:X 改"]);
+		expect(view()[0]).toBe("real-x:X 改");
 	});
 });
 

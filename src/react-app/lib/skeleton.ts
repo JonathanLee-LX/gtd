@@ -66,27 +66,48 @@ export function resolveSkeletonCount(
 	return Math.min(max, Math.max(1, base));
 }
 
-/** 读上次记住的条数；没有 / 不合法返回 null。 */
-export function readSkeletonCount(queryKey: readonly unknown[] | string): number | null {
+function readSkeletonRaw(queryKey: readonly unknown[] | string): string | null {
 	const store = storage();
 	if (!store) return null;
 	try {
-		const raw = store.getItem(skeletonStorageKey(queryKey));
-		if (raw === null) return null;
-		const value = Number(raw);
-		return Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
+		return store.getItem(skeletonStorageKey(queryKey));
 	} catch {
 		return null;
 	}
 }
 
-/** 记住这次真实加载出来的条数（只记非负整数）。 */
-export function writeSkeletonCount(queryKey: readonly unknown[] | string, count: number): void {
+/** 读上次记住的条数；没有 / 不合法返回 null。`3|1010` 里的形状后缀不影响条数。 */
+export function readSkeletonCount(queryKey: readonly unknown[] | string): number | null {
+	const raw = readSkeletonRaw(queryKey);
+	if (raw === null) return null;
+	const value = Number(raw.split("|")[0]);
+	return Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
+}
+
+/**
+ * #102：收件箱混合列表里，哪些行带整理按钮。`1` 有，`0` 没有，按下标对应上次的行。
+ * 没有记录、或不是 0/1 串时返回 null（调用方按「每行都有」画，和改之前一样）。
+ */
+export function readSkeletonShape(queryKey: readonly unknown[] | string): string | null {
+	const raw = readSkeletonRaw(queryKey);
+	if (!raw) return null;
+	const shape = raw.split("|")[1];
+	return shape && /^[01]+$/.test(shape) ? shape : null;
+}
+
+/** 记住这次真实加载出来的条数（只记非负整数）。可选记下每行是否带整理按钮。 */
+export function writeSkeletonCount(
+	queryKey: readonly unknown[] | string,
+	count: number,
+	shape?: string,
+): void {
 	if (!Number.isFinite(count) || count < 0) return;
 	const store = storage();
 	if (!store) return;
 	try {
-		store.setItem(skeletonStorageKey(queryKey), String(Math.round(count)));
+		const safeShape = shape && /^[01]+$/.test(shape) ? shape : "";
+		const value = safeShape ? `${Math.round(count)}|${safeShape}` : String(Math.round(count));
+		store.setItem(skeletonStorageKey(queryKey), value);
 	} catch {
 		// 配额满 / 禁用：下次用默认值即可
 	}
@@ -108,11 +129,11 @@ export function skeletonCountFor(
 export function skeletonPlanFor(
 	queryKey: readonly unknown[] | string,
 	opts: { max?: number; fallback?: number } = {},
-): { count: number; lastEmpty: boolean } {
+): { count: number; lastEmpty: boolean; shape: string | null } {
 	const stored = readSkeletonCount(queryKey);
 	// 没记录且 fallback 明确为 0（调用方声明「通常是空的」）也按「上次为空」处理。
 	const lastEmpty = stored === 0 || (stored === null && opts.fallback === 0);
-	return { count: resolveSkeletonCount(stored, opts), lastEmpty };
+	return { count: resolveSkeletonCount(stored, opts), lastEmpty, shape: readSkeletonShape(queryKey) };
 }
 
 /**

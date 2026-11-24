@@ -1,13 +1,22 @@
+// @vitest-environment happy-dom
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Task } from "../api";
 
-const api = vi.hoisted(() => ({ updateTask: vi.fn(), tasks: vi.fn() }));
+const api = vi.hoisted(() => ({ updateTask: vi.fn(), tasks: vi.fn(), deleteTask: vi.fn() }));
 vi.mock("../api", () => ({ api }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 
 import { toast } from "sonner";
-import { TaskAutosaveQueue, toApiPatch } from "./task-autosave";
+import { registerPendingCreate, resetPendingCreatesForTests, resolvePendingCreate, touchPendingCreate } from "./pending-creates";
+import { ApiError } from "./session";
+import { TaskAutosaveQueue, toApiPatch, toApiSeq } from "./task-autosave";
+import {
+	completeTaskMutationOptions,
+	deleteTaskMutationOptions,
+	isTaskCompleting,
+	resetCompletingTasksForTests,
+} from "./task-mutations";
 import { taskKeys } from "./task-query-keys";
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -38,6 +47,8 @@ let queue: TaskAutosaveQueue;
 
 beforeEach(() => {
 	vi.useFakeTimers();
+	resetPendingCreatesForTests();
+	resetCompletingTasksForTests();
 	qc = new QueryClient();
 	qc.setQueryData(taskKeys.list({}), { items: [task()], nextCursor: null });
 	queue = new TaskAutosaveQueue(qc, { lifecycle: false });
@@ -75,6 +86,8 @@ describe("TaskAutosaveQueue (#115)", () => {
 		const cached = qc.getQueryData<{ items: Task[] }>(taskKeys.list({}))!.items[0]!;
 		expect(cached.tags).toEqual([tag]);
 		expect(toApiPatch({ tags: [] })).toEqual({ tagIds: [] });
+		expect(toApiSeq({ tags: 1, title: 2 })).toEqual({ tagIds: 1, title: 2 });
+		expect(toApiSeq({ tags: 1, tagIds: 4 })).toEqual({ tagIds: 4 });
 	});
 
 	it("删除后丢掉队列：防抖到点也不再发 PATCH", async () => {
@@ -141,5 +154,215 @@ describe("TaskAutosaveQueue (#115)", () => {
 		queue.edit(task({ id: "t3" }), { notes: big }, { debounce: true });
 		queue.flushAll({ keepalive: true });
 		expect(keepaliveFlags()).toEqual([true, false, true]);
+	});
+});
+
+describe("TaskAutosaveQueue edge cases (#93)", () => {
+	it("保存失败后改回服务端值：清除 error 状态，hasUnsaved 变为 false", async () => {
+		api.updateTask.mockRejectedValueOnce(new Error("500"));
+		queue.edit(task(), { title: "新标题" });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(queue.getSnapshot("t1").status).toBe("error");
+		expect(queue.hasUnsaved("t1")).toBe(true);
+
+		queue.edit(task(), { title: "原标题" });
+		expect(queue.getSnapshot("t1").status).toBe("saved");
+		expect(queue.getSnapshot("t1").error).toBeNull();
+		expect(queue.hasUnsaved("t1")).toBe(false);
+		expect(api.updateTask).toHaveBeenCalledTimes(1);
+	});
+
+	it("保存失败后服务端已同步为相同值：observeServer 清掉失败提示；仍是旧值则保留（#116）", async () => {
+		api.updateTask.mockRejectedValueOnce(new ApiError("服务器忙", 503));
+		queue.edit(task(), { title: "新标题" });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(queue.getSnapshot("t1").status).toBe("error");
+
+		// 服务端仍返回旧值：保留用户输入与失败提示（不破坏 #116）。
+		queue.observeServer(task({ title: "原标题" }));
+		expect(queue.getSnapshot("t1").status).toBe("error");
+		expect(queue.pendingValues("t1").title).toBe("新标题");
+
+		// 服务端已同步为「新标题」：清除脏状态与失败提示。
+		queue.observeServer(task({ title: "新标题" }));
+		expect(queue.getSnapshot("t1").status).toBe("saved");
+		expect(queue.getSnapshot("t1").error).toBeNull();
+		expect(queue.isDirty("t1", "title")).toBe(false);
+		expect(queue.hasUnsaved("t1")).toBe(false);
+	});
+
+	it("suspendForDelete 期间阻止 flush，删除失败 restore 后保留 confirmed 基线并补发 PATCH", async () => {
+		queue.edit(task(), { title: "改后标题" }, { debounce: true });
+		const pending = queue.suspendForDelete("t1");
+		queue.flush("t1");
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(api.updateTask).not.toHaveBeenCalled();
+
+		pending.restore();
+		expect(api.updateTask).toHaveBeenCalledExactlyOnceWith("t1", { title: "改后标题" });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(queue.getSnapshot("t1").status).toBe("saved");
+	});
+
+	it("临时任务自动保存被排队删除跳过，删除失败后自动用真实 id 补发 PATCH", async () => {
+		const temp = task({ id: "tmp-93-1", title: "原任务", source: null });
+		qc.setQueryData(taskKeys.list({}), { items: [temp], nextCursor: null });
+		registerPendingCreate(temp);
+		// 新建已发出，autosave 走 enqueueTaskAction 排队
+		const delOpts = deleteTaskMutationOptions(qc);
+		const delReq = vi.fn().mockRejectedValueOnce(new Error("删除失败"));
+		api.deleteTask.mockImplementation(delReq);
+
+		// 绕开 fold，让 autosave 进队列
+		touchPendingCreate(temp.id);
+		const pendingEntry = (await import("./pending-creates")).getPendingCreate(temp.id) as { createSent: boolean };
+		pendingEntry.createSent = true;
+
+		queue.edit(temp, { title: "改后标题" });
+		const ctx = await delOpts.onMutate!(temp.id, {} as never);
+		const delPromise = delOpts.mutationFn!(temp.id, {} as never).catch((err) => {
+			delOpts.onError!(err as Error, temp.id, ctx, {} as never);
+		});
+
+		resolvePendingCreate(temp.id, task({ id: "real-93-1", title: "原任务" }));
+		await delPromise;
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(api.deleteTask).toHaveBeenCalledWith("real-93-1");
+		expect(api.updateTask).toHaveBeenCalledExactlyOnceWith("real-93-1", { title: "改后标题" });
+		expect(queue.getSnapshot("real-93-1").status).toBe("saved");
+	});
+});
+
+describe("TaskAutosaveQueue keepalive dedup (#118)", () => {
+	it("inFlight 期间连续多次 keepalive flush：相同增量只发一次；若返回成功，afterSettle 也不重发", async () => {
+		const resolvers: Array<() => void> = [];
+		api.updateTask.mockImplementation(
+			(id: string, body: Record<string, unknown>) =>
+				new Promise((resolve) =>
+					resolvers.push(() => resolve({ task: { ...task({ id }), ...body } })),
+				),
+		);
+
+		queue.edit(task(), { notes: "第一个请求" });
+		queue.edit(task(), { title: "增量标题" }, { debounce: true });
+
+		queue.flushAll({ keepalive: true });
+		queue.flushAll({ keepalive: true });
+		queue.flushAll({ keepalive: true });
+		expect(api.updateTask).toHaveBeenCalledTimes(2);
+		expect(api.updateTask).toHaveBeenNthCalledWith(1, "t1", { notes: "第一个请求" });
+		expect(api.updateTask).toHaveBeenNthCalledWith(2, "t1", { title: "增量标题" }, { keepalive: true });
+
+		// 增量 keepalive 先返回，随后第一个请求返回：不再发第三次重复 PATCH。
+		resolvers[1]!();
+		await vi.advanceTimersByTimeAsync(0);
+		resolvers[0]!();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.updateTask).toHaveBeenCalledTimes(2);
+		expect(queue.getSnapshot("t1").status).toBe("saved");
+	});
+
+	it("增量 keepalive 先于主请求返回时，列表保留仍在飞字段的乐观值", async () => {
+		const resolvers: Array<(body: Record<string, unknown>) => void> = [];
+		api.updateTask.mockImplementation(
+			(_id: string, body: Record<string, unknown>) =>
+				new Promise((resolve) =>
+					resolvers.push(() => resolve({ task: { ...task(), title: "原标题", notes: null, ...body } })),
+				),
+		);
+		queue.edit(task(), { notes: "新备注" });
+		queue.edit(task(), { title: "新标题" }, { debounce: true });
+		queue.flushAll({ keepalive: true });
+		expect(api.updateTask).toHaveBeenCalledTimes(2);
+
+		resolvers[1]!({});
+		await vi.advanceTimersByTimeAsync(0);
+		const cached = qc.getQueryData<{ items: Task[] }>(taskKeys.list({}))!.items[0]!;
+		expect(cached.title).toBe("新标题");
+		expect(cached.notes).toBe("新备注");
+
+		resolvers[0]!({});
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.updateTask).toHaveBeenCalledTimes(2);
+	});
+
+	it("keepalive 已标记的字段不会和新增字段绑在同一次 PATCH 里", async () => {
+		const live = new TaskAutosaveQueue(qc, { lifecycle: true });
+		api.updateTask.mockRejectedValue(new TypeError("Failed to fetch"));
+		live.edit(task(), { title: "未保存标题" });
+		await vi.advanceTimersByTimeAsync(0);
+		const event = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(event);
+		// 只排掉失败回调，不跑 setTimeout(0)：留页复位会清掉去重标记，这里要测的是标记还在时 send 只带新字段。
+		for (let i = 0; i < 8; i++) await Promise.resolve();
+		api.updateTask.mockClear();
+		api.updateTask.mockResolvedValue({ task: task({ title: "未保存标题", notes: "新备注" }) });
+		live.edit(task(), { notes: "新备注" }, { debounce: true });
+		live.flushAll({ keepalive: true });
+		const bodies = api.updateTask.mock.calls.map((call) => call[1] as Record<string, unknown>);
+		expect(bodies.some((body) => body.notes === "新备注" && !("title" in body))).toBe(true);
+		expect(bodies.some((body) => "title" in body && "notes" in body)).toBe(false);
+		live.dispose();
+	});
+
+	it("beforeunload 留页且 keepalive 5xx 失败后，再次 pagehide 仍补发未成功字段", async () => {
+		const live = new TaskAutosaveQueue(qc, { lifecycle: true });
+		api.updateTask.mockRejectedValue(new ApiError("服务器忙", 503));
+		live.edit(task(), { title: "未保存标题" });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(live.getSnapshot("t1").status).toBe("error");
+
+		const event = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(event);
+		expect(event.defaultPrevented).toBe(true);
+		await vi.advanceTimersByTimeAsync(0);
+
+		api.updateTask.mockResolvedValue({ task: task({ title: "未保存标题" }) });
+		window.dispatchEvent(new Event("pagehide"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(api.updateTask).toHaveBeenCalledWith("t1", { title: "未保存标题" }, { keepalive: true });
+		expect(live.getSnapshot("t1").status).toBe("saved");
+		live.dispose();
+	});
+
+	it("inFlight 期间已发过 keepalive 后用户又改了新值：新值仍会发出", () => {
+		api.updateTask.mockImplementation(() => new Promise(() => {}));
+		queue.edit(task(), { notes: "在飞" });
+		queue.edit(task(), { title: "标题 v1" }, { debounce: true });
+		queue.flushAll({ keepalive: true });
+		queue.edit(task(), { title: "标题 v2" }, { debounce: true });
+		queue.flushAll({ keepalive: true });
+		expect(api.updateTask).toHaveBeenCalledTimes(3);
+		expect(api.updateTask).toHaveBeenNthCalledWith(2, "t1", { title: "标题 v1" }, { keepalive: true });
+		expect(api.updateTask).toHaveBeenNthCalledWith(3, "t1", { title: "标题 v2" }, { keepalive: true });
+	});
+});
+
+describe("TaskAutosaveQueue while a task is completing (#93)", () => {
+	it("失败不把任务写回缓存，成功不触发列表刷新", async () => {
+		const complete = completeTaskMutationOptions(qc);
+		const ctx = await complete.onMutate!("t1", {} as never);
+		expect(isTaskCompleting("t1")).toBe(true);
+		expect(qc.getQueryData<{ items: Task[] }>(taskKeys.list({}))!.items).toHaveLength(0);
+
+		api.updateTask.mockRejectedValueOnce(new ApiError("服务器忙", 503));
+		queue.edit(task(), { title: "完成中改标题" });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(qc.getQueryData<{ items: Task[] }>(taskKeys.list({}))!.items).toHaveLength(0);
+		expect(queue.getSnapshot("t1").status).toBe("error");
+
+		const invalidate = vi.spyOn(qc, "invalidateQueries");
+		api.updateTask.mockResolvedValueOnce({ task: task({ title: "完成中改标题" }) });
+		queue.retry("t1");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(queue.getSnapshot("t1").status).toBe("saved");
+		const listRefreshes = invalidate.mock.calls.filter((call) => {
+			const arg = call[0] as { queryKey?: readonly unknown[] } | undefined;
+			return Array.isArray(arg?.queryKey) && arg.queryKey[0] === "tasks";
+		});
+		expect(listRefreshes).toHaveLength(0);
+		expect(qc.getQueryData<{ items: Task[] }>(taskKeys.list({}))!.items).toHaveLength(0);
+		ctx?.releaseCompleting();
 	});
 });

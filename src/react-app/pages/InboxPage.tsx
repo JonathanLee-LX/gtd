@@ -5,15 +5,16 @@ import {
 	useCreateTask,
 	useDeleteTask,
 } from "../hooks/use-task-mutations";
+import { useTaskList } from "../hooks/use-task-queries";
 import { useShellContext } from "../hooks/use-shell-data";
-import { useInboxList } from "../hooks/use-inbox-list";
 import { silentInvalidateTasks } from "../lib/task-cache";
 
 export function InboxPage() {
 	const shell = useShellContext();
 	const { projects, projectsReady } = shell;
-	// #101：冷启动用记住的收件箱 id 并行请求列表；只显示经项目列表确认过的结果（见 useInboxList）。
-	const { inbox, display, loadKey } = useInboxList(shell);
+	const inbox = projects.find((project) => project.isInbox);
+	// #105：直接问收件箱任务，不必先拿到收件箱项目 id。
+	const list = useTaskList({ inbox: true });
 	const queryClient = useQueryClient();
 	const createTask = useCreateTask(projects);
 	const completeTask = useCompleteTask();
@@ -28,14 +29,12 @@ export function InboxPage() {
 			title="收件箱"
 			hint="先捕获，再一键整理成下一步 / 等待 / 将来，或丢掉。"
 			placeholder="随便记一条，回车进收件箱"
-			// #99：加载 / 空 / 错误统一由 TaskBoard 里的 QueryView 决定。
-			// #101：收件箱 id 未确认前列表区是骨架，不显示空状态、也不显示用旧 id 拿到的列表。
-			query={display}
-			loadKey={loadKey}
+			query={list}
+			loadKey={list.queryKey}
 			projects={projects}
 			emptyText="收件箱是空的。这是一件好事。"
 			onCreate={async (title) => {
-				// 收件箱 id 还没确认时不带 projectId，服务端默认放进收件箱。
+				// 收件箱 id 还没回来时不带 projectId，服务端默认放进收件箱。
 				await createTask.mutateAsync({ title, ...(inbox ? { projectId: inbox.id } : {}), status: "inbox" });
 			}}
 			onComplete={async (id) => {
@@ -45,7 +44,6 @@ export function InboxPage() {
 				await deleteTask.mutateAsync(id);
 			}}
 			onReload={async () => {
-				// 后台刷新不阻塞界面（#90）。
 				void silentInvalidateTasks(queryClient);
 			}}
 			enableInboxProcess

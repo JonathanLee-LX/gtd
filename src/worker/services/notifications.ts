@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, lte } from "drizzle-orm";
+import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
 import type { AppDatabase } from "../../db/client";
 import { notificationLog, notificationSettings, pushSubscriptions } from "../../db/schema";
 import {
@@ -15,7 +15,7 @@ import type { PushSubscriptionInput, SaveNotificationSettingsInput } from "../..
 import { DEFAULT_TIME_ZONE } from "../../shared/constants";
 import { ymdInZone } from "../../shared/today";
 import { runQueries } from "../lib/batch";
-import { badRequest, notFound, serviceUnavailable } from "../lib/errors";
+import { AppError, badRequest, notFound, serviceUnavailable } from "../lib/errors";
 import { assertPushSubscriptionKeys } from "../lib/web-push";
 import { digestTasksQuery } from "./tasks";
 import type { ChannelTarget, DigestMessage, NotificationChannel } from "./notification-channel";
@@ -29,6 +29,8 @@ export type NotificationSettingsView = {
 	timeZone: string;
 	saved: boolean;
 	subscriptionCount: number;
+	subscriptionEndpoints: string[];
+	updatedAt: string | null;
 };
 
 export type DigestKind = "due" | "tomorrow";
@@ -62,7 +64,7 @@ const EMPTY_RESULT: DigestCronResult = {
 	unconfigured: 0,
 };
 
-function viewFrom(row: SettingsRow | undefined, subscriptionCount: number): NotificationSettingsView {
+function viewFrom(row: SettingsRow | undefined, endpoints: string[]): NotificationSettingsView {
 	return {
 		enabled: row?.enabled ?? false,
 		digestTime: row?.digestTime ?? DEFAULT_DIGEST_TIME,
@@ -71,7 +73,9 @@ function viewFrom(row: SettingsRow | undefined, subscriptionCount: number): Noti
 		includeOverdue: row?.includeOverdue ?? true,
 		timeZone: row?.timeZone ?? DEFAULT_TIME_ZONE,
 		saved: Boolean(row),
-		subscriptionCount,
+		subscriptionCount: endpoints.length,
+		subscriptionEndpoints: endpoints,
+		updatedAt: row?.updatedAt ?? null,
 	};
 }
 
@@ -95,7 +99,10 @@ export async function getNotificationSettings(
 			.from(pushSubscriptions)
 			.where(eq(pushSubscriptions.userId, userId)),
 	])) as [SettingsRow[], { endpoint: string }[]];
-	return viewFrom(settingRows[0], subs.length);
+	return viewFrom(
+		settingRows[0],
+		subs.map((row) => row.endpoint),
+	);
 }
 
 /**
@@ -119,54 +126,94 @@ export async function saveNotificationSettings(
 	const nextDue = input.enabled ? nextQuarterFireUtc(now, timeZone, input.digestTime) : null;
 	const nextTomorrow =
 		input.enabled && input.tomorrowEnabled ? nextQuarterFireUtc(now, timeZone, input.tomorrowTime) : null;
-	const settingsWrite = db
-		.insert(notificationSettings)
-		.values({
-			userId,
-			enabled: input.enabled,
-			digestTime: input.digestTime,
-			tomorrowEnabled: input.tomorrowEnabled,
-			tomorrowTime: input.tomorrowTime,
-			includeOverdue: input.includeOverdue,
-			timeZone,
-			nextDueDigestAt: nextDue,
-			nextTomorrowAt: nextTomorrow,
-			updatedAt: at,
-		})
-		.onConflictDoUpdate({
-			target: notificationSettings.userId,
-			set: {
-				enabled: input.enabled,
-				digestTime: input.digestTime,
-				tomorrowEnabled: input.tomorrowEnabled,
-				tomorrowTime: input.tomorrowTime,
-				includeOverdue: input.includeOverdue,
-				timeZone,
-				nextDueDigestAt: nextDue,
-				nextTomorrowAt: nextTomorrow,
-				updatedAt: at,
-			},
-		});
-	const queries: PromiseLike<unknown>[] = [settingsWrite];
-	if (input.subscription) queries.push(subscriptionUpsert(db, userId, input.subscription, at));
-	queries.push(
-		db
-			.select({ endpoint: pushSubscriptions.endpoint })
-			.from(pushSubscriptions)
-			.where(eq(pushSubscriptions.userId, userId)),
-	);
-	const results = await runQueries(db, queries);
-	const subs = results[results.length - 1] as { endpoint: string }[];
-	return {
+	const values = {
+		userId,
 		enabled: input.enabled,
 		digestTime: input.digestTime,
 		tomorrowEnabled: input.tomorrowEnabled,
 		tomorrowTime: input.tomorrowTime,
 		includeOverdue: input.includeOverdue,
 		timeZone,
-		saved: true,
-		subscriptionCount: subs.length,
+		nextDueDigestAt: nextDue,
+		nextTomorrowAt: nextTomorrow,
+		updatedAt: at,
 	};
+	const replace = {
+		enabled: input.enabled,
+		digestTime: input.digestTime,
+		tomorrowEnabled: input.tomorrowEnabled,
+		tomorrowTime: input.tomorrowTime,
+		includeOverdue: input.includeOverdue,
+		timeZone,
+		nextDueDigestAt: nextDue,
+		nextTomorrowAt: nextTomorrow,
+		updatedAt: at,
+	};
+	// 不带 baseUpdatedAt：旧客户端，后到的完整 PUT 仍覆盖。
+	if (input.baseUpdatedAt === undefined) {
+		const queries: PromiseLike<unknown>[] = [
+			db.insert(notificationSettings).values(values).onConflictDoUpdate({
+				target: notificationSettings.userId,
+				set: replace,
+			}),
+		];
+		if (input.subscription) queries.push(subscriptionUpsert(db, userId, input.subscription, at));
+		queries.push(
+			db
+				.select({ endpoint: pushSubscriptions.endpoint })
+				.from(pushSubscriptions)
+				.where(eq(pushSubscriptions.userId, userId)),
+		);
+		const results = await runQueries(db, queries);
+		const subs = results[results.length - 1] as { endpoint: string }[];
+		return viewFrom(
+			{
+				...values,
+				nextDueDigestAt: nextDue,
+				nextTomorrowAt: nextTomorrow,
+			} as SettingsRow,
+			subs.map((row) => row.endpoint),
+		);
+	}
+	// 带版本：只有 updated_at 仍是这一版（null = 还没有行）才写入。没写上就不 upsert 订阅。
+	const [written, rows, subs] = (await runQueries(db, [
+		db
+			.insert(notificationSettings)
+			.values(values)
+			.onConflictDoUpdate({
+				target: notificationSettings.userId,
+				set: replace,
+				where: sql`${notificationSettings.updatedAt} is ${input.baseUpdatedAt}`,
+			})
+			.returning({ updatedAt: notificationSettings.updatedAt }),
+		db.select().from(notificationSettings).where(eq(notificationSettings.userId, userId)).limit(1),
+		db
+			.select({ endpoint: pushSubscriptions.endpoint })
+			.from(pushSubscriptions)
+			.where(eq(pushSubscriptions.userId, userId)),
+	])) as [{ updatedAt: string }[], SettingsRow[], { endpoint: string }[]];
+	if (written.length === 0) {
+		throw new AppError(409, "conflict", "到期提醒已有更新的保存", {
+			current: viewFrom(rows[0], subs.map((row) => row.endpoint)),
+		});
+	}
+	const committed = viewFrom(rows[0] ? { ...rows[0], ...values } : (values as SettingsRow), subs.map((row) => row.endpoint));
+	if (!input.subscription) return committed;
+	try {
+		const [, after] = (await runQueries(db, [
+			subscriptionUpsert(db, userId, input.subscription, at),
+			db
+				.select({ endpoint: pushSubscriptions.endpoint })
+				.from(pushSubscriptions)
+				.where(eq(pushSubscriptions.userId, userId)),
+		])) as [unknown, { endpoint: string }[]];
+		return viewFrom(rows[0] ? { ...rows[0], ...values } : (values as SettingsRow), after.map((row) => row.endpoint));
+	} catch {
+		// 设置已经提交。不要让调用方把这次失败当成「整次没写上」再去改设置。
+		throw new AppError(503, "subscription_not_saved", "设置已保存，但这台设备的订阅没有记上", {
+			current: committed,
+		});
+	}
 }
 
 function subscriptionUpsert(db: AppDatabase, userId: string, input: PushSubscriptionInput, at: string) {
@@ -202,6 +249,30 @@ export async function upsertPushSubscription(
 			.where(eq(pushSubscriptions.userId, userId)),
 	])) as [unknown, { endpoint: string }[]];
 	return { subscriptionCount: subs.length };
+}
+
+/**
+ * #123 / #129：删除当前用户在这台设备上的推送订阅（幂等）。
+ * 只按 (user_id, endpoint) 删除，不影响总开关、其他设备或其他用户。
+ * 返回 deleted 供前端区分是否真的删到了当前用户的行（仅反映当前用户，不泄露他人数据）。
+ * 1 次 D1 batch（DELETE ... RETURNING + 查剩余订阅数）。
+ */
+export async function deletePushSubscription(
+	db: AppDatabase,
+	userId: string,
+	endpoint: string,
+): Promise<{ subscriptionCount: number; deleted: boolean }> {
+	const [deletedRows, subs] = (await runQueries(db, [
+		db
+			.delete(pushSubscriptions)
+			.where(and(eq(pushSubscriptions.userId, userId), eq(pushSubscriptions.endpoint, endpoint)))
+			.returning({ endpoint: pushSubscriptions.endpoint }),
+		db
+			.select({ endpoint: pushSubscriptions.endpoint })
+			.from(pushSubscriptions)
+			.where(eq(pushSubscriptions.userId, userId)),
+	])) as [{ endpoint: string }[], { endpoint: string }[]];
+	return { subscriptionCount: subs.length, deleted: deletedRows.length > 0 };
 }
 
 /**

@@ -3,6 +3,8 @@ export class AppError extends Error {
 		public readonly status: number,
 		public readonly code: string,
 		message: string,
+		/** 附加在 JSON 错误体上的字段，例如冲突时的当前设置。 */
+		readonly extra?: Record<string, unknown>,
 	) {
 		super(message);
 		this.name = "AppError";

@@ -11,7 +11,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { Project, Task } from "../api";
-import { writeInboxHint } from "../lib/inbox-hint";
+import { LEGACY_INBOX_PROJECT_ID_KEY } from "../lib/client-session";
 import { resetPendingCreatesForTests } from "../lib/pending-creates";
 import { resetTaskMutationLockForTests } from "../lib/task-mutation-lock";
 import { taskKeys } from "../lib/task-query-keys";
@@ -112,7 +112,12 @@ beforeEach(() => {
 			}
 			if (url.pathname === "/api/tasks") {
 				const projectId = url.searchParams.get("projectId");
-				const items = serverTasks.filter((t) => !projectId || t.projectId === projectId);
+				const inboxOnly = url.searchParams.get("inbox") === "1";
+				const items = serverTasks.filter((t) => {
+					if (projectId && t.projectId !== projectId) return false;
+					if (inboxOnly && t.projectId !== "inbox") return false;
+					return true;
+				});
 				return json(200, { items, nextCursor: null });
 			}
 			return json(404, {});
@@ -181,7 +186,7 @@ describe("creating tasks while /api/projects is pending (#101)", () => {
 
 		await act(async () => releaseProjects!());
 		await waitFor(() => expect(screen.getByText("冷启动收件箱任务")).toBeTruthy());
-		expect(titlesIn(client, taskKeys.list({ projectId: "inbox" }))).toEqual(["冷启动收件箱任务@inbox"]);
+		expect(titlesIn(client, taskKeys.list({ inbox: true }))).toEqual(["冷启动收件箱任务@inbox"]);
 	});
 
 	it("今日焦点: POST has no projectId; task lands in today focus (inbox project), visible right away", async () => {
@@ -219,11 +224,11 @@ describe("creating tasks while /api/projects is pending (#101)", () => {
 		await act(async () => releaseProjects!());
 		await waitFor(() => expect(screen.getByRole("heading", { name: "装修房子" })).toBeTruthy());
 		expect(screen.getByText("冷启动项目任务")).toBeTruthy();
-		expect(titlesIn(client, taskKeys.list({ projectId: "inbox" }))).toEqual([]);
+		expect(titlesIn(client, taskKeys.list({ inbox: true }))).toEqual([]);
 	});
 
 	it("with a stored inbox id: the temp row still has no projectId (hint not used for writes); POST has no projectId; final projectId from the server", async () => {
-		writeInboxHint("inbox");
+		localStorage.setItem(LEGACY_INBOX_PROJECT_ID_KEY, "inbox");
 		let openGate!: () => void;
 		postGate = new Promise<void>((resolve) => {
 			openGate = resolve;

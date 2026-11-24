@@ -5,7 +5,7 @@ import { createTagInput } from "../../shared/schemas";
 import type { WorkerEnv } from "../lib/auth";
 import { handleRoute } from "../lib/route-utils";
 import { requireUser, type AppVariables } from "../middleware/require-user";
-import { createTag, listTags } from "../services/tags";
+import { createTag, deleteTag, listTags } from "../services/tags";
 
 export const tagRoutes = new Hono<{
 	Bindings: WorkerEnv;
@@ -31,5 +31,15 @@ export const tagRoutes = new Hono<{
 				return { tag };
 			},
 			201,
+		),
+	)
+	.delete("/:id", (c) =>
+		handleRoute(c, async () =>
+			deleteTag(
+				createDb(c.env.DB),
+				c.get("user").id,
+				c.req.param("id"),
+				c.get("source"),
+			),
 		),
 	);

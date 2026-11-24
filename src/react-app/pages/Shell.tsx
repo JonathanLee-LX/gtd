@@ -73,6 +73,16 @@ import {
 } from "../hooks/use-shell-data";
 import { clearClientSession } from "../lib/client-session";
 import { replayUnsavedAfterLogin } from "../lib/autosave-persist";
+import {
+	browserPushProbe,
+	cleanupPushAfterSignOut,
+	cleanupPushBeforeSignOut,
+	pushSignOutCleanupWarning,
+	reconcilePushSubscriptionForUser,
+	restorePushAfterFailedSignOut,
+	SIGN_OUT_REQUEST_TIMEOUT_MS,
+	type PushProbe,
+} from "../lib/push-client";
 import { peekTaskAutosave } from "../lib/task-autosave";
 import { createLoginRedirectOnce, loadErrorMessage, shellLoadOutcome } from "../lib/session";
 import { MobileBottomNav } from "../components/MobileBottomNav";
@@ -85,7 +95,7 @@ const SIDEBAR_MENU_CLASS = "flex w-full min-w-0 flex-col gap-0";
 
 const NO_PROJECTS: Project[] = [];
 
-export function Shell() {
+export function Shell({ pushProbe = browserPushProbe }: { pushProbe?: PushProbe } = {}) {
 	const navigate = useNavigate();
 	const location = useLocation();
 	const queryClient = useQueryClient();
@@ -101,6 +111,7 @@ export function Shell() {
 	/** #115：退出登录时有未保存的改动，先确认。 */
 	const [confirmSignOut, setConfirmSignOut] = useState(false);
 	const [signingOut, setSigningOut] = useState(false);
+	const signingOutRef = useRef(false);
 
 	// #82 / #101：任何查询（me、projects、页面列表）401 → 回登录页，且同时多个 401 只跳一次。
 	// 断网、5xx 不跳，原地提示重试。
@@ -123,10 +134,13 @@ export function Shell() {
 	);
 
 	// #115：登录后补发 401 时暂存的改动（只补发同一用户的；别的用户的暂存全部丢掉）。
+	// #123：同浏览器换账号或上次退订未完成时，自动退订残留的浏览器推送订阅。
 	const userId = meQuery.data?.user.id;
 	useEffect(() => {
-		if (userId) void replayUnsavedAfterLogin(queryClient, userId);
-	}, [queryClient, userId]);
+		if (!userId) return;
+		void replayUnsavedAfterLogin(queryClient, userId);
+		void reconcilePushSubscriptionForUser(userId, pushProbe);
+	}, [queryClient, userId, pushProbe]);
 
 	const projects = projectsQuery.data?.items ?? NO_PROJECTS;
 	const projectsReady = projectsQuery.data !== undefined;
@@ -184,20 +198,42 @@ export function Shell() {
 	}
 
 	async function doSignOut() {
+		if (signingOutRef.current) return;
+		signingOutRef.current = true;
 		setSigningOut(true);
 		try {
-			await api.signOut();
-		} catch (err) {
-			// 退出没成功（如断网）就别假装退出：会话还在，登录页会直接把人送回来。
-			toast.error(err instanceof Error ? `退出失败：${err.message}` : "退出失败，请重试");
-			return;
+			// #123：退出前趁会话还有效，有超时上限地尽力删除本机在服务端的推送订阅；任一失败或超时不挡退出。
+			const pre = await cleanupPushBeforeSignOut({
+				userId,
+				probe: pushProbe,
+				deleteSubscription: api.deletePushSubscription,
+			});
+
+			try {
+				await api.signOut({ timeoutMs: SIGN_OUT_REQUEST_TIMEOUT_MS });
+			} catch (err) {
+				// 退出没成功（如断网/超时）就别假装退出：不动浏览器推送订阅，仅当刚才确实删掉了当前用户行时才尽力补回。
+				const restored = await restorePushAfterFailedSignOut(pre, api.upsertPushSubscription);
+				const baseError = err instanceof Error ? `退出失败：${err.message}` : "退出失败，请重试";
+				toast.error(
+					restored ? baseError : `${baseError}；本机推送订阅未能恢复，请到设置页重新开启`,
+				);
+				return;
+			}
+
+			// 服务端会话已注销：有超时上限地退订浏览器推送，任何失败或超时都不挡跳转与本地会话清理。
+			const outcome = await cleanupPushAfterSignOut(pre, pushProbe);
+			setConfirmSignOut(false);
+			navigate("/login", { replace: true });
+			// 用户主动退出：未保存的改动按确认丢掉，不暂存。
+			clearClientSession(queryClient, { discardUnsaved: true });
+
+			const warning = pushSignOutCleanupWarning(outcome);
+			if (warning) toast.warning(warning);
 		} finally {
+			signingOutRef.current = false;
 			setSigningOut(false);
 		}
-		setConfirmSignOut(false);
-		navigate("/login", { replace: true });
-		// 用户主动退出：未保存的改动按确认丢掉，不暂存。
-		clearClientSession(queryClient, { discardUnsaved: true });
 	}
 
 	const inbox = projects.find((project) => project.isInbox);

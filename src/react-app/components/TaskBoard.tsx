@@ -26,7 +26,7 @@ import {
 	SheetHeader,
 	SheetTitle,
 } from "@/components/ui/sheet";
-import { ChevronLeftIcon, InboxIcon, SparklesIcon } from "lucide-react";
+import { ChevronLeftIcon, InboxIcon, PaperclipIcon, SparklesIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { TaskDraft } from "../../shared/schemas";
 import { orderTasksWithDepth } from "../../shared/task-tree";
@@ -47,6 +47,7 @@ import {
 	type ExitingTaskEntry,
 } from "../lib/merge-exiting-tasks";
 import { isTaskIdPending } from "../lib/task-mutation-lock";
+import { useFileDropZone } from "../lib/file-drop-guard";
 import { isAwaitingRealId, isTempTaskId, realIdFor } from "../lib/pending-creates";
 import {
 	InboxProcessActions,
@@ -171,6 +172,18 @@ export function TaskBoard({
 	const listScrollTopRef = useRef(0);
 	/** True while a history entry was pushed for the mobile detail "route". */
 	const detailHistoryPushedRef = useRef(false);
+	/** #93：详情面板级文件拖放，委托给 TaskAttachments 里的上传处理器。 */
+	const detailFileDropRef = useRef<((files: FileList | File[]) => void) | null>(null);
+	const detailDrop = useFileDropZone({
+		disabled: !selected || isTempTaskId(selected.id),
+		onDropFiles: (files) => detailFileDropRef.current?.(files),
+		onDisabledDrop: () => {
+			// 窄屏 Sheet 退场的一瞬间 selected 已空，不要把误松手说成「任务正在保存」。
+			if (selected && isTempTaskId(selected.id)) {
+				toast("任务正在保存到服务器，请稍后再添加附件");
+			}
+		},
+	});
 
 	const restoreListScroll = useCallback(() => {
 		const top = listScrollTopRef.current;
@@ -200,6 +213,14 @@ export function TaskBoard({
 		restoreListScroll();
 		if (shouldHistoryBack) window.history.back();
 	}, [restoreListScroll]);
+
+	// #93：窗口从宽（≥1024px）拖到窄（<1024px）时，原本在侧栏打开的详情没有写浏览历史；
+	// 变成全屏时补一条 history 记录，使浏览器「返回」关闭详情而不是离开当前页。
+	useEffect(() => {
+		if (!isMobile || !selected || detailHistoryPushedRef.current) return;
+		window.history.pushState({ gtdMobileTaskDetail: selected.id }, "");
+		detailHistoryPushedRef.current = true;
+	}, [isMobile, selected]);
 
 	// 不按 isMobile 挂：全屏时推了历史记录、随后窗口拉宽成面板，浏览器返回仍要能关详情（#94）。
 	useEffect(() => {
@@ -354,6 +375,7 @@ export function TaskBoard({
 			layout={isMobile ? "mobile" : "aside"}
 			mutationPending={isTaskMutating(selected.id)}
 			completing={selectedCompleting}
+			fileDropRef={detailFileDropRef}
 			onComplete={async () => {
 				beginComplete(selected.id);
 			}}
@@ -363,6 +385,18 @@ export function TaskBoard({
 				closeDetail();
 			}}
 		/>
+	) : null;
+
+	const detailDropOverlay = detailDrop.dragActive ? (
+		<div
+			data-testid="detail-drop-overlay"
+			className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[inherit] border-2 border-dashed border-primary bg-primary/10 backdrop-blur-[1px]"
+		>
+			<div className="flex items-center gap-2 rounded-full border border-primary/30 bg-background/95 px-4 py-2 text-sm font-medium text-primary shadow-sm">
+				<PaperclipIcon className="size-4" />
+				<span>松开即可上传附件</span>
+			</div>
+		</div>
 	) : null;
 
 
@@ -402,16 +436,27 @@ export function TaskBoard({
 					skeletonLabel="正在加载任务"
 					// #101：断网 / 5xx 原地提示 + 重试。
 					error={(err) => <LoadErrorRetry error={err} onRetry={query.refetch} />}
-					skeleton={(index) => (
-						<div key={index} className="flex flex-col gap-1">
-							<TaskRow.Skeleton index={index} />
-							{enableInboxProcess ? (
-								<div className="pb-2" style={{ paddingLeft: "40px" }}>
-									<InboxProcessActions.Skeleton />
-								</div>
-							) : null}
-						</div>
-					)}
+					shapeOf={
+						enableInboxProcess
+							? (data) =>
+									orderTasksWithDepth(data.items)
+										.map(({ task }) => (task.status === "inbox" ? "1" : "0"))
+										.join("")
+							: undefined
+					}
+					skeleton={(index, hint) => {
+						const showProcess = enableInboxProcess && (hint?.inboxActions ?? true);
+						return (
+							<div key={index} className="flex flex-col gap-1">
+								<TaskRow.Skeleton index={index} />
+								{showProcess ? (
+									<div className="pb-2" style={{ paddingLeft: "40px" }}>
+										<InboxProcessActions.Skeleton />
+									</div>
+								) : null}
+							</div>
+						);
+					}}
 					empty={
 						<Empty className="border">
 							<EmptyHeader>
@@ -473,10 +518,13 @@ export function TaskBoard({
 					  List stays mounted; scroll restored via client state (#43).
 					*/}
 					<SheetContent
+						ref={detailDrop.ref}
+						data-file-drop-active={detailDrop.dragActive ? "true" : undefined}
 						side="bottom"
 						showCloseButton={false}
 						className="inset-0 z-50 flex !h-dvh !max-h-dvh !w-full !max-w-none flex-col gap-0 overflow-hidden !rounded-none !border-0 bg-background p-0 !shadow-none data-[side=bottom]:!inset-0 data-[side=bottom]:!h-dvh data-[side=bottom]:!max-h-dvh data-[side=bottom]:!w-full data-[side=bottom]:!border-0 data-[side=bottom]:data-ending-style:!translate-y-full data-[side=bottom]:data-starting-style:!translate-y-full"
 					>
+						{detailDropOverlay}
 						<SheetHeader className="shrink-0 flex-row items-center gap-1 space-y-0 border-b py-3 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(0.75rem,env(safe-area-inset-top))] text-left">
 							<Button
 								type="button"
@@ -506,7 +554,12 @@ export function TaskBoard({
 				// 只在 ≥ 1024px 渲染（useTaskDetailLayout），不再靠 `hidden lg:flex` 隐藏（#94）。
 				// #96：左边缘可拖拽调宽，宽度记在 localStorage，所有页面共用这一个边栏组件。
 				<ResizableSidePanel aria-label="任务详情" id="task-detail-panel">
-					<Card className="size-full rounded-none ring-0">
+					<Card
+						ref={detailDrop.ref}
+						data-file-drop-active={detailDrop.dragActive ? "true" : undefined}
+						className="relative size-full rounded-none ring-0"
+					>
+						{detailDropOverlay}
 						<CardHeader className="flex min-w-0 flex-row items-baseline gap-2">
 							<CardTitle>任务详情</CardTitle>
 							<TaskSaveStatus taskId={selected.id} />

@@ -1,6 +1,8 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { INBOX_NAME } from "../../shared/constants";
 import { isFocusTask } from "../../shared/today";
 import type { Task } from "../api";
+import { shellKeys } from "./shell-keys";
 import { taskKeys, type TaskListFilters } from "./task-query-keys";
 
 export type FocusQueryData = { today: string; items: Task[] };
@@ -23,11 +25,26 @@ function listFilters(key: QueryKey): TaskListFilters | null {
 	return filters as TaskListFilters;
 }
 
+function inboxProjectId(queryClient: QueryClient): string | null {
+	const data = queryClient.getQueryData<{ items: { id: string; isInbox?: boolean }[] }>(shellKeys.projects);
+	return data?.items.find((item) => item.isInbox)?.id ?? null;
+}
+
 /** Whether a task belongs in a cached list shard (best-effort for optimistic moves). */
-export function taskMatchesListFilters(task: Task, filters: TaskListFilters): boolean {
+export function taskMatchesListFilters(
+	task: Task,
+	filters: TaskListFilters,
+	inboxId?: string | null,
+): boolean {
 	if (task.deletedAt) return false;
 	if (filters.status && task.status !== filters.status) return false;
 	if (filters.projectId && task.projectId !== filters.projectId) return false;
+	if (filters.inbox && task.projectId) {
+		// 已知收件箱 id 时只认这个 id。没有项目列表时才退回项目名，避免同名自建项目混进来。
+		if (inboxId) {
+			if (task.projectId !== inboxId) return false;
+		} else if (task.projectName !== INBOX_NAME) return false;
+	}
 	if (filters.priority && task.priority !== filters.priority) return false;
 	if (filters.tagId && !task.tags.some((tag) => tag.id === filters.tagId)) return false;
 	if (filters.includeCompleted !== "true") {
@@ -120,7 +137,7 @@ export function upsertTaskInCaches(queryClient: QueryClient, task: Task) {
 
 		if (isListKey(key)) {
 			const filters = listFilters(key) ?? {};
-			const belongs = taskMatchesListFilters(task, filters);
+			const belongs = taskMatchesListFilters(task, filters, inboxProjectId(queryClient));
 			if (belongs) {
 				const items =
 					existingIdx >= 0
@@ -159,6 +176,10 @@ export function applyOptimisticTaskPatch(
 		...sanitizeClientPatch(patch, current),
 		updatedAt: new Date().toISOString(),
 	};
+	if (typeof patch.projectId === "string" && patch.projectId !== current.projectId) {
+		const projects = queryClient.getQueryData<{ items: { id: string; name: string }[] }>(shellKeys.projects);
+		next.projectName = projects?.items.find((item) => item.id === patch.projectId)?.name ?? "";
+	}
 
 	if ("tagIds" in patch && Array.isArray(patch.tagIds)) {
 		// Keep existing tag objects that still match; unknown ids stay until server confirms.
@@ -201,10 +222,8 @@ export function sanitizeClientPatch(
 	}
 	if (typeof rest.projectId === "string") {
 		out.projectId = rest.projectId;
-		// Best-effort project name from current if unchanged; pages may not have names here.
-		if (rest.projectId !== current.projectId) {
-			out.projectName = current.projectName;
-		}
+		// 换了项目就不要留着旧项目名，否则收件箱列表会按「收件箱」这个名字把任务留住。
+		if (rest.projectId !== current.projectId) out.projectName = "";
 	}
 	if (rest.parentId === null || typeof rest.parentId === "string") {
 		out.parentId = rest.parentId as string | null;
@@ -236,9 +255,10 @@ export function replaceTaskInCaches(queryClient: QueryClient, fromId: string, ne
 		if (!data) continue;
 		const idx = data.items.findIndex((task) => task.id === fromId);
 		if (idx < 0) continue;
+		const inboxId = inboxProjectId(queryClient);
 		const belongs = isFocusKey(key)
 			? !next.deletedAt && isFocusTask(next, (data as FocusQueryData).today)
-			: taskMatchesListFilters(next, listFilters(key) ?? {});
+			: taskMatchesListFilters(next, listFilters(key) ?? {}, inboxId);
 		const alreadyHasNext = next.id !== fromId && data.items.some((task) => task.id === next.id);
 		const items = data.items.flatMap((task) => {
 			if (task.id === fromId) return belongs && !alreadyHasNext ? [next] : [];
@@ -274,7 +294,7 @@ export function withPendingCreates<T extends TaskQueryData>(
 		const belongs = isFocusKey(key)
 			? isFocusTask(current, (data as FocusQueryData).today)
 			: isListKey(key)
-				? taskMatchesListFilters(current, listFilters(key) ?? {})
+				? taskMatchesListFilters(current, listFilters(key) ?? {}, inboxProjectId(queryClient))
 				: false;
 		if (belongs) extra.push(current);
 	}

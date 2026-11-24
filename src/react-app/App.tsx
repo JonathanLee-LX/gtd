@@ -1,9 +1,10 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "next-themes";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { installGlobalFileDropGuard } from "./lib/file-drop-guard";
 import { InboxPage } from "./pages/InboxPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ProjectPage } from "./pages/ProjectPage";
@@ -17,6 +18,7 @@ import { createAppQueryClient } from "./query-client";
 
 export default function App() {
 	const [queryClient] = useState(() => createAppQueryClient());
+	useEffect(() => installGlobalFileDropGuard(), []);
 
 	return (
 		<QueryClientProvider client={queryClient}>

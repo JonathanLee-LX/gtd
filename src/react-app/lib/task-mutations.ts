@@ -10,12 +10,16 @@ import { toast } from "sonner";
 import { api, type Project, type Task } from "../api";
 import { toastTaskCompleted } from "./complete-feedback";
 import {
+	flushSkippedReplay,
 	getPendingCreate,
+	hasPendingSkippedReplay,
 	isPendingCreateTouched,
 	isTempTaskId,
 	listSettledCreates,
+	markPendingCreateUnauthorized,
 	newTempTaskId,
 	PendingCreateFailedError,
+	recordPendingCreateSentBody,
 	registerPendingCreate,
 	rejectPendingCreate,
 	enqueueTaskAction,
@@ -24,6 +28,8 @@ import {
 	takePendingCreateFold,
 	touchPendingCreate,
 } from "./pending-creates";
+import { isUnauthorized } from "./session";
+import { shellKeys } from "./shell-keys";
 import {
 	applyOptimisticTaskPatch,
 	findCachedTask,
@@ -36,7 +42,7 @@ import {
 	upsertTaskInCaches,
 	type TaskSnapshot,
 } from "./task-cache";
-import { TASK_MUTATION_KEY } from "./task-mutation-lock";
+import { sameTask, TASK_MUTATION_KEY } from "./task-mutation-lock";
 import { invalidateTaskActivity } from "./task-activity";
 import { INBOX_NAME } from "../../shared/constants";
 
@@ -67,12 +73,44 @@ export function reconcileSettledCreates(queryClient: QueryClient) {
 	}
 }
 
+/** #93：正在完成中的任务计数（同一任务按 sameTask 匹配，含 temp → real 转换）。 */
+const completingTasks = new Map<string, number>();
+
+export function isTaskCompleting(id: string): boolean {
+	for (const [key, count] of completingTasks) {
+		if (count > 0 && sameTask(key, id)) return true;
+	}
+	return false;
+}
+
+function beginCompletingTask(id: string): () => void {
+	completingTasks.set(id, (completingTasks.get(id) ?? 0) + 1);
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		const next = (completingTasks.get(id) ?? 1) - 1;
+		if (next <= 0) completingTasks.delete(id);
+		else completingTasks.set(id, next);
+	};
+}
+
+/** Test helper. */
+export function resetCompletingTasksForTests(): void {
+	completingTasks.clear();
+}
+
 /**
  * #90 Review：只回滚这一条任务（不整表恢复，期间完成的其它新建 / 修改不受影响），
  * 然后后台刷新一次，以服务端为准。
  */
 export function rollbackTask(queryClient: QueryClient, snapshot: TaskSnapshot | undefined) {
 	if (snapshot) {
+		if (isTaskCompleting(snapshot.id)) {
+			// #93：这条任务正在完成中，前面的编辑失败不能覆盖进行中的完成状态，
+			// 也不要提前触发后台刷新把未完成行拉回来，以免打断 #55 完成动画。
+			return;
+		}
 		const entry = isTempTaskId(snapshot.id) ? getPendingCreate(snapshot.id) : undefined;
 		if (entry?.state === "failed") {
 			// 新建都没成功：这条整体撤回（新建那边已提示）。
@@ -88,6 +126,10 @@ export function rollbackTask(queryClient: QueryClient, snapshot: TaskSnapshot | 
 			}));
 		} else {
 			restoreTask(queryClient, snapshot);
+		}
+		if (hasPendingSkippedReplay(snapshot.id)) {
+			// #93：删除失败后正在补发被跳过的前置编辑，先保留恢复的编辑态，等补发结束后再刷新。
+			return;
 		}
 	}
 	void silentInvalidateTasks(queryClient);
@@ -147,17 +189,28 @@ export function createTaskMutationOptions(
 	getProjects: () => readonly Project[] = () => [],
 ): MutationOptions<{ task: Task }, Error, CreateTaskVariables, CreateContext> {
 	return {
-		// #115：离线暂停过的新建，发出前把期间详情里自动保存的改动并进请求体（只发 1 个 POST）。
+		// #115 / #117：发出前合并期间 fold 的改动，并带上稳定幂等键，防止 401 补发或竞态重复创建。
 		mutationFn: (body) => {
 			const tempId = tempIdByCreateBody.get(body);
+			if (tempId && !getPendingCreate(tempId)) {
+				// 已被 clearClientSession 清理（401 已暂存或主动退出丢弃）：不再发旧会话的请求。
+				return Promise.reject(new PendingCreateFailedError(tempId));
+			}
 			const fold = tempId ? takePendingCreateFold(tempId) : {};
-			return api.createTask(stripSourceFromBody({ ...body, ...fold }));
+			const entry = tempId ? getPendingCreate(tempId) : undefined;
+			const payload = stripSourceFromBody({
+				...body,
+				...fold,
+				...(entry ? { idempotencyKey: entry.idempotencyKey } : {}),
+			});
+			if (tempId) recordPendingCreateSentBody(tempId, payload);
+			return api.createTask(payload);
 		},
 		// 同步插入：不 await cancelQueries，点下去当帧就能看到。进行中的刷新由 withPendingCreates 补齐。
 		onMutate: (body) => {
 			// #101：项目列表没回来时临时行 projectId 为 ''（不用记住的收件箱 id）；请求体不带 projectId，以服务端为准。
 			const task = buildOptimisticTask(body, getProjects());
-			registerPendingCreate(task);
+			registerPendingCreate(task, { body: stripSourceFromBody(body), queryClient });
 			tempIdByCreateBody.set(body, task.id);
 			upsertTaskInCaches(queryClient, task);
 			return { tempId: task.id };
@@ -166,8 +219,10 @@ export function createTaskMutationOptions(
 			const tempId = ctx?.tempId;
 			if (tempId) {
 				const entry = getPendingCreate(tempId);
+				// 会话已被 clearClientSession 清理：不把旧会话的创建结果写回缓存。
+				if (!entry) return;
 				const cachedTemp = findCachedTask(queryClient, tempId);
-				if (entry?.removed) {
+				if (entry.removed) {
 					// 已被排队的完成 / 删除拿掉：不要再插回去。
 					removeTaskFromCaches(queryClient, tempId);
 				} else if (isPendingCreateTouched(tempId) && cachedTemp) {
@@ -191,10 +246,23 @@ export function createTaskMutationOptions(
 			void silentInvalidateTasks(queryClient);
 		},
 		onError: (err, _body, ctx) => {
-			// 只撤回这一条（不用整表快照，免得把同时在建的其它临时行一起抹掉）。
-			if (ctx?.tempId) {
-				removeTaskFromCaches(queryClient, ctx.tempId);
-				rejectPendingCreate(ctx.tempId);
+			const tempId = ctx?.tempId;
+			if (tempId) {
+				const entry = getPendingCreate(tempId);
+				// 会话已被 clearClientSession 清理（401 已暂存或主动退出丢弃）：忽略迟到的失败。
+				if (!entry) return;
+				if (isUnauthorized(err)) {
+					// #117：登录过期 —— 保留新建与已 fold / 排队的改动，让外壳重拉 me → 401 → clearClientSession 暂存。
+					markPendingCreateUnauthorized(tempId);
+					void queryClient.invalidateQueries({ queryKey: shellKeys.me });
+					return;
+				}
+				// 只撤回这一条（不用整表快照，免得把同时在建的其它临时行一起抹掉）。
+				removeTaskFromCaches(queryClient, tempId);
+				rejectPendingCreate(tempId);
+			} else if (isUnauthorized(err)) {
+				void queryClient.invalidateQueries({ queryKey: shellKeys.me });
+				return;
 			}
 			toast.error(mutationErrorMessage(err, "创建失败，已撤回"));
 			void silentInvalidateTasks(queryClient);
@@ -205,34 +273,72 @@ export function createTaskMutationOptions(
 // ---------------------------------------------------------------- complete / update / delete
 
 type SnapshotContext = { snapshot: TaskSnapshot };
+type CompleteContext = SnapshotContext & { releaseCompleting: () => void };
 
 export function completeTaskMutationOptions(
 	queryClient: QueryClient,
-): MutationOptions<{ task: Task } | typeof SKIPPED_BY_DELETE, Error, string, SnapshotContext> {
+): MutationOptions<{ task: Task } | typeof SKIPPED_BY_DELETE, Error, string, CompleteContext> {
+	const snapshotsById = new Map<string, TaskSnapshot[]>();
+	const applyCompleteSuccess = (id: string, task: Task) => {
+		// Keep completed out of active lists; patch any leftover shards.
+		removeTaskFromCaches(queryClient, task.id);
+		if (id !== task.id) removeTaskFromCaches(queryClient, id);
+		void silentInvalidateTasks(queryClient);
+		// #111：完成会写一条活动；只让这条任务的活动失效（不再靠 updatedAt 变化触发重拉）。
+		void invalidateTaskActivity(queryClient, task.id);
+		toastTaskCompleted();
+	};
 	return {
 		...optimisticMutationOptions,
-		mutationFn: (id) => enqueueTaskAction(id, api.completeTask, { skipIfDeleted: true }),
+		mutationFn: (id) => {
+			const queue = snapshotsById.get(id);
+			const snapshot = queue?.shift();
+			if (queue && queue.length === 0) snapshotsById.delete(id);
+			return enqueueTaskAction(
+				id,
+				(realId) => {
+					const release = beginCompletingTask(realId);
+					return api.completeTask(realId).finally(release);
+				},
+				{
+					skipIfDeleted: true,
+					onReplaySuccess: ({ task }) => applyCompleteSuccess(id, task),
+					onReplayError: (err) => {
+						rollbackTask(queryClient, snapshot);
+						toastUnlessCreateFailed(err, "完成失败");
+					},
+				},
+			);
+		},
 		onMutate: async (id) => {
-			await queryClient.cancelQueries({ queryKey: ["tasks"] });
-			const snapshot = snapshotTask(queryClient, id);
-			if (isTempTaskId(id)) touchPendingCreate(id, { removed: true });
-			removeTaskFromCaches(queryClient, id);
-			return { snapshot };
+			const releaseCompleting = beginCompletingTask(id);
+			try {
+				await queryClient.cancelQueries({ queryKey: ["tasks"] });
+				const snapshot = snapshotTask(queryClient, id);
+				const list = snapshotsById.get(id) ?? [];
+				list.push(snapshot);
+				snapshotsById.set(id, list);
+				if (isTempTaskId(id)) touchPendingCreate(id, { removed: true, completed: true });
+				removeTaskFromCaches(queryClient, id);
+				return { snapshot, releaseCompleting };
+			} catch (err) {
+				releaseCompleting();
+				throw err;
+			}
 		},
 		onError: (err, _id, ctx) => {
+			ctx?.releaseCompleting();
 			rollbackTask(queryClient, ctx?.snapshot);
 			toastUnlessCreateFailed(err, "完成失败");
 		},
-		onSuccess: (data, id) => {
-			if (data === SKIPPED_BY_DELETE) return;
+		onSuccess: (data, id, ctx) => {
+			if (data === SKIPPED_BY_DELETE) {
+				ctx?.releaseCompleting();
+				return;
+			}
 			const { task } = data;
-			// Keep completed out of active lists; patch any leftover shards.
-			removeTaskFromCaches(queryClient, task.id);
-			if (id !== task.id) removeTaskFromCaches(queryClient, id);
-			void silentInvalidateTasks(queryClient);
-			// #111：完成会写一条活动；只让这条任务的活动失效（不再靠 updatedAt 变化触发重拉）。
-			void invalidateTaskActivity(queryClient, task.id);
-			toastTaskCompleted();
+			applyCompleteSuccess(id, task);
+			ctx?.releaseCompleting();
 		},
 	};
 }
@@ -242,16 +348,38 @@ export type UpdateTaskVariables = { id: string; patch: Record<string, unknown> }
 export function updateTaskMutationOptions(
 	queryClient: QueryClient,
 ): MutationOptions<{ task: Task } | typeof SKIPPED_BY_DELETE, Error, UpdateTaskVariables, SnapshotContext> {
+	const snapshotByVars = new WeakMap<UpdateTaskVariables, TaskSnapshot>();
+	const applyUpdateSuccess = (id: string, task: Task) => {
+		if (isTaskCompleting(task.id) || isTaskCompleting(id)) return;
+		if (id !== task.id && findCachedTask(queryClient, id)) {
+			replaceTaskInCaches(queryClient, id, task);
+		} else {
+			upsertTaskInCaches(queryClient, task);
+		}
+		void silentInvalidateTasks(queryClient);
+		// #111：保存成功 → 只失效 ["task-activity", id]，详情里新活动出现在最上面。
+		void invalidateTaskActivity(queryClient, task.id);
+	};
 	return {
 		...optimisticMutationOptions,
-		mutationFn: ({ id, patch }) =>
-			enqueueTaskAction(id, (realId) => api.updateTask(realId, stripSourceFromBody(patch)), {
+		mutationFn: (vars) => {
+			const { id, patch } = vars;
+			const snapshot = snapshotByVars.get(vars);
+			return enqueueTaskAction(id, (realId) => api.updateTask(realId, stripSourceFromBody(patch)), {
 				skipIfDeleted: true,
-			}),
-		onMutate: async ({ id, patch }) => {
+				onReplaySuccess: ({ task }) => applyUpdateSuccess(id, task),
+				onReplayError: (err) => {
+					rollbackTask(queryClient, snapshot);
+					toastUnlessCreateFailed(err, "保存失败，已恢复原值");
+				},
+			});
+		},
+		onMutate: async (vars) => {
+			const { id, patch } = vars;
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
 			const snapshot = snapshotTask(queryClient, id);
-			if (isTempTaskId(id)) touchPendingCreate(id);
+			snapshotByVars.set(vars, snapshot);
+			if (isTempTaskId(id)) touchPendingCreate(id, { patch: stripSourceFromBody(patch) });
 			applyOptimisticTaskPatch(queryClient, id, patch);
 			return { snapshot };
 		},
@@ -261,15 +389,7 @@ export function updateTaskMutationOptions(
 		},
 		onSuccess: (data, { id }) => {
 			if (data === SKIPPED_BY_DELETE) return;
-			const { task } = data;
-			if (id !== task.id && findCachedTask(queryClient, id)) {
-				replaceTaskInCaches(queryClient, id, task);
-			} else {
-				upsertTaskInCaches(queryClient, task);
-			}
-			void silentInvalidateTasks(queryClient);
-			// #111：保存成功 → 只失效 ["task-activity", id]，详情里新活动出现在最上面。
-			void invalidateTaskActivity(queryClient, task.id);
+			applyUpdateSuccess(id, data.task);
 		},
 	};
 }
@@ -279,7 +399,7 @@ export function deleteTaskMutationOptions(
 ): MutationOptions<unknown, Error, string, SnapshotContext> {
 	return {
 		...optimisticMutationOptions,
-		mutationFn: (id) => enqueueTaskAction(id, api.deleteTask),
+		mutationFn: (id) => enqueueTaskAction(id, api.deleteTask, { isDelete: true }),
 		onMutate: async (id) => {
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
 			const snapshot = snapshotTask(queryClient, id);
@@ -287,8 +407,9 @@ export function deleteTaskMutationOptions(
 			removeTaskFromCaches(queryClient, id);
 			return { snapshot };
 		},
-		onError: (err, _id, ctx) => {
+		onError: (err, id, ctx) => {
 			rollbackTask(queryClient, ctx?.snapshot);
+			flushSkippedReplay(id);
 			toastUnlessCreateFailed(err, "删除失败");
 		},
 		onSuccess: (_data, id) => {
@@ -312,20 +433,52 @@ export type ProcessInboxVariables = {
 export function processInboxMutationOptions(
 	queryClient: QueryClient,
 ): MutationOptions<{ task: Task } | typeof SKIPPED_BY_DELETE, Error, ProcessInboxVariables, SnapshotContext> {
+	const snapshotByVars = new WeakMap<ProcessInboxVariables, TaskSnapshot>();
+	const applyProcessSuccess = (id: string, body: ProcessInboxVariables["body"], task: Task) => {
+		if (isTaskCompleting(task.id) || isTaskCompleting(id)) return;
+		if (id !== task.id) removeTaskFromCaches(queryClient, id);
+		if (body.action === "discard" || task.deletedAt || task.status === "cancelled") {
+			removeTaskFromCaches(queryClient, task.id);
+		} else {
+			upsertTaskInCaches(queryClient, task);
+		}
+		void silentInvalidateTasks(queryClient);
+		void invalidateTaskActivity(queryClient, task.id);
+	};
 	return {
 		...optimisticMutationOptions,
-		mutationFn: ({ id, body }) =>
-			enqueueTaskAction(id, (realId) => api.processInbox(realId, body), {
+		mutationFn: (vars) => {
+			const { id, body } = vars;
+			const snapshot = snapshotByVars.get(vars);
+			return enqueueTaskAction(id, (realId) => api.processInbox(realId, body), {
 				skipIfDeleted: body.action !== "discard",
-			}),
-		onMutate: async ({ id, body }) => {
+				isDelete: body.action === "discard",
+				onReplaySuccess: ({ task }) => applyProcessSuccess(id, body, task),
+				onReplayError: (err) => {
+					rollbackTask(queryClient, snapshot);
+					toastUnlessCreateFailed(err, "处理失败");
+				},
+			});
+		},
+		onMutate: async (vars) => {
+			const { id, body } = vars;
 			await queryClient.cancelQueries({ queryKey: ["tasks"] });
 			const snapshot = snapshotTask(queryClient, id);
+			snapshotByVars.set(vars, snapshot);
 			const current = findCachedTask(queryClient, id);
 			if (isTempTaskId(id)) {
+				const patch =
+					body.action === "discard"
+						? undefined
+						: {
+								status: body.action,
+								...(body.waitingOn !== undefined ? { waitingOn: body.waitingOn } : {}),
+								...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
+							};
 				touchPendingCreate(id, {
 					removed: body.action === "discard" || !current,
 					deleted: body.action === "discard",
+					...(patch ? { patch } : {}),
 				});
 			}
 			if (body.action === "discard") {
@@ -342,21 +495,14 @@ export function processInboxMutationOptions(
 			}
 			return { snapshot };
 		},
-		onError: (err, _vars, ctx) => {
+		onError: (err, vars, ctx) => {
 			rollbackTask(queryClient, ctx?.snapshot);
+			if (vars.body.action === "discard") flushSkippedReplay(vars.id);
 			toastUnlessCreateFailed(err, "处理失败");
 		},
 		onSuccess: (data, { id, body }) => {
 			if (data === SKIPPED_BY_DELETE) return;
-			const { task } = data;
-			if (id !== task.id) removeTaskFromCaches(queryClient, id);
-			if (body.action === "discard" || task.deletedAt || task.status === "cancelled") {
-				removeTaskFromCaches(queryClient, task.id);
-			} else {
-				upsertTaskInCaches(queryClient, task);
-			}
-			void silentInvalidateTasks(queryClient);
-			void invalidateTaskActivity(queryClient, task.id);
+			applyProcessSuccess(id, body, data.task);
 		},
 	};
 }

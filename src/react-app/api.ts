@@ -4,6 +4,7 @@ import { ApiError } from "./lib/session";
 export { ApiError } from "./lib/session";
 
 export type Tag = { id: string; name: string };
+export type TagItem = Tag & { createdAt?: string; taskCount: number };
 
 export type Project = {
 	id: string;
@@ -67,24 +68,54 @@ export type AttachmentUploadTicket = {
 
 export type Me = { user: { id: string; email: string; name: string }; source: string };
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-	const headers = new Headers(init.headers);
-	if (init.body && !headers.has("Content-Type")) {
+type RequestOptions = RequestInit & { timeoutMs?: number };
+
+async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+	const { timeoutMs, ...fetchInit } = init;
+	const headers = new Headers(fetchInit.headers);
+	if (fetchInit.body && !headers.has("Content-Type")) {
 		headers.set("Content-Type", "application/json");
 	}
-	const response = await fetch(path, { credentials: "include", ...init, headers });
-	const data = (await response.json().catch(() => ({}))) as T & {
-		message?: string;
-		error?: string;
+	const run = async (signal?: AbortSignal) => {
+		const response = await fetch(path, {
+			credentials: "include",
+			...fetchInit,
+			...(signal ? { signal } : {}),
+			headers,
+		});
+		const data = (await response.json().catch(() => ({}))) as T & {
+			message?: string;
+			error?: string;
+		};
+		if (!response.ok) {
+			throw new ApiError(
+				data.message || data.error || `请求失败 (${response.status})`,
+				response.status,
+				data.error,
+				data,
+			);
+		}
+		return data;
 	};
-	if (!response.ok) {
-		throw new ApiError(
-			data.message || data.error || `请求失败 (${response.status})`,
-			response.status,
-			data.error,
-		);
+	if (timeoutMs === undefined) return run();
+	const controller = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const work = run(controller.signal);
+	// 防止超时后底层 fetch 因 abort 或延迟失败触发 unhandledRejection。
+	work.catch(() => {});
+	try {
+		return await Promise.race([
+			work,
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(() => {
+					reject(new Error("请求超时"));
+					controller.abort();
+				}, timeoutMs);
+			}),
+		]);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
 	}
-	return data;
 }
 
 export const api = {
@@ -102,7 +133,8 @@ export const api = {
 			body: JSON.stringify({ name, email, password }),
 		}),
 	// Better Auth requires a JSON request body for sign-out; an empty POST gets 415.
-	signOut: () => request("/api/auth/sign-out", { method: "POST", body: JSON.stringify({}) }),
+	signOut: (opts?: { timeoutMs?: number }) =>
+		request("/api/auth/sign-out", { method: "POST", body: JSON.stringify({}), ...opts }),
 	projects: () => request<{ items: Project[] }>("/api/projects"),
 	createProject: (name: string) =>
 		request<{ project: Project }>("/api/projects", {
@@ -176,11 +208,15 @@ export const api = {
 			`/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}`,
 			{ method: "DELETE" },
 		),
-	tags: () => request<{ items: Tag[] }>("/api/tags"),
+	tags: () => request<{ items: TagItem[] }>("/api/tags"),
 	createTag: (name: string) =>
 		request<{ tag: Tag }>("/api/tags", {
 			method: "POST",
 			body: JSON.stringify({ name }),
+		}),
+	deleteTag: (id: string) =>
+		request<{ ok: true }>(`/api/tags/${encodeURIComponent(id)}`, {
+			method: "DELETE",
 		}),
 	tokens: () =>
 		request<{
@@ -210,15 +246,23 @@ export const api = {
 			body: JSON.stringify(draft),
 		}),
 	notificationSettings: () => request<NotificationSettings>("/api/notifications"),
-	saveNotificationSettings: (body: SaveNotificationSettings) =>
+	saveNotificationSettings: (body: SaveNotificationSettings, opts?: { timeoutMs?: number }) =>
 		request<NotificationSettings>("/api/notifications", {
 			method: "PUT",
 			body: JSON.stringify(body),
+			...opts,
 		}),
-	upsertPushSubscription: (body: PushSubscriptionKeys) =>
+	upsertPushSubscription: (body: PushSubscriptionKeys, opts?: { timeoutMs?: number }) =>
 		request<{ subscriptionCount: number }>("/api/notifications/subscription", {
 			method: "POST",
 			body: JSON.stringify(body),
+			...opts,
+		}),
+	deletePushSubscription: (endpoint: string, opts?: { timeoutMs?: number }) =>
+		request<{ subscriptionCount: number; deleted: boolean }>("/api/notifications/subscription", {
+			method: "DELETE",
+			body: JSON.stringify({ endpoint }),
+			...opts,
 		}),
 	testNotification: (endpoint: string) =>
 		request<{ ok: boolean }>("/api/notifications/test", {
@@ -242,7 +286,10 @@ export type NotificationSettings = {
 	timeZone: string;
 	saved: boolean;
 	subscriptionCount: number;
+	subscriptionEndpoints?: string[];
 	vapidPublicKey: string | null;
+	/** 服务端这一行的 updated_at。没有行时为 null。 */
+	updatedAt?: string | null;
 };
 
 export type SaveNotificationSettings = {
@@ -253,4 +300,6 @@ export type SaveNotificationSettings = {
 	includeOverdue: boolean;
 	timeZone: string;
 	subscription?: PushSubscriptionKeys;
+	/** 这次修改基于的服务端版本。null 表示认为还没有保存过。 */
+	baseUpdatedAt?: string | null;
 };

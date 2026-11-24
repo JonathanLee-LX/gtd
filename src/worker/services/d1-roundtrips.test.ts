@@ -4,8 +4,8 @@ import { createCountingD1 } from "../test/d1-shim";
 import { FakeR2, PNG_BYTES } from "../test/fake-r2";
 import { callMcpTool } from "../mcp/tools";
 import { listTaskActivity } from "./activity";
-import { createTag } from "./tags";
-import { createTask, getTask, updateTask } from "./tasks";
+import { createTag, deleteTag, listTags } from "./tags";
+import { createTask, getTask, listTasks, updateTask } from "./tasks";
 
 /** #119：PATCH / GET /api/tasks/:id 的 D1 往返次数（不含鉴权查 session）。 */
 describe("D1 round trips", () => {
@@ -24,6 +24,39 @@ describe("D1 round trips", () => {
 		const task = await createTask(d1.db, me.id, { title: "写周报" }, "human");
 		return { ...d1, sqlite, me, task };
 	}
+
+	it("POST /api/tasks 带幂等键的第一次创建不比不带键多往返", async () => {
+		const { db, counter, reset, me } = await setup();
+		reset();
+		const plain = await createTask(db, me.id, { title: "无键" }, "human");
+		const withoutKey = counter.roundTrips;
+		reset();
+		const first = await createTask(db, me.id, { title: "有键", idempotencyKey: "create-roundtrip-1" }, "human");
+		const withKey = counter.roundTrips;
+		reset();
+		const replay = await createTask(db, me.id, { title: "重放", idempotencyKey: "create-roundtrip-1" }, "human");
+		const replayTrips = counter.roundTrips;
+		console.info("[#117] create round trips", { withoutKey, withKey, replayTrips });
+		expect(first.id).not.toBe(plain.id);
+		expect(replay.id).toBe(first.id);
+		expect(replay.title).toBe("有键");
+		expect(withKey).toBe(withoutKey);
+		expect(replayTrips).toBeGreaterThan(0);
+	});
+
+	it("GET /api/tasks?inbox=1 不比普通列表多往返 (#105)", async () => {
+		const { db, counter, reset, me } = await setup();
+		reset();
+		const plain = await listTasks(db, me.id, {});
+		const plainTrips = counter.roundTrips;
+		expect(plain.items.length).toBeGreaterThan(0);
+
+		reset();
+		const inbox = await listTasks(db, me.id, { inbox: "1" });
+		expect(inbox.items.map((item) => item.id)).toEqual(plain.items.map((item) => item.id));
+		console.info("[#105] GET /api/tasks?inbox=1 round trips", counter.roundTrips, "plain", plainTrips);
+		expect(counter.roundTrips).toBe(plainTrips);
+	});
 
 	it("GET /api/tasks/:id", async () => {
 		const { db, counter, me, task } = await setup();
@@ -109,5 +142,23 @@ describe("D1 round trips", () => {
 		await expect(updateTask(db, me.id, task.id, { title: "不该生效" }, "human")).rejects.toThrow();
 		sqlite.exec("DROP TRIGGER boom;");
 		expect((await getTask(db, me.id, task.id)).title).toBe("写周报");
+	});
+
+	it("GET /api/tags（含未删任务数，一次往返）与 DELETE /api/tags/:id（两次往返）(#122)", async () => {
+		const { db, counter, reset, me, task } = await setup();
+		const tag = await createTag(db, me.id, "qa119a", "human");
+		await updateTask(db, me.id, task.id, { tagIds: [tag.id] }, "human");
+
+		reset();
+		const listed = await listTags(db, me.id);
+		expect(listed).toEqual([expect.objectContaining({ id: tag.id, name: "qa119a", taskCount: 1 })]);
+		console.info("[#122] GET /api/tags round trips", counter.roundTrips);
+		expect(counter.roundTrips).toBeLessThanOrEqual(1);
+
+		reset();
+		const deleted = await deleteTag(db, me.id, tag.id, "human");
+		expect(deleted).toEqual({ ok: true });
+		console.info("[#122] DELETE /api/tags/:id round trips", counter.roundTrips);
+		expect(counter.roundTrips).toBeLessThanOrEqual(2);
 	});
 });

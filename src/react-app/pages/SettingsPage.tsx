@@ -39,6 +39,7 @@ import { toast } from "sonner";
 import { DueReminderCard } from "../components/DueReminderCard";
 import { PasskeyCard } from "../components/PasskeyCard";
 import { SettingsListItem } from "../components/SettingsListItem";
+import { TagsCard } from "../components/TagsCard";
 import { EmptyLine } from "../components/EmptyLine";
 import { QueryView } from "../components/QueryView";
 import { loadErrorMessage } from "../lib/load-state";
@@ -381,6 +382,7 @@ export function SettingsPage() {
 					</p>
 				</CardContent>
 			</Card>
+			<TagsCard />
 			<Card className="max-w-xl">
 				<CardHeader>
 					<CardTitle>回收站</CardTitle>

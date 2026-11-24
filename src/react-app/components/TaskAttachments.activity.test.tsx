@@ -124,4 +124,24 @@ describe("TaskAttachments refreshes task activity (#111 / #112 follow-up)", () =
 		expect(invalidated("t1")).toBe(false);
 		expect(invalidated("t2")).toBe(false);
 	});
+
+	it("uploadFilesRef delegates external detail-wide drops into handleFiles (#93)", async () => {
+		svc.upload.mockResolvedValue({ ...file, id: "a3", fileName: "drop.png" });
+		const uploadFilesRef: { current: ((files: FileList | File[]) => void) | null } = { current: null };
+		qc.setQueryData(attachmentKeys.task("t1"), { items: [] });
+		svc.list.mockResolvedValue({ items: [] });
+		qc.setQueryData(taskActivityKeys.task("t1"), { items: [] });
+		render(
+			<QueryClientProvider client={qc}>
+				<TaskAttachments taskId="t1" uploadFilesRef={uploadFilesRef} />
+			</QueryClientProvider>,
+		);
+		expect(uploadFilesRef.current).toBeTypeOf("function");
+		const f = new File([new Uint8Array(512)], "drop.png", { type: "image/png" });
+		await act(async () => {
+			uploadFilesRef.current!([f]);
+		});
+		await waitFor(() => expect(svc.upload).toHaveBeenCalledWith("t1", f, expect.any(Object)));
+		await waitFor(() => expect(invalidated("t1")).toBe(true));
+	});
 });

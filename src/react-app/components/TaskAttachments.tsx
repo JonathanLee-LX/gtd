@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -199,7 +199,14 @@ const AttachmentRow = Object.assign(AttachmentRowBase, { Skeleton: AttachmentRow
  * 任务详情里的附件区（#68）：上传（手机可拍照 / 相册 / 文件）、列表、图片缩略图 + 大图预览、
  * PDF 新标签打开、下载、确认后删除。读写都走 attachmentService，后端按 user_id 隔离。
  */
-export function TaskAttachments({ taskId }: { taskId: string }) {
+export function TaskAttachments({
+	taskId,
+	uploadFilesRef,
+}: {
+	taskId: string;
+	/** #93：详情页级拖放上传时注册上传处理器，由外层详情容器统一承接拖放与高亮。 */
+	uploadFilesRef?: RefObject<((files: FileList | File[]) => void) | null>;
+}) {
 	const queryClient = useQueryClient();
 	const [uploads, setUploads] = useState<UploadItem[]>([]);
 	const [error, setError] = useState<string | null>(null);
@@ -268,6 +275,19 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 		}
 	}
 
+	const handleFilesRef = useRef(handleFiles);
+	handleFilesRef.current = handleFiles;
+
+	useEffect(() => {
+		if (!uploadFilesRef) return;
+		uploadFilesRef.current = (files) => {
+			void handleFilesRef.current(files);
+		};
+		return () => {
+			uploadFilesRef.current = null;
+		};
+	}, [uploadFilesRef]);
+
 	async function confirmDelete() {
 		if (!pendingDelete) return;
 		setDeleting(true);
@@ -285,26 +305,36 @@ export function TaskAttachments({ taskId }: { taskId: string }) {
 		}
 	}
 
+	const standaloneDrop = !uploadFilesRef;
+
 	return (
 		<section
 			aria-labelledby={`task-attachments-${taskId}`}
 			data-testid="task-attachments"
 			className={cn(
 				"flex min-w-0 flex-col gap-2 rounded-lg",
-				dragOver && "outline-2 outline-dashed outline-primary/60 outline-offset-4",
+				standaloneDrop && dragOver && "outline-2 outline-dashed outline-primary/60 outline-offset-4",
 			)}
-			onDragOver={(event) => {
-				if (!event.dataTransfer.types.includes("Files")) return;
-				event.preventDefault();
-				setDragOver(true);
-			}}
-			onDragLeave={() => setDragOver(false)}
-			onDrop={(event) => {
-				if (!event.dataTransfer.files.length) return;
-				event.preventDefault();
-				setDragOver(false);
-				void handleFiles(event.dataTransfer.files);
-			}}
+			onDragOver={
+				standaloneDrop
+					? (event) => {
+							if (!event.dataTransfer.types.includes("Files")) return;
+							event.preventDefault();
+							setDragOver(true);
+						}
+					: undefined
+			}
+			onDragLeave={standaloneDrop ? () => setDragOver(false) : undefined}
+			onDrop={
+				standaloneDrop
+					? (event) => {
+							if (!event.dataTransfer.files.length) return;
+							event.preventDefault();
+							setDragOver(false);
+							void handleFiles(event.dataTransfer.files);
+						}
+					: undefined
+			}
 		>
 			<div className="flex items-center justify-between gap-2">
 				<p id={`task-attachments-${taskId}`} className="text-sm font-medium">

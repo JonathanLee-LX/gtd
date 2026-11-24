@@ -1,8 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect } from "react";
+import { useCallback } from "react";
 import { useOutletContext } from "react-router-dom";
 import { api, type Project } from "../api";
-import { writeInboxHint } from "../lib/inbox-hint";
 import { shellKeys } from "../lib/shell-keys";
 
 export { shellKeys } from "../lib/shell-keys";
@@ -14,12 +13,7 @@ export function useMeQuery() {
 
 /** #101：项目列表（侧栏、项目选择器、收件箱 id 都从这里拿）。 */
 export function useProjectsQuery() {
-	const query = useQuery({ queryKey: shellKeys.projects, queryFn: () => api.projects() });
-	const inboxId = query.data?.items.find((project) => project.isInbox)?.id;
-	useEffect(() => {
-		if (inboxId) writeInboxHint(inboxId);
-	}, [inboxId]);
-	return query;
+	return useQuery({ queryKey: shellKeys.projects, queryFn: () => api.projects() });
 }
 
 /** 重新拉项目列表 = 让 ["projects"] 失效（不再手动 setState）。 */

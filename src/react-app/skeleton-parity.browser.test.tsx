@@ -15,6 +15,7 @@ import { EmptyLine } from "./components/EmptyLine";
 import { SidebarProjectItem, SidebarUserButton } from "./components/ShellSidebarItems";
 import { TaskActivityList } from "./components/TaskActivityList";
 import { TaskAttachments } from "./components/TaskAttachments";
+import { QueryView } from "./components/QueryView";
 import { TaskBoard } from "./components/TaskBoard";
 import { TaskRow } from "./components/TaskRow";
 import { Badge } from "@/components/ui/badge";
@@ -151,6 +152,47 @@ async function measureBoard(opts: { loading: boolean; tasks: Task[]; inbox: bool
 	return result;
 }
 
+/** 混合收件箱：每一块（任务行 + 可选整理按钮）的位置，以及列表下方标记的位置。 */
+async function measureMixed(loading: boolean, tasks: Task[], key: readonly unknown[]) {
+	const view = render(
+		<Providers>
+			<div style={{ width: 720 }}>
+				<TaskBoard
+					title="收件箱"
+					placeholder="随便记一条"
+					query={{ data: loading ? undefined : { items: tasks }, error: null }}
+					loadKey={key}
+					projects={projects}
+					emptyText="空"
+					enableInboxProcess
+					onCreate={async () => {}}
+					onComplete={async () => {}}
+					onDelete={async () => {}}
+				/>
+				<div data-below>列表下面</div>
+			</div>
+		</Providers>,
+	);
+	if (loading) await sleep(250);
+	const h1 = rect(view.container.querySelector("h1"));
+	const list = loading
+		? view.container.querySelector('[data-testid="skeleton-list"]')
+		: view.container.querySelector(".task-row")?.parentElement?.parentElement ?? null;
+	const blocks = [...(list?.querySelectorAll(":scope > div") ?? [])].map((el) => {
+		const box = el.getBoundingClientRect();
+		return { top: box.top, height: box.height };
+	});
+	const result = {
+		h1Top: h1.top,
+		listTop: rect(list).top,
+		listHeight: rect(list).height,
+		belowTop: rect(view.container.querySelector("[data-below]")).top,
+		blocks,
+	};
+	view.unmount();
+	return result;
+}
+
 beforeEach(() => localStorage.clear());
 afterEach(() => {
 	cleanup();
@@ -208,6 +250,148 @@ for (const vp of [
 				console.info(`[parity ${vp.name} inbox=${inbox}]`, JSON.stringify({ skel, real }));
 			});
 		}
+
+		it("诊断：量化首次空存储混合收件箱偏移（不是 #99/#102 达标）", async () => {
+			const key = taskKeys.list({ inbox: true });
+			const tasks = [
+				makeTask(0, { status: "inbox" }),
+				makeTask(1, { status: "next" }),
+				makeTask(2, { status: "inbox" }),
+				makeTask(3, { status: "waiting" }),
+			];
+			const first = await measureMixed(true, tasks, key);
+			const real = await measureMixed(false, tasks, key);
+			const rowShifts = real.blocks.map((block, index) => {
+				const skel = first.blocks[index];
+				return skel
+					? {
+							index,
+							topDelta: Math.round((skel.top - block.top) * 10) / 10,
+							heightDelta: Math.round((skel.height - block.height) * 10) / 10,
+						}
+					: { index, topDelta: null, heightDelta: null };
+			});
+			const oneRow = real.blocks.reduce((max, block) => Math.max(max, block.height), 0);
+			const listHeightDelta = Math.round((first.listHeight - real.listHeight) * 10) / 10;
+			const maxAbsTop = Math.max(0, ...rowShifts.map((row) => Math.abs(row.topDelta ?? 0)));
+			const report = {
+				viewport: vp.name,
+				skeletonRows: first.blocks.length,
+				realRows: real.blocks.length,
+				listHeightDelta,
+				oneRow: Math.round(oneRow * 10) / 10,
+				h1Delta: Math.round((first.h1Top - real.h1Top) * 10) / 10,
+				listTopDelta: Math.round((first.listTop - real.listTop) * 10) / 10,
+				belowDelta: Math.round((first.belowTop - real.belowTop) * 10) / 10,
+				rowShifts,
+				maxAbsRowTopDelta: Math.round(maxAbsTop * 10) / 10,
+				withinOneRow: Math.abs(listHeightDelta) <= oneRow + 1,
+				noFirstScreenShift: maxAbsTop <= 1 && Math.abs(first.belowTop - real.belowTop) <= 1,
+			};
+			console.info(`INBOX_FIRST_LOAD_OFFSET ${JSON.stringify(report)}`);
+			expect(first.blocks.length).toBeGreaterThan(0);
+			expect(real.blocks.length).toBe(4);
+			expect(report.h1Delta).toBe(0);
+			expect(report.listTopDelta).toBe(0);
+			expect(Number.isFinite(report.listHeightDelta)).toBe(true);
+		});
+
+		it("验收：首次空存储混合收件箱须满足 #99 不超过一行且 #102 首屏无位移", async () => {
+			const key = ["tasks", "list", { inbox: true, acceptance: vp.name }] as const;
+			const tasks = [
+				makeTask(0, { status: "inbox" }),
+				makeTask(1, { status: "next" }),
+				makeTask(2, { status: "inbox" }),
+				makeTask(3, { status: "waiting" }),
+			];
+			const first = await measureMixed(true, tasks, key);
+			const real = await measureMixed(false, tasks, key);
+			const oneRow = real.blocks.reduce((max, block) => Math.max(max, block.height), 0);
+			const listHeightDelta = first.listHeight - real.listHeight;
+			const rowTopDelta = Math.max(
+				0,
+				...real.blocks.map((block, index) => Math.abs((first.blocks[index]?.top ?? block.top) - block.top)),
+			);
+			const belowDelta = Math.abs(first.belowTop - real.belowTop);
+			expect(
+				Math.abs(listHeightDelta),
+				`${vp.name} 列表高度差 ${listHeightDelta}px，一行 ${oneRow}px`,
+			).toBeLessThanOrEqual(oneRow + 1);
+			expect(rowTopDelta, `${vp.name} 行顶位移 ${rowTopDelta}px`).toBeLessThanOrEqual(1);
+			expect(belowDelta, `${vp.name} 列表下方位移 ${belowDelta}px`).toBeLessThanOrEqual(1);
+		});
+
+		it("mixed inbox second cold load matches the stored shape (#102)", async () => {
+			const key = taskKeys.list({ inbox: true });
+			const tasks = [
+				makeTask(0, { status: "inbox" }),
+				makeTask(1, { status: "next" }),
+				makeTask(2, { status: "inbox" }),
+				makeTask(3, { status: "waiting" }),
+			];
+			const arrived = await measureBoard({ loading: false, tasks, inbox: true, key });
+			expect(arrived.rows).toBe(4);
+			const secondSkeleton = await measureBoard({ loading: true, tasks: [], inbox: true, key });
+			expect(secondSkeleton.rows).toBe(4);
+			expect(Math.abs(secondSkeleton.listHeight - arrived.listHeight)).toBeLessThanOrEqual(8);
+			expect(secondSkeleton.h1Top).toBe(arrived.h1Top);
+			expect(secondSkeleton.listTop).toBe(arrived.listTop);
+			expect(Math.abs(secondSkeleton.firstRowTop - arrived.firstRowTop)).toBeLessThanOrEqual(1);
+		});
+
+		it("mixed inbox list: skeleton matches which rows have process actions (#102)", async () => {
+			const key = taskKeys.list({ inbox: true });
+			const tasks = [
+				makeTask(0, { status: "inbox" }),
+				makeTask(1, { status: "next" }),
+				makeTask(2, { status: "inbox" }),
+				makeTask(3, { status: "waiting" }),
+			];
+			const real = await measureBoard({ loading: false, tasks, inbox: true, key });
+			const skel = await measureBoard({ loading: true, tasks: [], inbox: true, key });
+			expect(skel.rows).toBe(4);
+			expect(real.rows).toBe(4);
+			expect(Math.abs(skel.listHeight - real.listHeight)).toBeLessThanOrEqual(8);
+			expect(skel.h1Top).toBe(real.h1Top);
+			expect(skel.listTop).toBe(real.listTop);
+			expect(Math.abs(skel.firstRowTop - real.firstRowTop)).toBeLessThanOrEqual(1);
+		});
+
+		it("150ms delay reserves skeleton space so content below does not jump (#102)", async () => {
+			writeSkeletonCount(["settings", "reserve", vp.name], 3);
+			const view = render(
+				<Providers>
+					<div style={{ width: Math.min(vp.width, 576) }}>
+						<QueryView
+							query={{ data: undefined, error: null }}
+							loadKey={["settings", "reserve", vp.name]}
+							fallbackCount={0}
+							skeleton={(index) => (
+								<div key={index} style={{ height: 57 }} data-skeleton="">
+									row
+								</div>
+							)}
+							skeletonClassName="flex flex-col gap-2"
+							empty={<p>空</p>}
+						>
+							{() => null}
+						</QueryView>
+						<div data-below>回收站</div>
+					</div>
+				</Providers>,
+			);
+			const below = () => rect(view.container.querySelector("[data-below]")).top;
+			const list = view.container.querySelector('[data-testid="skeleton-list"]') as HTMLElement;
+			expect(list.getAttribute("data-skeleton-visible")).toBe("false");
+			expect(getComputedStyle(list).visibility).toBe("hidden");
+			const before = below();
+			expect(before).toBeGreaterThan(0);
+			await sleep(200);
+			expect(list.getAttribute("data-skeleton-visible")).toBe("true");
+			expect(getComputedStyle(list).visibility).not.toBe("hidden");
+			expect(below()).toBe(before);
+			view.unmount();
+		});
 
 		it("cap: remembered count larger than one screen is limited to rows that fit", async () => {
 			const key = taskKeys.list({ status: "someday" });

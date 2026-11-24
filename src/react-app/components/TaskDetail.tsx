@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -25,12 +25,13 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { CheckIcon, TrashIcon, XIcon } from "lucide-react";
+import { CheckIcon, PaperclipIcon, TrashIcon, XIcon } from "lucide-react";
 import { createsParentCycle } from "../../shared/task-tree";
 import { CONTEXT_TAG_EXAMPLES, TASK_PRIORITY_LABELS, TASK_STATUS_LABELS } from "../../shared/constants";
 import type { TaskPriority, TaskStatus } from "../../shared/schemas";
 import { api, type Project, type Tag, type Task } from "../api";
 import { sourceLabel } from "../lib/format";
+import { useFileDropZone } from "../lib/file-drop-guard";
 import { isTempTaskId } from "../lib/pending-creates";
 import { projectPickerItems } from "../lib/project-items";
 import { sameTask } from "../lib/task-mutation-lock";
@@ -151,6 +152,7 @@ export function TaskDetail({
 	onDelete,
 	mutationPending = false,
 	completing = false,
+	fileDropRef,
 }: {
 	task: Task;
 	projects: Project[];
@@ -163,6 +165,8 @@ export function TaskDetail({
 	mutationPending?: boolean;
 	/** Complete feedback in progress — show check, block re-entry. */
 	completing?: boolean;
+	/** #93：由外层详情面板传入时，把拖放上传委托给外层统一区域（含标题栏）。 */
+	fileDropRef?: RefObject<((files: FileList | File[]) => void) | null>;
 }) {
 	/**
 	 * #115：自动保存。表单每次改动都交给按任务排队的保存队列（lib/task-autosave），
@@ -190,6 +194,12 @@ export function TaskDetail({
 	const focusedRef = useRef<DraftField | null>(null);
 	const pendingCreate = isTempTaskId(task.id);
 	const [confirmOpen, setConfirmOpen] = useState(false);
+	const localFileDropRef = useRef<((files: FileList | File[]) => void) | null>(null);
+	const activeFileDropRef = fileDropRef ?? localFileDropRef;
+	const standaloneDrop = useFileDropZone({
+		disabled: Boolean(fileDropRef) || pendingCreate,
+		onDropFiles: (files) => activeFileDropRef.current?.(files),
+	});
 	// #101：冷启动时项目列表可能还没回来 —— 先放上当前项目、禁用选择框，不报错。
 	const projectsLoading = projects.length === 0;
 	const projectItems = projectPickerItems(projects, { id: task.projectId, name: task.projectName });
@@ -238,18 +248,21 @@ export function TaskDetail({
 		// 同一条任务被刷新（保存结果 / 后台刷新 / MCP）：只同步没在改、也没待保存的字段。
 		autosave.observeServer(task);
 		const next = draftFromTask(task);
-		setForm((prev) => {
-			let changed = false;
-			const out = { ...prev };
-			for (const field of DRAFT_FIELDS) {
-				if (focusedRef.current === field) continue;
-				if (autosave.isDirty(task.id, DRAFT_TO_AUTOSAVE[field])) continue;
-				if (sameDraftValue(field, prev[field], next[field])) continue;
-				(out as Record<string, unknown>)[field] = next[field];
-				changed = true;
-			}
-			return changed ? out : prev;
-		});
+		const prev = formRef.current;
+		let changed = false;
+		const out = { ...prev };
+		for (const field of DRAFT_FIELDS) {
+			if (focusedRef.current === field) continue;
+			if (autosave.isDirty(task.id, DRAFT_TO_AUTOSAVE[field])) continue;
+			if (sameDraftValue(field, prev[field], next[field])) continue;
+			(out as Record<string, unknown>)[field] = next[field];
+			changed = true;
+		}
+		if (changed) {
+			setForm(out);
+			// #93：表单重新同步服务端后，清掉旧的本地失败提示。
+			setError(null);
+		}
 		// 只在 task 变化时同步。
 	}, [task]);
 
@@ -299,17 +312,15 @@ export function TaskDetail({
 		setDeleting(true);
 		setError(null);
 		const current = taskRef.current;
-		// 删除就不必再保存：先丢掉这条的保存队列（防抖 / 关详情 flush 都不会再对已删任务发 PATCH）。
-		autosave.discard(current.id);
+		// #93：删除期间暂停保存队列（保留 confirmed 基线与未发改动，防止卸载 flush 在删除途中发 PATCH）；
+		// 删除成功丢弃，删除失败恢复并补发未保存改动。
+		const pendingSave = autosave.suspendForDelete(current.id);
 		try {
 			await onDelete();
+			pendingSave.commit();
 			setConfirmOpen(false);
 		} catch (err) {
-			// 删除失败：表单里的改动重新排进保存队列。
-			for (const field of DRAFT_FIELDS) {
-				if (field === "title" && !form.title.trim()) continue;
-				autosave.edit(current, toAutosave(field, form[field]));
-			}
+			pendingSave.restore();
 			setError(err instanceof Error ? err.message : "删除失败");
 		} finally {
 			setDeleting(false);
@@ -318,16 +329,29 @@ export function TaskDetail({
 
 	return (
 		<form
+			ref={fileDropRef ? undefined : standaloneDrop.ref}
+			data-file-drop-active={!fileDropRef && standaloneDrop.dragActive ? "true" : undefined}
 			onSubmit={(event) => {
 				// 没有「保存」按钮了；输入框里回车 = 立即保存。
 				event.preventDefault();
 				autosave.flush(task.id);
 			}}
 			className={cn(
-				"flex min-h-0 min-w-0 flex-1 flex-col gap-4",
+				"relative flex min-h-0 min-w-0 flex-1 flex-col gap-4",
 				layout === "mobile" && "overflow-hidden",
 			)}
 		>
+			{!fileDropRef && standaloneDrop.dragActive ? (
+				<div
+					data-testid="detail-drop-overlay"
+					className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-primary bg-primary/10 backdrop-blur-[1px]"
+				>
+					<div className="flex items-center gap-2 rounded-full border border-primary/30 bg-background/95 px-4 py-2 text-sm font-medium text-primary shadow-sm">
+						<PaperclipIcon className="size-4" />
+						<span>松开即可上传附件</span>
+					</div>
+				</div>
+			) : null}
 			<div
 				className={cn(
 					"flex min-h-0 min-w-0 flex-1 flex-col gap-4",
@@ -410,7 +434,7 @@ export function TaskDetail({
 					// 临时 id 还没换成真实 id：附件接口会 404，等新建返回后再显示。
 					<p className="text-xs text-muted-foreground">正在保存到服务器，稍后可添加附件。</p>
 				) : (
-					<TaskAttachments taskId={task.id} />
+					<TaskAttachments taskId={task.id} uploadFilesRef={activeFileDropRef} />
 				)}
 				<Field>
 					<FieldLabel>状态</FieldLabel>
@@ -557,6 +581,7 @@ export function TaskDetail({
 									const tags = formRef.current.tags;
 									if (!tags.some((item) => item.id === tag.id)) change("tags", [...tags, tag]);
 									setTagDraft("");
+									setError(null);
 								})
 								.catch((err: unknown) => {
 									setError(err instanceof Error ? err.message : "添加标签失败");

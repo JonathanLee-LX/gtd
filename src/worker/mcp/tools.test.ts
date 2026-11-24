@@ -1,4 +1,6 @@
+import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { activityLog } from "../../db/schema";
 import { createTestDb, seedUser } from "../test/db";
 import { FakeR2, PDF_BYTES, PNG_BYTES } from "../test/fake-r2";
 import { callMcpTool, decodeBase64, MCP_TOOLS } from "./tools";
@@ -278,5 +280,83 @@ describe("MCP tools task attachments support (#133)", () => {
 		expect(uploadPdfRes.attachment.fileName).toBe("document.pdf");
 		expect(uploadPdfRes.attachment.mime).toBe("application/pdf");
 		expect(uploadPdfRes.attachment.size).toBe(PDF_BYTES.byteLength);
+	});
+});
+
+describe("MCP tools tag management (#122)", () => {
+	it("exposes delete_tag in MCP_TOOLS and documents taskCount in list_tags", () => {
+		const listTagsTool = MCP_TOOLS.find((t) => t.name === "list_tags");
+		expect(listTagsTool?.description).toContain("taskCount");
+
+		const deleteTagTool = MCP_TOOLS.find((t) => t.name === "delete_tag");
+		expect(deleteTagTool).toBeDefined();
+		expect(deleteTagTool?.inputSchema.required).toEqual(["id"]);
+		expect((deleteTagTool?.inputSchema.properties as Record<string, unknown>).id).toBeDefined();
+	});
+
+	it("lists tags with taskCount, deletes owned tags via delete_tag, and isolates tenants", async () => {
+		const { db } = createTestDb();
+		const userA = await seedUser(db, "mcp-a@example.com");
+		const userB = await seedUser(db, "mcp-b@example.com");
+
+		const { tag: tag1 } = (await callMcpTool(db as never, userA.id, "create_tag", {
+			name: "qa119a",
+		})) as { tag: { id: string; name: string } };
+		const { tag: tag2 } = (await callMcpTool(db as never, userA.id, "create_tag", {
+			name: "保留标签",
+		})) as { tag: { id: string; name: string } };
+
+		const { task: activeTask } = (await callMcpTool(db as never, userA.id, "create_task", {
+			title: "有标签的任务",
+			tagIds: [tag1.id, tag2.id],
+		})) as { task: { id: string } };
+		const { task: deletedTask } = (await callMcpTool(db as never, userA.id, "create_task", {
+			title: "软删任务",
+			tagIds: [tag1.id],
+		})) as { task: { id: string } };
+		await callMcpTool(db as never, userA.id, "delete_task", { id: deletedTask.id });
+
+		// list_tags returns taskCount excluding soft-deleted tasks
+		const before = (await callMcpTool(db as never, userA.id, "list_tags", {})) as {
+			items: Array<{ id: string; name: string; taskCount: number }>;
+		};
+		expect(before.items.find((t) => t.id === tag1.id)?.taskCount).toBe(1);
+		expect(before.items.find((t) => t.id === tag2.id)?.taskCount).toBe(1);
+
+		// Multi-tenant isolation: User B cannot delete User A's tag
+		await expect(
+			callMcpTool(db as never, userB.id, "delete_tag", { id: tag1.id }),
+		).rejects.toMatchObject({ status: 404, code: "not_found" });
+
+		// Rejects empty id
+		await expect(
+			callMcpTool(db as never, userA.id, "delete_tag", { id: "   " }),
+		).rejects.toThrow();
+
+		// User A deletes tag1 via MCP
+		const delRes = (await callMcpTool(db as never, userA.id, "delete_tag", {
+			id: tag1.id,
+		})) as { ok: boolean };
+		expect(delRes).toEqual({ ok: true });
+
+		// Gone from list_tags and from task
+		const after = (await callMcpTool(db as never, userA.id, "list_tags", {})) as {
+			items: Array<{ id: string; name: string; taskCount: number }>;
+		};
+		expect(after.items.map((t) => t.id)).toEqual([tag2.id]);
+
+		const taskAfter = (await callMcpTool(db as never, userA.id, "get_task", {
+			id: activeTask.id,
+		})) as { task: { tags: Array<{ id: string; name: string }> } };
+		expect(taskAfter.task.tags).toEqual([{ id: tag2.id, name: "保留标签" }]);
+
+		// Recorded in activity_log with actorType = "mcp"
+		const logs = await db.select().from(activityLog).where(eq(activityLog.userId, userA.id));
+		expect(logs.find((row) => row.action === "tag.delete")).toMatchObject({
+			actorType: "mcp",
+			entityType: "tag",
+			entityId: tag1.id,
+			summary: "删除标签「qa119a」",
+		});
 	});
 });

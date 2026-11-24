@@ -119,26 +119,49 @@ async function resolveParentId(
 	return parent.id;
 }
 
+function isIdempotencyConflict(err: unknown): boolean {
+	const parts: string[] = [];
+	const walk = (value: unknown, depth: number) => {
+		if (!value || depth > 4) return;
+		if (typeof value === "string") {
+			parts.push(value);
+			return;
+		}
+		if (value instanceof Error) {
+			parts.push(value.message);
+			walk((value as Error & { cause?: unknown }).cause, depth + 1);
+			return;
+		}
+		if (typeof value === "object" && "message" in value) {
+			walk((value as { message?: unknown }).message, depth + 1);
+		}
+	};
+	walk(err, 0);
+	const message = parts.join("\n");
+	return /unique/i.test(message) && /idempotency_key/i.test(message);
+}
+
+async function taskByIdempotencyKey(
+	db: AppDatabase,
+	userId: string,
+	idempotencyKey: string,
+): Promise<TaskView | null> {
+	const existing = await db
+		.select()
+		.from(tasks)
+		.where(and(eq(tasks.userId, userId), eq(tasks.idempotencyKey, idempotencyKey)))
+		.limit(1);
+	if (!existing[0]) return null;
+	const [view] = await hydrate(db, userId, existing);
+	return view ?? null;
+}
+
 export async function createTask(
 	db: AppDatabase,
 	userId: string,
 	input: CreateTaskInput,
 	source: TaskSource,
 ) {
-	if (input.idempotencyKey) {
-		const existing = await db
-			.select()
-			.from(tasks)
-			.where(
-				and(eq(tasks.userId, userId), eq(tasks.idempotencyKey, input.idempotencyKey)),
-			)
-			.limit(1);
-		if (existing[0]) {
-			const [view] = await hydrate(db, userId, existing);
-			return view;
-		}
-	}
-
 	const project = input.projectId
 		? await getProject(db, userId, input.projectId)
 		: await getInbox(db, userId);
@@ -164,7 +187,16 @@ export async function createTask(
 		updatedAt: now,
 		deletedAt: null,
 	};
-	await db.insert(tasks).values(row);
+	try {
+		await db.insert(tasks).values(row);
+	} catch (err) {
+		// 第一次创建不再先 SELECT。撞上 (user_id, idempotency_key) 唯一索引时再读已有行，重放仍是同一条任务。
+		if (input.idempotencyKey && isIdempotencyConflict(err)) {
+			const existing = await taskByIdempotencyKey(db, userId, input.idempotencyKey);
+			if (existing) return existing;
+		}
+		throw err;
+	}
 	if (input.tagIds) {
 		await replaceTaskTags(db, userId, row.id, input.tagIds);
 	}
@@ -345,6 +377,12 @@ export async function listTasks(
 	const filters = [eq(tasks.userId, userId), isNull(tasks.deletedAt)];
 
 	if (query.projectId) filters.push(eq(tasks.projectId, query.projectId));
+	// #105：同一条 SELECT 里用子查询限定「当前用户的收件箱」，不额外往返，也不碰别人的项目。
+	if (query.inbox === "1") {
+		filters.push(
+			sql`${tasks.projectId} in (select ${projects.id} from ${projects} where ${projects.userId} = ${userId} and ${projects.isInbox} = 1)`,
+		);
+	}
 	if (query.status) filters.push(eq(tasks.status, query.status));
 	if (query.priority) filters.push(eq(tasks.priority, query.priority));
 	if (query.includeCompleted !== "true" && !query.status) {

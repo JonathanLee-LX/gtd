@@ -7,6 +7,8 @@ export type TaskListFilters = {
 	includeCompleted?: string;
 	priority?: string;
 	due?: string;
+	/** #105：收件箱列表。查询 key 不依赖收件箱项目 id。 */
+	inbox?: boolean;
 };
 
 export const taskKeys = {
@@ -23,4 +25,9 @@ export const taskKeys = {
 export const taskActivityKeys = {
 	all: ["task-activity"] as const,
 	task: (id: string) => [...taskActivityKeys.all, id] as const,
+};
+
+/** #122：标签列表查询 key（搜索页候选列表与设置页标签管理共用）。 */
+export const tagKeys = {
+	all: ["tags"] as const,
 };

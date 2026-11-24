@@ -10,10 +10,12 @@ import { createTestDb, seedUser } from "../test/db";
 import { CLEANUP_CRON, NOTIFICATION_CRON } from "../scheduled";
 import { createWebPushChannel } from "./notification-channel";
 import {
+	deletePushSubscription,
 	getNotificationSettings,
 	runNotificationCron,
 	saveNotificationSettings,
 	sendTestNotification,
+	upsertPushSubscription,
 } from "./notifications";
 import { createTask, todayFocus } from "./tasks";
 
@@ -445,6 +447,135 @@ describe("notification settings", () => {
 		await expect(
 			saveNotificationSettings(db as never, me.id, { ...enabledInput, timeZone: "Not/AZone" }, now),
 		).rejects.toThrow(/时区/);
+	});
+
+	it("preserves subscriptions when the master switch is turned off", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		const sub1 = await subscription("keep-1");
+		const sub2 = await subscription("keep-2");
+		const now = new Date("2026-10-16T00:30:00.000Z");
+
+		await saveNotificationSettings(db as never, me.id, { ...enabledInput, subscription: sub1.input }, now);
+		await upsertPushSubscription(db as never, me.id, sub2.input, now);
+
+		const turnedOff = await saveNotificationSettings(db as never, me.id, { ...enabledInput, enabled: false }, now);
+		expect(turnedOff.enabled).toBe(false);
+		expect(turnedOff.subscriptionCount).toBe(2);
+		const rows = await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.userId, me.id));
+		expect(rows.map((row) => row.endpoint).sort()).toEqual([sub1.input.endpoint, sub2.input.endpoint].sort());
+	});
+
+	it("deletes only the current user's endpoint idempotently, keeps master switch and other devices, and uses 1 D1 round trip", async () => {
+		const { db: plain, sqlite } = createTestDb();
+		const me = await seedUser(plain, "alice@example.com");
+		const other = await seedUser(plain, "bob@example.com");
+		const d1 = createCountingD1(sqlite);
+		const dev1 = await subscription("dev-1");
+		const dev2 = await subscription("dev-2");
+		const bobDev = await subscription("bob-1");
+		const now = new Date("2026-10-16T00:30:00.000Z");
+
+		await saveNotificationSettings(d1.db, me.id, { ...enabledInput, subscription: dev1.input }, now);
+		await upsertPushSubscription(d1.db, me.id, dev2.input, now);
+		await saveNotificationSettings(d1.db, other.id, { ...enabledInput, subscription: bobDev.input }, now);
+
+		// 跨租户删除：Bob 删 Alice 的 endpoint 必须无效，且不泄露 Alice 信息。
+		d1.reset();
+		const crossTenant = await deletePushSubscription(d1.db, other.id, dev1.input.endpoint);
+		expect(crossTenant).toEqual({ subscriptionCount: 1, deleted: false });
+		expect(d1.counter.roundTrips).toBe(1);
+		expect(d1.counter.statements).toBe(2);
+		expect((await getNotificationSettings(d1.db, me.id)).subscriptionCount).toBe(2);
+
+		// Alice 删掉本设备 dev1：只删 dev1，保留 dev2 和总开关 enabled=true。
+		d1.reset();
+		const afterFirst = await deletePushSubscription(d1.db, me.id, dev1.input.endpoint);
+		console.info("[#123/#129] delete subscription round trips", d1.counter.roundTrips, "statements", d1.counter.statements);
+		expect(afterFirst).toEqual({ subscriptionCount: 1, deleted: true });
+		expect(d1.counter.roundTrips).toBe(1);
+		expect(d1.counter.statements).toBe(2);
+		const settings = await getNotificationSettings(d1.db, me.id);
+		expect(settings.enabled).toBe(true);
+		expect(settings.subscriptionCount).toBe(1);
+		expect(settings.subscriptionEndpoints).toEqual([dev2.input.endpoint]);
+		const remaining = await plain.select().from(pushSubscriptions).where(eq(pushSubscriptions.userId, me.id));
+		expect(remaining.map((r) => r.endpoint)).toEqual([dev2.input.endpoint]);
+
+		// 幂等：重复删 dev1 或删不存在的 endpoint 均返回当前剩余数量与 deleted: false。
+		expect(await deletePushSubscription(d1.db, me.id, dev1.input.endpoint)).toEqual({
+			subscriptionCount: 1,
+			deleted: false,
+		});
+		expect(await deletePushSubscription(d1.db, me.id, "https://fcm.googleapis.com/fcm/send/missing")).toEqual({
+			subscriptionCount: 1,
+			deleted: false,
+		});
+
+		// 同浏览器切账号：同一个 endpoint 改挂到 Bob 后，Alice 再删也不能删掉 Bob 的行。
+		await upsertPushSubscription(d1.db, other.id, dev2.input, now);
+		expect((await getNotificationSettings(d1.db, me.id)).subscriptionCount).toBe(0);
+		expect((await getNotificationSettings(d1.db, other.id)).subscriptionCount).toBe(2);
+		expect(await deletePushSubscription(d1.db, me.id, dev2.input.endpoint)).toEqual({
+			subscriptionCount: 0,
+			deleted: false,
+		});
+		expect((await getNotificationSettings(d1.db, other.id)).subscriptionCount).toBe(2);
+	});
+
+	it("keeps the newer settings when an older full PUT arrives later", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		const sub = await subscription("late-enable");
+		const opened = await saveNotificationSettings(
+			db as never,
+			me.id,
+			{ ...enabledInput, digestTime: "09:00", baseUpdatedAt: null },
+			new Date("2026-10-16T00:30:00.000Z"),
+		);
+		const edited = await saveNotificationSettings(
+			db as never,
+			me.id,
+			{ ...enabledInput, digestTime: "10:00", baseUpdatedAt: opened.updatedAt },
+			new Date("2026-10-16T00:30:01.000Z"),
+		);
+		await expect(
+			saveNotificationSettings(
+				db as never,
+				me.id,
+				{
+					...enabledInput,
+					digestTime: "09:00",
+					baseUpdatedAt: opened.updatedAt,
+					subscription: sub.input,
+				},
+				new Date("2026-10-16T00:30:02.000Z"),
+			),
+		).rejects.toMatchObject({ status: 409 });
+		const [row] = await db.select().from(notificationSettings).where(eq(notificationSettings.userId, me.id));
+		expect(row?.digestTime).toBe("10:00");
+		expect(row?.enabled).toBe(true);
+		expect(row?.updatedAt).toBe(edited.updatedAt);
+		expect(await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.userId, me.id))).toEqual([]);
+
+		const turnedOff = await saveNotificationSettings(
+			db as never,
+			me.id,
+			{ ...enabledInput, enabled: false, digestTime: "10:00", baseUpdatedAt: edited.updatedAt },
+			new Date("2026-10-16T00:30:03.000Z"),
+		);
+		await expect(
+			saveNotificationSettings(
+				db as never,
+				me.id,
+				{ ...enabledInput, enabled: true, digestTime: "09:00", baseUpdatedAt: edited.updatedAt },
+				new Date("2026-10-16T00:30:04.000Z"),
+			),
+		).rejects.toMatchObject({ status: 409 });
+		const [off] = await db.select().from(notificationSettings).where(eq(notificationSettings.userId, me.id));
+		expect(off?.enabled).toBe(false);
+		expect(off?.digestTime).toBe("10:00");
+		expect(off?.updatedAt).toBe(turnedOff.updatedAt);
 	});
 });
 

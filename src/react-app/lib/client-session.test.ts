@@ -1,8 +1,7 @@
 // @vitest-environment happy-dom
 import { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it } from "vitest";
-import { clearClientSession } from "./client-session";
-import { readInboxHint, writeInboxHint } from "./inbox-hint";
+import { clearClientSession, LEGACY_INBOX_PROJECT_ID_KEY } from "./client-session";
 import { readSkeletonCount, SKELETON_STORAGE_PREFIX, writeSkeletonCount } from "./skeleton";
 
 beforeEach(() => localStorage.clear());
@@ -12,7 +11,7 @@ describe("clearClientSession (#101)", () => {
 		const client = new QueryClient();
 		client.setQueryData(["me"], { user: { id: "u1" } });
 		client.setQueryData(["projects"], { items: [] });
-		writeInboxHint("inbox-1");
+		localStorage.setItem(LEGACY_INBOX_PROJECT_ID_KEY, "inbox-1");
 		writeSkeletonCount(["tasks", "list", { status: "next" }], 3);
 		writeSkeletonCount(["settings", "passkeys"], 0);
 		localStorage.setItem("theme", "dark");
@@ -20,7 +19,7 @@ describe("clearClientSession (#101)", () => {
 		localStorage.setItem("gtd:skeleton-countx", "keep"); // 前缀不完全匹配，不删
 		clearClientSession(client);
 		expect(client.getQueryCache().getAll()).toHaveLength(0);
-		expect(readInboxHint()).toBeNull();
+		expect(localStorage.getItem(LEGACY_INBOX_PROJECT_ID_KEY)).toBeNull();
 		// #99：上一个用户的骨架行数记录全部清掉
 		expect(readSkeletonCount(["tasks", "list", { status: "next" }])).toBeNull();
 		expect(readSkeletonCount(["settings", "passkeys"])).toBeNull();

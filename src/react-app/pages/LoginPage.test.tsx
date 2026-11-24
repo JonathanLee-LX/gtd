@@ -4,7 +4,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readInboxHint, writeInboxHint } from "../lib/inbox-hint";
+import { LEGACY_INBOX_PROJECT_ID_KEY } from "../lib/client-session";
+
+const writeInboxHint = (id: string) => localStorage.setItem(LEGACY_INBOX_PROJECT_ID_KEY, id);
+const readInboxHint = () => localStorage.getItem(LEGACY_INBOX_PROJECT_ID_KEY);
 import { readSkeletonCount, writeSkeletonCount } from "../lib/skeleton";
 import { LoginPage } from "./LoginPage";
 

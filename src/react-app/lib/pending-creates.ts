@@ -69,7 +69,11 @@ export type PendingCreateSnapshot = {
 	sentFold: Record<string, unknown>;
 	fold: Record<string, unknown>;
 	queuedPatch: Record<string, unknown>;
+	/** 每个排队字段最后一次写入的序号。和自动保存的序号比，晚写的胜出。 */
+	queuedPatchSeq?: Record<string, number>;
 	completed: boolean;
+	/** 点完成时的序号。比 status 字段更晚才强制 completed。 */
+	completedSeq?: number;
 	createSent: boolean;
 	sentBody?: Record<string, unknown>;
 };
@@ -123,6 +127,8 @@ type Entry = {
 	sentBody?: Record<string, unknown>;
 	/** #117：非自动保存路径（如收件箱处理 / updateTask）对临时任务排队的改动。 */
 	queuedPatch: Record<string, unknown>;
+	queuedPatchSeq: Record<string, number>;
+	completedSeq: number;
 	promise: Promise<string>;
 	resolve: (id: string) => void;
 	reject: (error: Error) => void;
@@ -169,6 +175,8 @@ export function registerPendingCreate(
 		fold: {},
 		sentFold: {},
 		queuedPatch: {},
+		queuedPatchSeq: {},
+		completedSeq: 0,
 		promise,
 		resolve,
 		reject,
@@ -212,8 +220,23 @@ export function touchPendingCreate(
 	entry.touched = true;
 	if (opts.removed || opts.deleted) entry.removed = true;
 	if (opts.deleted) entry.deleted = true;
-	if (opts.completed) entry.completed = true;
-	if (opts.patch) Object.assign(entry.queuedPatch, stripSource(opts.patch));
+	if (opts.completed) {
+		entry.completed = true;
+		entry.completedSeq = nextWriteSeq();
+	}
+	if (opts.patch) {
+		const clean = stripSource(opts.patch);
+		const seq = nextWriteSeq();
+		Object.assign(entry.queuedPatch, clean);
+		for (const key of Object.keys(clean)) entry.queuedPatchSeq[key] = seq;
+	}
+}
+
+/** 自动保存和排队改动共用的写入序号，用来在 401 暂存时按时间合并。 */
+let writeSeq = 0;
+export function nextWriteSeq(): number {
+	writeSeq += 1;
+	return writeSeq;
 }
 
 /** 还在等真实 id 的临时任务：它上面的操作排队，不加锁、不禁用按钮。 */
@@ -435,7 +458,9 @@ export function exportPendingCreates(queryClient?: QueryClient): PendingCreateSn
 			sentFold: { ...entry.sentFold },
 			fold: { ...entry.fold },
 			queuedPatch: { ...entry.queuedPatch },
+			queuedPatchSeq: { ...entry.queuedPatchSeq },
 			completed: entry.completed,
+			completedSeq: entry.completedSeq,
 			createSent: entry.createSent,
 			...(entry.sentBody ? { sentBody: { ...entry.sentBody } } : {}),
 		});
@@ -498,4 +523,5 @@ export async function resolveTaskId(id: string): Promise<string> {
 export function resetPendingCreatesForTests(): void {
 	entries.clear();
 	counter = 0;
+	writeSeq = 0;
 }

@@ -324,12 +324,17 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 				const next = { ...form, enabled: true };
 				setForm(next);
 				const saved = await persist(next, sub);
-				if (saved) {
-					probedRef.current = true;
-					setLocalSub(sub);
-					const resolvedUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? currentUserId;
-					writePushSubscriptionOwner(resolvedUserId, sub.endpoint);
+				if (!saved) {
+					// persist 吞掉错误并返回 false，不能留在「已开启但没记本机订阅」：
+					// 否则会走到只 upsert 订阅、不写 enabled 的「在这台设备上开启」。
+					setForm((current) => (current ? { ...current, enabled: false } : current));
+					setSubscribeFailed(true);
+					return;
 				}
+				probedRef.current = true;
+				setLocalSub(sub);
+				const resolvedUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? currentUserId;
+				writePushSubscriptionOwner(resolvedUserId, sub.endpoint);
 			});
 		} catch {
 			// 失败不写服务端。开关回到关闭；权限被拒走已有引导，其他错误留在开关下方。

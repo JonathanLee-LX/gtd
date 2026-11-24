@@ -210,6 +210,27 @@ for (const vp of [
 			});
 		}
 
+		it("mixed inbox first cold load has no stored shape, then the next cold load matches (#102)", async () => {
+			const key = taskKeys.list({ inbox: true });
+			const tasks = [
+				makeTask(0, { status: "inbox" }),
+				makeTask(1, { status: "next" }),
+				makeTask(2, { status: "inbox" }),
+				makeTask(3, { status: "waiting" }),
+			];
+			const firstSkeleton = await measureBoard({ loading: true, tasks: [], inbox: true, key });
+			expect(firstSkeleton.rows).toBeGreaterThan(0);
+			const arrived = await measureBoard({ loading: false, tasks, inbox: true, key });
+			expect(arrived.rows).toBe(4);
+			const secondSkeleton = await measureBoard({ loading: true, tasks: [], inbox: true, key });
+			expect(secondSkeleton.rows).toBe(4);
+			expect(Math.abs(secondSkeleton.listHeight - arrived.listHeight)).toBeLessThanOrEqual(8);
+			expect(secondSkeleton.h1Top).toBe(arrived.h1Top);
+			expect(secondSkeleton.listTop).toBe(arrived.listTop);
+			expect(Math.abs(secondSkeleton.firstRowTop - arrived.firstRowTop)).toBeLessThanOrEqual(1);
+			expect(Math.abs(firstSkeleton.listHeight - arrived.listHeight)).toBeGreaterThan(8);
+		});
+
 		it("mixed inbox list: skeleton matches which rows have process actions (#102)", async () => {
 			const key = taskKeys.list({ inbox: true });
 			const tasks = [

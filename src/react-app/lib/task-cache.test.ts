@@ -10,6 +10,7 @@ import {
 	taskMatchesListFilters,
 	upsertTaskInCaches,
 } from "./task-cache";
+import { shellKeys } from "./shell-keys";
 import { taskKeys } from "./task-query-keys";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
@@ -54,6 +55,13 @@ describe("taskMatchesListFilters", () => {
 		expect(taskMatchesListFilters(makeTask({ status: "completed", projectName: "收件箱" }), { inbox: true })).toBe(
 			false,
 		);
+		expect(
+			taskMatchesListFilters(
+				makeTask({ projectId: "p-custom", projectName: "收件箱", status: "next" }),
+				{ inbox: true },
+				"inbox-id",
+			),
+		).toBe(false);
 	});
 
 	it("hides completed unless includeCompleted", () => {
@@ -76,6 +84,26 @@ describe("shared task cache", () => {
 		]);
 		upsertTaskInCaches(qc, { ...task, projectId: "p9", projectName: "其它", status: "next" });
 		expect(qc.getQueryData<{ items: Task[] }>(taskKeys.list({ inbox: true }))?.items).toEqual([]);
+	});
+
+	it("optimistic move out of the inbox leaves the inbox shard immediately", () => {
+		const qc = new QueryClient();
+		qc.setQueryData(shellKeys.projects, {
+			items: [
+				{ id: "inbox-id", name: "收件箱", isInbox: true },
+				{ id: "other", name: "装修", isInbox: false },
+			],
+		});
+		const original = makeTask({ projectId: "inbox-id", projectName: "收件箱", status: "inbox" });
+		qc.setQueryData(taskKeys.list({ inbox: true }), { items: [original], nextCursor: null });
+		qc.setQueryData(taskKeys.list({ projectId: "other" }), { items: [] as Task[], nextCursor: null });
+		const next = applyOptimisticTaskPatch(qc, "t1", { projectId: "other" }, original);
+		expect(next?.projectId).toBe("other");
+		expect(next?.projectName).toBe("装修");
+		expect(qc.getQueryData<{ items: Task[] }>(taskKeys.list({ inbox: true }))!.items).toEqual([]);
+		expect(
+			qc.getQueryData<{ items: Task[] }>(taskKeys.list({ projectId: "other" }))!.items.map((item) => item.id),
+		).toEqual(["t1"]);
 	});
 
 	it("keeps focus + status shards in sync on status change", () => {

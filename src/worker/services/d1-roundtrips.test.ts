@@ -25,6 +25,25 @@ describe("D1 round trips", () => {
 		return { ...d1, sqlite, me, task };
 	}
 
+	it("POST /api/tasks 带幂等键的第一次创建不比不带键多往返", async () => {
+		const { db, counter, reset, me } = await setup();
+		reset();
+		const plain = await createTask(db, me.id, { title: "无键" }, "human");
+		const withoutKey = counter.roundTrips;
+		reset();
+		const first = await createTask(db, me.id, { title: "有键", idempotencyKey: "create-roundtrip-1" }, "human");
+		const withKey = counter.roundTrips;
+		reset();
+		const replay = await createTask(db, me.id, { title: "重放", idempotencyKey: "create-roundtrip-1" }, "human");
+		const replayTrips = counter.roundTrips;
+		console.info("[#117] create round trips", { withoutKey, withKey, replayTrips });
+		expect(first.id).not.toBe(plain.id);
+		expect(replay.id).toBe(first.id);
+		expect(replay.title).toBe("有键");
+		expect(withKey).toBe(withoutKey);
+		expect(replayTrips).toBeGreaterThan(0);
+	});
+
 	it("GET /api/tasks?inbox=1 不比普通列表多往返 (#105)", async () => {
 		const { db, counter, reset, me } = await setup();
 		reset();

@@ -90,6 +90,45 @@ function sanitizeCreateBody(
 /**
  * #117：把仍在途 / 已遇 401 的临时新建与自动保存队列里尚未确认的改动合并成可暂存的新建记录。
  */
+/**
+ * 多层字段合并。带写入序号时序号大的胜出；都没有序号时后面的层覆盖前面的层（旧行为）。
+ */
+function mergeRecordedFields(
+	base: Record<string, unknown>,
+	layers: { values: Record<string, unknown>; seq?: Record<string, number> }[],
+): { out: Record<string, unknown>; rank: Record<string, number> } {
+	const out = { ...base };
+	const rank: Record<string, number> = {};
+	for (const layer of layers) {
+		for (const [key, value] of Object.entries(layer.values)) {
+			const seq = layer.seq?.[key];
+			const prev = rank[key];
+			if (typeof seq !== "number") {
+				out[key] = value;
+				if (prev === undefined) rank[key] = 0;
+				continue;
+			}
+			if (prev === undefined || seq >= prev) {
+				out[key] = value;
+				rank[key] = seq;
+			}
+		}
+	}
+	return { out, rank };
+}
+
+function applyCompleted(
+	merged: Record<string, unknown>,
+	rank: Record<string, number>,
+	snap: PendingCreateSnapshot,
+): void {
+	if (!snap.completed) return;
+	const statusRank = rank.status;
+	if (snap.completedSeq === undefined || statusRank === undefined || snap.completedSeq >= statusRank) {
+		merged.status = "completed";
+	}
+}
+
 export function buildUnsavedCreateRecords(
 	pendingCreates: readonly PendingCreateSnapshot[],
 	queue?: TaskAutosaveQueue,
@@ -97,25 +136,31 @@ export function buildUnsavedCreateRecords(
 	const out: UnsavedCreateRecord[] = [];
 	for (const snap of pendingCreates) {
 		const tempEdits = queue ? queue.exportTempEdits(snap.tempId) : {};
+		const autosaveSeq = queue ? queue.exportTempEditSeq(snap.tempId) : {};
 		const autosaveApiPatch = toApiPatch(tempEdits);
-		const merged = stripSourceFromBody({
-			...snap.body,
-			...snap.sentFold,
-			...snap.fold,
-			...snap.queuedPatch,
-			...autosaveApiPatch,
-			...(snap.completed ? { status: "completed" } : {}),
-		});
-		const body = sanitizeCreateBody(merged, snap.idempotencyKey, snap.optimisticTitle);
+		const { out: merged, rank } = mergeRecordedFields(
+			{ ...snap.body, ...snap.sentFold, ...snap.fold },
+			[
+				{ values: snap.queuedPatch, seq: snap.queuedPatchSeq },
+				{ values: autosaveApiPatch, seq: autosaveSeq },
+			],
+		);
+		applyCompleted(merged, rank, snap);
+		const stripped = stripSourceFromBody(merged);
+		const body = sanitizeCreateBody(stripped, snap.idempotencyKey, snap.optimisticTitle);
 		if (!body) continue;
 
 		let postCreatePatch: Record<string, unknown> | undefined;
 		if (snap.createSent) {
-			const afterSend = stripSourceFromBody({
-				...snap.queuedPatch,
-				...autosaveApiPatch,
-				...(snap.completed ? { status: "completed" } : {}),
-			});
+			const after = mergeRecordedFields(
+				{},
+				[
+					{ values: snap.queuedPatch, seq: snap.queuedPatchSeq },
+					{ values: autosaveApiPatch, seq: autosaveSeq },
+				],
+			);
+			applyCompleted(after.out, after.rank, snap);
+			const afterSend = stripSourceFromBody(after.out);
 			if (afterSend.projectId === "" || afterSend.projectId === null) delete afterSend.projectId;
 			if (typeof afterSend.title === "string") {
 				const trimmed = afterSend.title.trim();
@@ -404,41 +449,61 @@ export async function replayUnsavedAfterLogin(
 	let conflicts = 0;
 
 	const createdIdByTempId = new Map<string, string>();
-	for (const { record, key } of pendingCreates) {
+	const transientTempIds = new Set<string>();
+	const droppedTempIds = new Set<string>();
+	const rehold: UnsavedCreateRecord[] = [];
+	type CreateItem = (typeof pendingCreates)[number];
+	const tempParentId = (record: UnsavedCreateRecord): string | null => {
+		const id = record.body.parentId;
+		return typeof id === "string" && isTempTaskId(id) ? id : null;
+	};
+	const keepCreate = (record: UnsavedCreateRecord, key: string | null) => {
+		// 还在 localStorage 里的键先留着。只有内存里的那份需要重新 hold。
+		if (!key) rehold.push(record);
+	};
+	const replayCreate = async (item: CreateItem, allowDefer: boolean): Promise<"ok" | "deferred" | "kept"> => {
+		const { record, key } = item;
+		const parent = tempParentId(record);
+		const source = { ...record.body };
+		if (parent && !createdIdByTempId.has(parent)) {
+			if (allowDefer && !droppedTempIds.has(parent)) return "deferred";
+			if (transientTempIds.has(parent)) {
+				keepCreate(record, key);
+				return "kept";
+			}
+			delete source.parentId;
+		} else if (parent) {
+			source.parentId = createdIdByTempId.get(parent);
+		}
 		const dedupId = key ?? `mem:${userId}:${record.idempotencyKey}`;
-		if (replayingCreateKeys.has(dedupId)) continue;
+		if (replayingCreateKeys.has(dedupId)) return "kept";
 		replayingCreateKeys.add(dedupId);
 		try {
-			const prepared = sanitizeCreateBody(record.body, record.idempotencyKey);
+			const prepared = sanitizeCreateBody(source, record.idempotencyKey);
 			if (!prepared) {
 				if (key) remove(key);
+				if (record.tempId) droppedTempIds.add(record.tempId);
 				dropped += 1;
-				continue;
+				return "ok";
 			}
-			if ("parentId" in prepared && typeof prepared.parentId === "string" && isTempTaskId(prepared.parentId)) {
-				const resolved = createdIdByTempId.get(prepared.parentId);
-				if (resolved) prepared.parentId = resolved;
-				else delete prepared.parentId;
-			}
-
 			let createdTask: Task;
 			try {
 				createdTask = (await api.createTask(prepared)).task;
 			} catch (err) {
 				if (isPermanentCreateRejection(err)) {
 					if (key) remove(key);
+					if (record.tempId) droppedTempIds.add(record.tempId);
 					dropped += 1;
-				} else if (!key) {
-					// 内存里的那份暂发不出去（断网 / 5xx / 再次 401）：尽量写回本机，下次再试。
-					persistUnsavedCreates(userId, [record], now);
+				} else {
+					if (record.tempId) transientTempIds.add(record.tempId);
+					// 磁盘上的键留着。内存里的那份在函数末尾再写一次，写不进去就重新 hold。
+					if (!key) keepCreate(record, key);
 				}
-				continue;
+				return "kept";
 			}
-
 			if (key) remove(key);
 			if (record.tempId) createdIdByTempId.set(record.tempId, createdTask.id);
 			created += 1;
-
 			let finalTask = createdTask;
 			const missingPatch = diffPostCreatePatch(record.postCreatePatch, createdTask, createdIdByTempId);
 			if (Object.keys(missingPatch).length > 0) {
@@ -449,9 +514,35 @@ export async function replayUnsavedAfterLogin(
 				}
 			}
 			upsertTaskInCaches(queryClient, finalTask);
+			return "ok";
 		} finally {
 			replayingCreateKeys.delete(dedupId);
 		}
+	};
+	const deferred: CreateItem[] = [];
+	for (const item of pendingCreates) {
+		if ((await replayCreate(item, true)) === "deferred") deferred.push(item);
+	}
+	let waiting = deferred;
+	for (let pass = 0; pass < 4 && waiting.length > 0; pass++) {
+		const next: CreateItem[] = [];
+		for (const item of waiting) {
+			const parent = tempParentId(item.record);
+			if (parent && waiting.some((other) => other.record.tempId === parent)) {
+				next.push(item);
+				continue;
+			}
+			if ((await replayCreate(item, false)) === "deferred") next.push(item);
+		}
+		if (next.length === waiting.length) {
+			for (const item of next) keepCreate(item.record, item.key);
+			break;
+		}
+		waiting = next;
+	}
+	if (rehold.length > 0) {
+		const wrote = persistUnsavedCreates(userId, rehold, now);
+		if (!wrote) getTaskAutosave(queryClient).hold(userId, rehold);
 	}
 	if (created > 0) void silentInvalidateTasks(queryClient);
 

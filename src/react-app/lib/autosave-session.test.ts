@@ -19,6 +19,7 @@ vi.mock("sonner", () => ({ toast: { error: vi.fn(), warning: vi.fn(), success: v
 import { toast } from "sonner";
 import {
 	CONFLICT_NOTICE,
+	buildUnsavedCreateRecords,
 	listPersistedUnsaved,
 	listPersistedUnsavedCreates,
 	persistUnsaved,
@@ -28,7 +29,7 @@ import {
 	UNSAVED_STORAGE_PREFIX,
 } from "./autosave-persist";
 import { clearClientSession } from "./client-session";
-import { isTempTaskId, resetPendingCreatesForTests } from "./pending-creates";
+import { exportPendingCreates, isTempTaskId, registerPendingCreate, resetPendingCreatesForTests, touchPendingCreate } from "./pending-creates";
 import { ApiError } from "./session";
 import { shellKeys } from "./shell-keys";
 import { getTaskAutosave, peekTaskAutosave, resetTaskAutosaveForTests } from "./task-autosave";
@@ -776,5 +777,91 @@ describe("401 时未完成新建任务的暂存与补发 (#117)", () => {
 		expect(toast.error).toHaveBeenCalledTimes(1);
 		clearClientSession(qc, { persistUnsaved: true });
 		expect(listPersistedUnsavedCreates()).toEqual([]);
+	});
+});
+
+describe("401 replay ordering and failure retention", () => {
+	it("keeps a child linked when the parent create fails once and succeeds on retry", async () => {
+		const now = Date.now();
+		persistUnsavedCreates(
+			"u1",
+			[
+				{
+					idempotencyKey: "create-parent-1",
+					tempId: "tmp-parent",
+					body: { title: "父任务", status: "inbox", idempotencyKey: "create-parent-1" },
+				},
+				{
+					idempotencyKey: "create-child-1",
+					tempId: "tmp-child",
+					body: {
+						title: "子任务",
+						status: "inbox",
+						parentId: "tmp-parent",
+						idempotencyKey: "create-child-1",
+					},
+				},
+			],
+			now,
+		);
+		api.createTask.mockRejectedValueOnce(new ApiError("服务异常", 500, "internal"));
+		const first = await replayUnsavedAfterLogin(qc, "u1", now);
+		expect(first.created).toBe(0);
+		expect(listPersistedUnsavedCreates().map((record) => record.idempotencyKey).sort()).toEqual([
+			"create-child-1",
+			"create-parent-1",
+		]);
+		expect(server.size).toBe(1);
+
+		const second = await replayUnsavedAfterLogin(qc, "u1", now);
+		expect(second.created).toBe(2);
+		const parent = [...server.values()].find((item) => item.title === "父任务");
+		const child = [...server.values()].find((item) => item.title === "子任务");
+		expect(parent?.id).toBeTruthy();
+		expect(child?.parentId).toBe(parent?.id);
+		expect(listPersistedUnsavedCreates()).toEqual([]);
+	});
+
+	it("keeps a memory-held create when the replay POST fails and localStorage is full", async () => {
+		getTaskAutosave(qc).hold("u1", [
+			{
+				idempotencyKey: "create-hold-1",
+				body: { title: "别丢", status: "inbox", idempotencyKey: "create-hold-1" },
+			},
+		]);
+		api.createTask.mockRejectedValueOnce(new ApiError("服务异常", 500, "internal"));
+		const setItem = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+			throw new Error("QuotaExceeded");
+		});
+		const first = await replayUnsavedAfterLogin(qc, "u1");
+		expect(first.created).toBe(0);
+		expect(peekTaskAutosave(qc)?.exportHeldCreates().map((record) => record.body.title)).toEqual(["别丢"]);
+		setItem.mockRestore();
+		const second = await replayUnsavedAfterLogin(qc, "u1");
+		expect(second.created).toBe(1);
+		expect([...server.values()].some((item) => item.title === "别丢")).toBe(true);
+	});
+
+	it("merges autosave and queued inbox status by write order", () => {
+		const temp = task({ id: "tmp-order-1", title: "记一下", status: "inbox", source: null });
+		registerPendingCreate(temp);
+		const queue = getTaskAutosave(qc);
+		queue.edit(temp, { title: "新标题", status: "next" }, { debounce: true });
+		touchPendingCreate(temp.id, { patch: { status: "waiting", waitingOn: "老板" } });
+		const later = buildUnsavedCreateRecords(exportPendingCreates(), queue)[0]!;
+		expect(later.body.status).toBe("waiting");
+		expect(later.body.waitingOn).toBe("老板");
+		expect(later.body.title).toBe("新标题");
+
+		resetPendingCreatesForTests();
+		resetTaskAutosaveForTests();
+		const temp2 = task({ id: "tmp-order-2", title: "记一下", status: "inbox", source: null });
+		registerPendingCreate(temp2);
+		touchPendingCreate(temp2.id, { patch: { status: "waiting", waitingOn: "老板" } });
+		const queue2 = getTaskAutosave(qc);
+		queue2.edit(temp2, { status: "next" }, { debounce: true });
+		const earlier = buildUnsavedCreateRecords(exportPendingCreates(), queue2)[0]!;
+		expect(earlier.body.status).toBe("next");
+		expect(earlier.body.waitingOn).toBe("老板");
 	});
 });

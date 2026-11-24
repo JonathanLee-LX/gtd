@@ -272,6 +272,21 @@ describe("due reminder settings", () => {
 		expect(save.mock.calls[0]?.[0]).toMatchObject({ enabled: true, subscription: SUB });
 	});
 
+	it("snaps the master switch off when subscribe works but saving settings fails", async () => {
+		vi.stubGlobal("Notification", { permission: "granted" });
+		const { save, upsert } = renderCard(probe());
+		save.mockRejectedValueOnce(new Error("服务器忙"));
+		fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
+		await waitFor(() => {
+			expect(document.body.textContent ?? "").toMatch(/服务器忙|开启失败，请重试/);
+		});
+		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("false");
+		expect(screen.queryByRole("button", { name: "在这台设备上开启" })).toBeNull();
+		expect(upsert).not.toHaveBeenCalled();
+		expect(save).toHaveBeenCalledTimes(1);
+		expect(save.mock.calls[0]?.[0]).toMatchObject({ enabled: true, subscription: SUB });
+	});
+
 	it("shows the system-settings guidance when notification permission is denied", async () => {
 		vi.stubGlobal("Notification", { permission: "denied" });
 		const subscribe = vi.fn(async () => {

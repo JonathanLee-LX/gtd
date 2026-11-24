@@ -24,6 +24,7 @@ import {
 	foldIntoPendingCreate,
 	isAwaitingRealId,
 	isTempTaskId,
+	nextWriteSeq,
 	PendingCreateFailedError,
 	realIdFor,
 	SKIPPED_BY_DELETE,
@@ -184,6 +185,8 @@ type Entry = {
 	titleInvalid: boolean;
 	/** #118：本轮隐藏 / 卸载期间已通过 keepalive（或卸载开始时已在飞）发出的字段值，避免重复 PATCH。 */
 	keepaliveSent: Partial_;
+	/** 每个未确认字段最后一次写入的序号，401 暂存时和排队改动比先后。 */
+	editSeq: Partial<Record<AutosaveField, number>>;
 };
 
 type Listener = () => void;
@@ -266,6 +269,7 @@ export class TaskAutosaveQueue {
 			rejectedMessage: null,
 			titleInvalid: false,
 			keepaliveSent: {},
+			editSeq: {},
 		};
 		this.entries.set(task.id, entry);
 		return entry;
@@ -431,8 +435,10 @@ export class TaskAutosaveQueue {
 			}
 			if (sameAutosaveValue(field, value as never, this.baseline(entry, field) as never)) {
 				delete entry.edits[field];
+				delete entry.editSeq[field];
 			} else {
 				(entry.edits as Record<string, unknown>)[field] = value;
+				entry.editSeq[field] = nextWriteSeq();
 			}
 		}
 		if (opts.debounce) this.schedule(entry);
@@ -946,6 +952,19 @@ export class TaskAutosaveQueue {
 		const entry = this.lookup(tempId);
 		if (!entry || entry.discarded) return {};
 		return { ...entry.folded, ...(entry.sending ?? {}), ...entry.edits };
+	}
+
+	/** 临时任务未确认字段的写入序号（没有序号的字段在合并时沿用旧的「后层覆盖」）。 */
+	exportTempEditSeq(tempId: string): Record<string, number> {
+		const entry = this.lookup(tempId);
+		if (!entry || entry.discarded) return {};
+		const values = this.exportTempEdits(tempId);
+		const out: Record<string, number> = {};
+		for (const field of Object.keys(values)) {
+			const seq = entry.editSeq[field as AutosaveField];
+			if (typeof seq === "number") out[field] = seq;
+		}
+		return out;
 	}
 
 	/** 暂存失败：队列留在内存里、停止发送，beforeunload 一直拦，等同一用户重新登录。 */

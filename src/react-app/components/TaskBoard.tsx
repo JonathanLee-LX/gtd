@@ -177,7 +177,12 @@ export function TaskBoard({
 	const detailDrop = useFileDropZone({
 		disabled: !selected || isTempTaskId(selected.id),
 		onDropFiles: (files) => detailFileDropRef.current?.(files),
-		onDisabledDrop: () => toast("任务正在保存到服务器，请稍后再添加附件"),
+		onDisabledDrop: () => {
+			// 窄屏 Sheet 退场的一瞬间 selected 已空，不要把误松手说成「任务正在保存」。
+			if (selected && isTempTaskId(selected.id)) {
+				toast("任务正在保存到服务器，请稍后再添加附件");
+			}
+		},
 	});
 
 	const restoreListScroll = useCallback(() => {
@@ -431,16 +436,27 @@ export function TaskBoard({
 					skeletonLabel="正在加载任务"
 					// #101：断网 / 5xx 原地提示 + 重试。
 					error={(err) => <LoadErrorRetry error={err} onRetry={query.refetch} />}
-					skeleton={(index) => (
-						<div key={index} className="flex flex-col gap-1">
-							<TaskRow.Skeleton index={index} />
-							{enableInboxProcess ? (
-								<div className="pb-2" style={{ paddingLeft: "40px" }}>
-									<InboxProcessActions.Skeleton />
-								</div>
-							) : null}
-						</div>
-					)}
+					shapeOf={
+						enableInboxProcess
+							? (data) =>
+									orderTasksWithDepth(data.items)
+										.map(({ task }) => (task.status === "inbox" ? "1" : "0"))
+										.join("")
+							: undefined
+					}
+					skeleton={(index, hint) => {
+						const showProcess = enableInboxProcess && (hint?.inboxActions ?? true);
+						return (
+							<div key={index} className="flex flex-col gap-1">
+								<TaskRow.Skeleton index={index} />
+								{showProcess ? (
+									<div className="pb-2" style={{ paddingLeft: "40px" }}>
+										<InboxProcessActions.Skeleton />
+									</div>
+								) : null}
+							</div>
+						);
+					}}
 					empty={
 						<Empty className="border">
 							<EmptyHeader>

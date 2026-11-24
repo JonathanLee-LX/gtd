@@ -15,6 +15,7 @@ import { EmptyLine } from "./components/EmptyLine";
 import { SidebarProjectItem, SidebarUserButton } from "./components/ShellSidebarItems";
 import { TaskActivityList } from "./components/TaskActivityList";
 import { TaskAttachments } from "./components/TaskAttachments";
+import { QueryView } from "./components/QueryView";
 import { TaskBoard } from "./components/TaskBoard";
 import { TaskRow } from "./components/TaskRow";
 import { Badge } from "@/components/ui/badge";
@@ -208,6 +209,60 @@ for (const vp of [
 				console.info(`[parity ${vp.name} inbox=${inbox}]`, JSON.stringify({ skel, real }));
 			});
 		}
+
+		it("mixed inbox list: skeleton matches which rows have process actions (#102)", async () => {
+			const key = taskKeys.list({ inbox: true });
+			const tasks = [
+				makeTask(0, { status: "inbox" }),
+				makeTask(1, { status: "next" }),
+				makeTask(2, { status: "inbox" }),
+				makeTask(3, { status: "waiting" }),
+			];
+			const real = await measureBoard({ loading: false, tasks, inbox: true, key });
+			const skel = await measureBoard({ loading: true, tasks: [], inbox: true, key });
+			expect(skel.rows).toBe(4);
+			expect(real.rows).toBe(4);
+			expect(Math.abs(skel.listHeight - real.listHeight)).toBeLessThanOrEqual(8);
+			expect(skel.h1Top).toBe(real.h1Top);
+			expect(skel.listTop).toBe(real.listTop);
+			expect(Math.abs(skel.firstRowTop - real.firstRowTop)).toBeLessThanOrEqual(1);
+		});
+
+		it("150ms delay reserves skeleton space so content below does not jump (#102)", async () => {
+			writeSkeletonCount(["settings", "reserve", vp.name], 3);
+			const view = render(
+				<Providers>
+					<div style={{ width: Math.min(vp.width, 576) }}>
+						<QueryView
+							query={{ data: undefined, error: null }}
+							loadKey={["settings", "reserve", vp.name]}
+							fallbackCount={0}
+							skeleton={(index) => (
+								<div key={index} style={{ height: 57 }} data-skeleton="">
+									row
+								</div>
+							)}
+							skeletonClassName="flex flex-col gap-2"
+							empty={<p>空</p>}
+						>
+							{() => null}
+						</QueryView>
+						<div data-below>回收站</div>
+					</div>
+				</Providers>,
+			);
+			const below = () => rect(view.container.querySelector("[data-below]")).top;
+			const list = view.container.querySelector('[data-testid="skeleton-list"]') as HTMLElement;
+			expect(list.getAttribute("data-skeleton-visible")).toBe("false");
+			expect(getComputedStyle(list).visibility).toBe("hidden");
+			const before = below();
+			expect(before).toBeGreaterThan(0);
+			await sleep(200);
+			expect(list.getAttribute("data-skeleton-visible")).toBe("true");
+			expect(getComputedStyle(list).visibility).not.toBe("hidden");
+			expect(below()).toBe(before);
+			view.unmount();
+		});
 
 		it("cap: remembered count larger than one screen is limited to rows that fit", async () => {
 			const key = taskKeys.list({ status: "someday" });

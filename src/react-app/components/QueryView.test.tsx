@@ -127,12 +127,17 @@ describe("QueryView count memory (#99)", () => {
 		expect(reads).toHaveBeenCalledTimes(1);
 	});
 
-	it("shows empty only after data, nothing before 150ms", () => {
+	it("shows empty only after data; before 150ms the skeleton is reserved but not visible (#102)", () => {
 		const view = render(<View data={undefined} />);
-		expect(screen.queryByTestId("skeleton-list")).toBeNull();
+		const reserved = screen.getByTestId("skeleton-list");
+		expect(reserved.getAttribute("data-skeleton-visible")).toBe("false");
+		expect(reserved.getAttribute("aria-hidden")).toBe("true");
 		expect(screen.queryByText("空")).toBeNull();
+		past150();
+		expect(screen.getByTestId("skeleton-list").getAttribute("data-skeleton-visible")).toBe("true");
 		view.rerender(<View data={{ items: [] }} />);
 		expect(screen.getByText("空")).not.toBeNull();
+		expect(screen.queryByTestId("skeleton-list")).toBeNull();
 	});
 });
 

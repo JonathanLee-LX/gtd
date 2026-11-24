@@ -11,8 +11,10 @@ export type QueryViewProps<T> = {
 	loadKey: readonly unknown[];
 	/** 查询是否启用（如搜索没关键词时为 false → 直接显示 empty，不出骨架）。 */
 	enabled?: boolean;
-	/** 渲染第 index 行骨架（用真实组件的 `X.Skeleton`）。 */
-	skeleton: (index: number) => ReactNode;
+	/** 渲染第 index 行骨架（用真实组件的 `X.Skeleton`）。hint 来自上次记住的行形状。 */
+	skeleton: (index: number, hint?: { inboxActions?: boolean }) => ReactNode;
+	/** #102：数据 → 每行是否带整理按钮（`1`/`0`）。下次冷加载按这个画骨架。 */
+	shapeOf?: (data: T) => string;
 	/** 骨架外层，和真实列表外层保持同样的元素与 className。 */
 	skeletonAs?: "div" | "ul";
 	skeletonClassName?: string;
@@ -49,6 +51,7 @@ export function QueryView<T>({
 	loadKey,
 	enabled,
 	skeleton,
+	shapeOf,
 	skeletonAs = "div",
 	skeletonClassName,
 	skeletonLabel = "正在加载",
@@ -78,27 +81,38 @@ export function QueryView<T>({
 		emptySkeleton ?? (isValidElement(empty) && empty.type === EmptyLine ? <EmptyLine.Skeleton /> : null);
 
 	const loadedCount = state.fetched && state.data !== undefined ? countOf(state.data) : null;
+	const loadedShape =
+		state.fetched && state.data !== undefined && shapeOf ? shapeOf(state.data) : undefined;
 	useEffect(() => {
 		if (loadedCount === null) return;
-		writeSkeletonCount(JSON.parse(keyString) as unknown[], loadedCount);
-	}, [keyString, loadedCount]);
+		writeSkeletonCount(JSON.parse(keyString) as unknown[], loadedCount, loadedShape);
+	}, [keyString, loadedCount, loadedShape]);
 
 	if (state.status === "skeleton") {
-		if (!state.skeletonVisible) return null;
+		// #102：150ms 内先占住高度（visibility:hidden），骨架出现时下面的卡片不再被顶下去。
+		// 请求在 150ms 内返回时 status 已不是 skeleton，这里不会留下可见骨架。
+		const visible = state.skeletonVisible;
 		const Tag = skeletonAs;
 		return (
 			<Tag
 				role="status"
 				aria-busy="true"
+				aria-hidden={visible ? undefined : true}
 				aria-label={skeletonLabel}
 				data-testid="skeleton-list"
+				data-skeleton-visible={visible ? "true" : "false"}
 				data-skeleton-variant={plan?.lastEmpty && emptyPlaceholder ? "empty" : "rows"}
-				data-shimmer={state.reducedMotion ? undefined : ""}
-				className={cn(skeletonClassName, !state.reducedMotion && "skeleton-shimmer")}
+				data-shimmer={visible && !state.reducedMotion ? "" : undefined}
+				style={visible ? undefined : { visibility: "hidden" }}
+				className={cn(skeletonClassName, visible && !state.reducedMotion && "skeleton-shimmer")}
 			>
 				{plan?.lastEmpty && emptyPlaceholder
 					? emptyPlaceholder
-					: Array.from({ length: Math.max(1, plan?.count ?? 1) }, (_, index) => skeleton(index))}
+					: Array.from({ length: Math.max(1, plan?.count ?? 1) }, (_, index) => {
+							const bit = plan?.shape?.[index];
+							const hint = bit === "0" || bit === "1" ? { inboxActions: bit === "1" } : undefined;
+							return skeleton(index, hint);
+						})}
 			</Tag>
 		);
 	}

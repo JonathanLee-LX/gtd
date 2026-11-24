@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Project, Task } from "../api";
+import { readSkeletonShape } from "../lib/skeleton";
 
 vi.mock("../api", () => ({
 	api: {
@@ -321,5 +322,57 @@ describe("TaskBoard wide-to-narrow history & detail-wide file drop (#93)", () =>
 		});
 		expect(screen.queryByTestId("detail-drop-overlay")).toBeNull();
 		expect(onMockDropUpload).toHaveBeenCalledWith([file]);
+	});
+});
+
+describe("inbox skeleton follows task type (#102)", () => {
+	it("remembers which rows have process actions and draws the next skeleton that way", () => {
+		const key = ["tasks", "list", { inbox: true }] as const;
+		const mixed: Task[] = [
+			tasks[0]!,
+			{ ...tasks[0]!, id: "t2", title: "下一步", status: "next" },
+			{ ...tasks[0]!, id: "t3", title: "再一条", status: "inbox" },
+			{ ...tasks[0]!, id: "t4", title: "在等", status: "waiting" },
+		];
+		const client = new QueryClient();
+		const view = render(
+			<QueryClientProvider client={client}>
+				<TaskBoard
+					title="收件箱"
+					placeholder="加一条"
+					query={{ data: { items: mixed }, error: null }}
+					loadKey={key}
+					projects={projects}
+					emptyText="空"
+					enableInboxProcess
+					onCreate={async () => {}}
+					onComplete={async () => {}}
+					onDelete={async () => {}}
+				/>
+			</QueryClientProvider>,
+		);
+		expect(readSkeletonShape(key)).toBe("1010");
+		view.rerender(
+			<QueryClientProvider client={client}>
+				<TaskBoard
+					title="收件箱"
+					placeholder="加一条"
+					query={{ data: undefined, error: null }}
+					loadKey={key}
+					projects={projects}
+					emptyText="空"
+					enableInboxProcess
+					onCreate={async () => {}}
+					onComplete={async () => {}}
+					onDelete={async () => {}}
+				/>
+			</QueryClientProvider>,
+		);
+		const list = screen.getByTestId("skeleton-list");
+		expect(list.getAttribute("data-skeleton-visible")).toBe("false");
+		const flags = [...list.querySelectorAll(":scope > div")]
+			.map((row) => (row.textContent?.includes("丢掉") ? "1" : "0"))
+			.join("");
+		expect(flags).toBe("1010");
 	});
 });

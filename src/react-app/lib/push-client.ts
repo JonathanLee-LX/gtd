@@ -156,9 +156,13 @@ export async function readPushSubscriptionBounded(
  */
 let pushUnsubscribeSettled: Promise<void> = Promise.resolve();
 
-/** 等已经开始的浏览器退订结束。超时返回后，新的 subscribe 必须先等它，避免旧 unsubscribe 落在新订阅之后。 */
-export function waitForPushUnsubscribe(): Promise<void> {
-	return pushUnsubscribeSettled;
+/**
+ * 等已经开始的浏览器退订。浏览器不能取消进行中的 unsubscribe，
+ * 所以超时后返回 pending，调用方不得立刻 subscribe。
+ * 退订真正结束后再试才会得到 clear。
+ */
+export function waitForPushUnsubscribe(timeoutMs = PUSH_UNSUBSCRIBE_TIMEOUT_MS): Promise<"clear" | "pending"> {
+	return raceWithTimeout(pushUnsubscribeSettled, timeoutMs).then((raced) => (raced.timedOut ? "pending" : "clear"));
 }
 
 /** 测试隔离：丢掉上一例没有结束的退订，避免它挡住后面的 subscribe。 */

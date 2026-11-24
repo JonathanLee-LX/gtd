@@ -197,8 +197,9 @@ export async function saveNotificationSettings(
 			current: viewFrom(rows[0], subs.map((row) => row.endpoint)),
 		});
 	}
-	let endpoints = subs.map((row) => row.endpoint);
-	if (input.subscription) {
+	const committed = viewFrom(rows[0] ? { ...rows[0], ...values } : (values as SettingsRow), subs.map((row) => row.endpoint));
+	if (!input.subscription) return committed;
+	try {
 		const [, after] = (await runQueries(db, [
 			subscriptionUpsert(db, userId, input.subscription, at),
 			db
@@ -206,9 +207,13 @@ export async function saveNotificationSettings(
 				.from(pushSubscriptions)
 				.where(eq(pushSubscriptions.userId, userId)),
 		])) as [unknown, { endpoint: string }[]];
-		endpoints = after.map((row) => row.endpoint);
+		return viewFrom(rows[0] ? { ...rows[0], ...values } : (values as SettingsRow), after.map((row) => row.endpoint));
+	} catch {
+		// 设置已经提交。不要让调用方把这次失败当成「整次没写上」再去改设置。
+		throw new AppError(503, "subscription_not_saved", "设置已保存，但这台设备的订阅没有记上", {
+			current: committed,
+		});
 	}
-	return viewFrom(rows[0] ? { ...rows[0], ...values } : (values as SettingsRow), endpoints);
 }
 
 function subscriptionUpsert(db: AppDatabase, userId: string, input: PushSubscriptionInput, at: string) {

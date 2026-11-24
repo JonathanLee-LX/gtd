@@ -10,6 +10,7 @@ import {
 	SIGN_OUT_REQUEST_TIMEOUT_MS,
 	readPushSubscriptionOwner,
 	reconcilePushSubscriptionForUser,
+	unsubscribePushBounded,
 	writePushSubscriptionOwner,
 	type PushProbe,
 	type PushSubscriptionKeys,
@@ -296,25 +297,33 @@ describe("due reminder settings", () => {
 
 	it("keeps the switch on and sends the edited time after the in-flight enable save settles", async () => {
 		const first = hold();
+		const second = hold();
 		const { save } = renderCard(probe());
 		save.mockImplementation(async (body) => {
-			if (save.mock.calls.length === 1) await first.promise;
+			if (body.digestTime === "09:00") await first.promise;
+			if (body.digestTime === "10:00") await second.promise;
 			return savedSettings(body);
 		});
 		fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
 		await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+		const opening = await screen.findByRole("button", { name: "正在开启这台设备…" });
+		expect((opening as HTMLButtonElement).disabled).toBe(true);
+		expect(screen.queryByRole("button", { name: "在这台设备上开启" })).toBeNull();
 		expect((screen.getByLabelText("推送时间") as HTMLSelectElement).disabled).toBe(false);
 		fireEvent.change(screen.getByLabelText("推送时间"), { target: { value: "10:00" } });
-		await act(async () => {
-			await Promise.resolve();
-		});
 		expect(save).toHaveBeenCalledTimes(1);
 		expect(save.mock.calls[0]?.[0]?.digestTime).toBe("09:00");
 		await act(async () => {
 			first.release();
 		});
+		await waitFor(() => expect(screen.getByRole("button", { name: "在此设备关闭" })).toBeTruthy());
+		expect(screen.queryByRole("button", { name: "在这台设备上开启" })).toBeNull();
+		expect(screen.getByRole("status").textContent).toContain("保存中");
 		await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
 		expect(save.mock.calls[1]?.[0]?.digestTime).toBe("10:00");
+		await act(async () => {
+			second.release();
+		});
 		await waitFor(() => expect(screen.getByRole("status").textContent).toContain("已保存"));
 		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
 		expect((screen.getByLabelText("推送时间") as HTMLSelectElement).value).toBe("10:00");
@@ -518,6 +527,50 @@ describe("due reminder settings", () => {
 		expect(screen.getByRole("status").textContent).toContain("已保存");
 		expect(readPushSubscriptionOwner()).toMatchObject({ endpoint: SUB.endpoint, pendingUnsubscribe: true });
 		expect(screen.getByText("其他 1 台设备已开启")).toBeTruthy();
+	});
+
+	it("does not subscribe while a previous unsubscribe is still unsettled, and the retry stays available", async () => {
+		const subscribe = vi.fn(async () => SUB);
+		let release: () => void = () => {};
+		renderCard(probe({ readSubscription: async () => null, subscribe }), {
+			...SETTINGS,
+			enabled: true,
+			subscriptionCount: 0,
+			subscriptionEndpoints: [],
+		});
+		await screen.findByRole("button", { name: "在这台设备上开启" });
+		const hung = unsubscribePushBounded(
+			probe({
+				unsubscribe: () =>
+					new Promise((resolve) => {
+						release = () => resolve({ status: "unsubscribed", endpoint: SUB.endpoint });
+					}),
+			}),
+			SUB.endpoint,
+			30,
+		);
+		vi.useFakeTimers();
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(40);
+		});
+		await hung;
+		fireEvent.click(screen.getByRole("button", { name: "在这台设备上开启" }));
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(PUSH_UNSUBSCRIBE_TIMEOUT_MS + 20);
+		});
+		expect(screen.getByText("上一次退订还没结束，请稍后再试")).toBeTruthy();
+		expect(subscribe).not.toHaveBeenCalled();
+		expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy();
+		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
+		release();
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(10);
+		});
+		fireEvent.click(screen.getByRole("button", { name: "在这台设备上开启" }));
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(10);
+		});
+		expect(subscribe).toHaveBeenCalledOnce();
 	});
 
 	it("shows an error and keeps the close button when DELETE times out after the browser unsubscribe", async () => {

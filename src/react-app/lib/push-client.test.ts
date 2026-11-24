@@ -158,6 +158,26 @@ describe("timed-out unsubscribe versus a later subscribe", () => {
 		await expect(next).resolves.toMatchObject({ endpoint: "https://fcm.googleapis.com/fcm/send/same" });
 		expect(started).toBe(true);
 	});
+
+	it("returns pending when unsubscribe does not settle, and does not treat that as permission to subscribe", async () => {
+		const probe: PushProbe = {
+			inspect: () => "ok",
+			readSubscription: async () => null,
+			subscribe: async () => ({
+				endpoint: "https://fcm.googleapis.com/fcm/send/same",
+				p256dh: "p",
+				auth: "a",
+			}),
+			unsubscribe: () => new Promise(() => {}),
+		};
+		const timedOut = unsubscribePushBounded(probe, "https://fcm.googleapis.com/fcm/send/same", 15);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		await expect(timedOut).resolves.toMatchObject({ status: "failed" });
+		await expect(waitForPushUnsubscribe(20)).resolves.toBe("pending");
+		expect(probe.subscribe).toBeTypeOf("function");
+		resetPushUnsubscribeForTests();
+		await expect(waitForPushUnsubscribe(20)).resolves.toBe("clear");
+	});
 });
 
 describe("browserPushProbe.unsubscribe", () => {

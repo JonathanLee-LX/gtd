@@ -28,7 +28,7 @@ import {
 	type PushBlock,
 	type PushProbe,
 } from "../lib/push-client";
-import { createSettingsSaver } from "../lib/notification-settings-save";
+import { createSettingsSaver, SUBSCRIPTION_NOT_RECORDED } from "../lib/notification-settings-save";
 import { settingsKeys } from "../lib/settings-keys";
 import { shellKeys } from "../lib/shell-keys";
 
@@ -194,12 +194,19 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 	const [testState, setTestState] = useState<"idle" | "sending" | "sent">("idle");
 	const testTimer = useRef<number | null>(null);
 	const [deviceBusy, setDeviceBusy] = useState(false);
+	const [openingDevice, setOpeningDevice] = useState(false);
 	const [subscribeFailed, setSubscribeFailed] = useState(false);
 	const saveSeq = useRef(0);
+	const onSubscriptionRef = useRef<(subscription: PushSubscriptionKeys) => void>(() => {});
 	const saverRef = useRef<ReturnType<typeof createSettingsSaver> | null>(null);
 	if (!saverRef.current) {
 		saverRef.current = createSettingsSaver({
 			save: (body) => api.saveNotificationSettings(body, { timeoutMs: SIGN_OUT_REQUEST_TIMEOUT_MS }),
+			attach: async (subscription) => {
+				await api.upsertPushSubscription(subscription, { timeoutMs: SIGN_OUT_REQUEST_TIMEOUT_MS });
+			},
+			backoff: (spent) => new Promise((resolve) => window.setTimeout(resolve, Math.min(100 * 2 ** (spent - 1), 400))),
+			onSubscriptionPersisted: (subscription) => onSubscriptionRef.current(subscription),
 			onSaving: () => {
 				setSaveState("saving");
 				setError(null);
@@ -332,6 +339,15 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 		setBlockOverride("denied");
 	}
 
+	function rememberLocalSubscription(sub: PushSubscriptionKeys) {
+		probedRef.current = true;
+		setLocalSub(sub);
+		setOpeningDevice(false);
+		const resolvedUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? currentUserId;
+		writePushSubscriptionOwner(resolvedUserId, sub.endpoint);
+	}
+	onSubscriptionRef.current = rememberLocalSubscription;
+
 	async function turnOn() {
 		if (!form || blocked || turningOnRef.current) return;
 		const publicKey = query.data?.vapidPublicKey;
@@ -341,11 +357,18 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 			return;
 		}
 		turningOnRef.current = true;
+		setOpeningDevice(true);
 		setError(null);
 		setSubscribeFailed(false);
 		try {
 			await runSerializedPushOp(async () => {
-				const sub = await waitForPushUnsubscribe().then(() => probe.subscribe(publicKey));
+				const gate = await waitForPushUnsubscribe();
+				if (gate === "pending") {
+					setError("上一次退订还没结束，请稍后再试");
+					setSubscribeFailed(true);
+					return;
+				}
+				const sub = await probe.subscribe(publicKey);
 				if (sub === "denied" || notificationPermissionDenied()) {
 					markSubscriptionDenied();
 					return;
@@ -353,18 +376,17 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 				const next = { ...form, enabled: true };
 				setForm(next);
 				const saved = await persist(next, sub);
-				if (saved.state === "failed" && !saved.subscriptionPersisted) {
-					// 最新一次保存失败，而且订阅没写上：开关回到关闭。
-					// 不能留在「已开启但没记本机订阅」，否则会走到只 upsert 订阅的「在这台设备上开启」。
-					setForm((current) => (current ? { ...current, enabled: false } : current));
+				if (saved.subscriptionPersisted) {
+					rememberLocalSubscription(sub);
+					return;
+				}
+				if (saved.settingsPersisted) {
+					setError(SUBSCRIPTION_NOT_RECORDED);
 					setSubscribeFailed(true);
 					return;
 				}
-				if (!saved.subscriptionPersisted) return;
-				probedRef.current = true;
-				setLocalSub(sub);
-				const resolvedUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? currentUserId;
-				writePushSubscriptionOwner(resolvedUserId, sub.endpoint);
+				setForm((current) => (current ? { ...current, enabled: false } : current));
+				setSubscribeFailed(true);
 			});
 		} catch {
 			// 失败不写服务端。开关回到关闭；权限被拒走已有引导，其他错误留在开关下方。
@@ -376,6 +398,7 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 			setSubscribeFailed(true);
 		} finally {
 			turningOnRef.current = false;
+			setOpeningDevice(false);
 		}
 	}
 
@@ -389,7 +412,13 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 			await runSerializedPushOp(async () => {
 				let sub: PushSubscriptionKeys | "denied";
 				try {
-					sub = await waitForPushUnsubscribe().then(() => probe.subscribe(publicKey));
+					const gate = await waitForPushUnsubscribe();
+					if (gate === "pending") {
+						setError("上一次退订还没结束，请稍后再试");
+						setSubscribeFailed(true);
+						return;
+					}
+					sub = await probe.subscribe(publicKey);
 				} catch {
 					if (notificationPermissionDenied()) {
 						markThisDeviceDenied();
@@ -633,7 +662,14 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 								</Button>
 							</div>
 						) : null}
-						{form.enabled && block === "ok" && !localSub ? (
+						{form.enabled && block === "ok" && !localSub && openingDevice ? (
+							<div>
+								<Button type="button" variant="outline" disabled>
+									正在开启这台设备…
+								</Button>
+							</div>
+						) : null}
+						{form.enabled && block === "ok" && !localSub && !openingDevice ? (
 							<div>
 								<Button
 									type="button"

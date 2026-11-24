@@ -18,6 +18,15 @@ export default tseslint.config(
 			"react-refresh": reactRefresh,
 		},
 		rules: {
+			"@typescript-eslint/no-unused-vars": [
+				"error",
+				{
+					argsIgnorePattern: "^_",
+					varsIgnorePattern: "^_",
+					caughtErrorsIgnorePattern: "^_",
+					destructuredArrayIgnorePattern: "^_",
+				},
+			],
 			...reactHooks.configs.recommended.rules,
 			"react-hooks/set-state-in-effect": "off",
 			"react-hooks/exhaustive-deps": "off",

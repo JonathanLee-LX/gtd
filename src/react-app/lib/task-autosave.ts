@@ -607,12 +607,12 @@ export class TaskAutosaveQueue {
 					Object.assign(entry.keepaliveSent, extra);
 					void this.request(entry, entry.key, toApiPatch(extra), true).then(
 						(res) => this.onKeepaliveExtraSuccess(entry, extra, res.task),
-						() => {
-							if (!this.unloading) {
-								for (const field of Object.keys(extra) as AutosaveField[]) {
-									if (sameAutosaveValue(field, entry.keepaliveSent[field] as never, extra[field] as never)) {
-										delete entry.keepaliveSent[field];
-									}
+						(err: unknown) => {
+							// 卸载中止（TypeError）保留去重标记；明确失败（5xx / 留页后）要清掉，否则下次刷新会跳过。
+							if (this.keepKeepaliveMark(err)) return;
+							for (const field of Object.keys(extra) as AutosaveField[]) {
+								if (sameAutosaveValue(field, entry.keepaliveSent[field] as never, extra[field] as never)) {
+									delete entry.keepaliveSent[field];
 								}
 							}
 						},
@@ -692,7 +692,8 @@ export class TaskAutosaveQueue {
 				this.applyToCache(realId, replayPatch);
 			}
 			// 真正发出的这一刻才算 patch：排队等真实 id 期间的多次改动合并成 1 个 PATCH。
-			const patch = this.diff(entry);
+			// keepalive 只带还没发过的字段；删除失败后的补发仍用完整 diff（#118 / #93）。
+			const patch = skippedByDelete || !opts.keepalive ? this.diff(entry) : this.keepaliveDiff(entry);
 			if (entry.discarded || Object.keys(patch).length === 0) return Promise.resolve(null);
 			entry.sending = patch;
 			if (opts.keepalive) Object.assign(entry.keepaliveSent, patch);
@@ -836,7 +837,9 @@ export class TaskAutosaveQueue {
 		const sent = entry.sending ?? {};
 		entry.sending = null;
 		if (entry.discarded) return;
-		if (!this.unloading) {
+		// 只有卸载把普通请求中止（TypeError）时才保留 keepalive 去重标记。5xx / 断网以外的明确失败必须清掉，
+		// 否则用户点「留在此页」后这些字段再也不会补发。
+		if (!this.keepKeepaliveMark(err)) {
 			for (const field of Object.keys(sent) as AutosaveField[]) {
 				if (
 					field in entry.keepaliveSent &&
@@ -977,7 +980,8 @@ export class TaskAutosaveQueue {
 		const fromId = entry.tempId && findCachedTask(this.queryClient, entry.tempId) ? entry.tempId : task.id;
 		const cached = findCachedTask(this.queryClient, fromId);
 		if (!cached) return;
-		const pending = { ...entry.folded, ...entry.edits };
+		// 主请求还在飞时，增量 keepalive 可能先返回；服务端 task 仍带主请求字段的旧值，要盖上 sending。
+		const pending = { ...entry.folded, ...(entry.sending ?? {}), ...entry.edits };
 		const next: Task = {
 			...task,
 			...sanitizeClientPatch(toApiPatch(pending), task),
@@ -991,6 +995,26 @@ export class TaskAutosaveQueue {
 		if (Object.keys(values).length === 0 || isTaskCompleting(id)) return;
 		const next = applyOptimisticTaskPatch(this.queryClient, id, toApiPatch(values));
 		if (next && values.tags) upsertTaskInCaches(this.queryClient, { ...next, tags: values.tags });
+	}
+
+	/** 卸载中止才保留去重标记；留在页面上的 5xx / 其它失败要能再发。 */
+	private keepKeepaliveMark(err: unknown): boolean {
+		return this.unloading && err instanceof TypeError;
+	}
+
+	/**
+	 * beforeunload 弹窗被取消（留在此页）后复位。在飞的请求先留着标记，等它自己的成功 / 失败处理；
+	 * 已经失败、字段回到 edits 的，清掉标记，避免下次 pagehide 把它们跳过。
+	 */
+	private releaseUnloadingAfterStay() {
+		if (this.disposed) return;
+		this.unloading = false;
+		for (const entry of this.entries.values()) {
+			if (entry.inFlight) continue;
+			for (const field of Object.keys(entry.keepaliveSent) as AutosaveField[]) {
+				if (field in entry.edits || field in entry.rejected) delete entry.keepaliveSent[field];
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------ lifecycle
@@ -1034,6 +1058,8 @@ export class TaskAutosaveQueue {
 			if (!blocked && !guarded) return;
 			event.preventDefault();
 			event.returnValue = "";
+			// 选择「留在此页」时通常不会再有 pageshow / visibilitychange。真正卸载后宏任务不执行。
+			window.setTimeout(() => this.releaseUnloadingAfterStay(), 0);
 		};
 		window.addEventListener("pagehide", onPageHide);
 		window.addEventListener("pageshow", resetKeepaliveDedupe);

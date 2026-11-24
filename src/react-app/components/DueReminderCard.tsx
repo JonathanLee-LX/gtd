@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { CheckIcon, CircleAlertIcon, Loader2Icon, ShareIcon } from "lucide-react";
 import { quarterHourOptions } from "../../shared/digest";
 import { DEFAULT_TIME_ZONE } from "../../shared/constants";
-import { api, type Me, type NotificationSettings, type PushSubscriptionKeys, type SaveNotificationSettings } from "../api";
+import { api, type Me, type NotificationSettings, type PushSubscriptionKeys } from "../api";
 import { useMeQuery } from "../hooks/use-shell-data";
 import { loadErrorMessage } from "../lib/load-state";
 import {
@@ -23,10 +23,12 @@ import {
 	runSerializedPushOp,
 	SIGN_OUT_REQUEST_TIMEOUT_MS,
 	unsubscribePushBounded,
+	waitForPushUnsubscribe,
 	writePushSubscriptionOwner,
 	type PushBlock,
 	type PushProbe,
 } from "../lib/push-client";
+import { createSettingsSaver } from "../lib/notification-settings-save";
 import { settingsKeys } from "../lib/settings-keys";
 import { shellKeys } from "../lib/shell-keys";
 
@@ -190,9 +192,41 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 	const [saveState, setSaveState] = useState<SaveState>("idle");
 	const [error, setError] = useState<string | null>(null);
 	const [testState, setTestState] = useState<"idle" | "sending" | "sent">("idle");
+	const testTimer = useRef<number | null>(null);
 	const [deviceBusy, setDeviceBusy] = useState(false);
 	const [subscribeFailed, setSubscribeFailed] = useState(false);
 	const saveSeq = useRef(0);
+	const saverRef = useRef<ReturnType<typeof createSettingsSaver> | null>(null);
+	if (!saverRef.current) {
+		saverRef.current = createSettingsSaver({
+			save: (body) => api.saveNotificationSettings(body, { timeoutMs: SIGN_OUT_REQUEST_TIMEOUT_MS }),
+			onSaving: () => {
+				setSaveState("saving");
+				setError(null);
+			},
+			onSaved: (saved, seq) => {
+				if (seq !== saveSeq.current) return;
+				queryClient.setQueryData<NotificationSettings>(settingsKeys.notifications(), (current) => {
+					const next = {
+						saved: true,
+						subscriptionCount: saved.subscriptionEndpoints?.length ?? current?.subscriptionCount ?? 0,
+						vapidPublicKey: saved.vapidPublicKey ?? current?.vapidPublicKey ?? null,
+						...(current ?? {}),
+						...saved,
+					};
+					next.vapidPublicKey = saved.vapidPublicKey ?? current?.vapidPublicKey ?? null;
+					if (saved.subscriptionEndpoints) next.subscriptionCount = saved.subscriptionEndpoints.length;
+					return next;
+				});
+				setSaveState("saved");
+			},
+			onError: (error, seq) => {
+				if (seq !== saveSeq.current) return;
+				setSaveState("error");
+				setError(error instanceof Error ? error.message : "保存失败");
+			},
+		});
+	}
 	const probedRef = useRef(false);
 	const turningOnRef = useRef(false);
 	const block = blockOverride ?? probe.inspect();
@@ -203,7 +237,14 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 	const mePending = meQuery.isPending;
 
 	useEffect(() => {
+		return () => {
+			if (testTimer.current) clearTimeout(testTimer.current);
+		};
+	}, []);
+
+	useEffect(() => {
 		if (query.data && !form) setForm(formFrom(query.data, zone));
+		if (query.data) saverRef.current?.setBaseIfUnset(query.data.updatedAt ?? null);
 	}, [query.data, form, zone]);
 
 	// 若用户在本机订阅时 /api/me 尚未就绪（写入了 userId: null），等 me 返回后补齐归属 userId。
@@ -265,26 +306,11 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 		};
 	}, [block, hasSettings, mePending, currentUserId, serverSubscriptionEndpoints, probe]);
 
-	async function persist(
-		next: FormState,
-		subscription?: PushSubscriptionKeys,
-	): Promise<{ state: "saved" } | { state: "superseded"; saved: boolean } | { state: "failed" }> {
+	function persist(next: FormState, subscription?: PushSubscriptionKeys) {
 		const seq = ++saveSeq.current;
 		setSaveState("saving");
 		setError(null);
-		try {
-			const body: SaveNotificationSettings = { ...next, subscription };
-			const saved = await api.saveNotificationSettings(body);
-			if (seq !== saveSeq.current) return { state: "superseded", saved: true };
-			queryClient.setQueryData(settingsKeys.notifications(), saved);
-			setSaveState("saved");
-			return { state: "saved" };
-		} catch (err) {
-			if (seq !== saveSeq.current) return { state: "superseded", saved: false };
-			setSaveState("error");
-			setError(err instanceof Error ? err.message : "保存失败");
-			return { state: "failed" };
-		}
+		return saverRef.current!.submit(next, subscription, seq);
 	}
 
 	function edit(patch: Partial<FormState>) {
@@ -319,7 +345,7 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 		setSubscribeFailed(false);
 		try {
 			await runSerializedPushOp(async () => {
-				const sub = await probe.subscribe(publicKey);
+				const sub = await waitForPushUnsubscribe().then(() => probe.subscribe(publicKey));
 				if (sub === "denied" || notificationPermissionDenied()) {
 					markSubscriptionDenied();
 					return;
@@ -327,17 +353,14 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 				const next = { ...form, enabled: true };
 				setForm(next);
 				const saved = await persist(next, sub);
-				if (saved.state === "failed") {
-					// 这次开启仍是最新的一次保存，而且失败了：开关回到关闭。
+				if (saved.state === "failed" && !saved.subscriptionPersisted) {
+					// 最新一次保存失败，而且订阅没写上：开关回到关闭。
 					// 不能留在「已开启但没记本机订阅」，否则会走到只 upsert 订阅的「在这台设备上开启」。
 					setForm((current) => (current ? { ...current, enabled: false } : current));
 					setSubscribeFailed(true);
 					return;
 				}
-				if (saved.state === "superseded" && !saved.saved) {
-					// 更新的保存已经接管表单。这次订阅没写上，不要拨回开关，也不要盖掉新的时间。
-					return;
-				}
+				if (!saved.subscriptionPersisted) return;
 				probedRef.current = true;
 				setLocalSub(sub);
 				const resolvedUserId = queryClient.getQueryData<Me>(shellKeys.me)?.user.id ?? currentUserId;
@@ -366,7 +389,7 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 			await runSerializedPushOp(async () => {
 				let sub: PushSubscriptionKeys | "denied";
 				try {
-					sub = await probe.subscribe(publicKey);
+					sub = await waitForPushUnsubscribe().then(() => probe.subscribe(publicKey));
 				} catch {
 					if (notificationPermissionDenied()) {
 						markThisDeviceDenied();
@@ -450,7 +473,8 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 		try {
 			await api.testNotification(localSub.endpoint);
 			setTestState("sent");
-			window.setTimeout(() => setTestState("idle"), 2500);
+			if (testTimer.current) clearTimeout(testTimer.current);
+			testTimer.current = window.setTimeout(() => setTestState("idle"), 2500);
 		} catch (err) {
 			setTestState("idle");
 			setError(err instanceof Error ? err.message : "测试通知没发出去");

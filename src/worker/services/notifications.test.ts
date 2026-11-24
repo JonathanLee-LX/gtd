@@ -522,6 +522,61 @@ describe("notification settings", () => {
 		});
 		expect((await getNotificationSettings(d1.db, other.id)).subscriptionCount).toBe(2);
 	});
+
+	it("keeps the newer settings when an older full PUT arrives later", async () => {
+		const { db } = createTestDb();
+		const me = await seedUser(db);
+		const sub = await subscription("late-enable");
+		const opened = await saveNotificationSettings(
+			db as never,
+			me.id,
+			{ ...enabledInput, digestTime: "09:00", baseUpdatedAt: null },
+			new Date("2026-10-16T00:30:00.000Z"),
+		);
+		const edited = await saveNotificationSettings(
+			db as never,
+			me.id,
+			{ ...enabledInput, digestTime: "10:00", baseUpdatedAt: opened.updatedAt },
+			new Date("2026-10-16T00:30:01.000Z"),
+		);
+		await expect(
+			saveNotificationSettings(
+				db as never,
+				me.id,
+				{
+					...enabledInput,
+					digestTime: "09:00",
+					baseUpdatedAt: opened.updatedAt,
+					subscription: sub.input,
+				},
+				new Date("2026-10-16T00:30:02.000Z"),
+			),
+		).rejects.toMatchObject({ status: 409 });
+		const [row] = await db.select().from(notificationSettings).where(eq(notificationSettings.userId, me.id));
+		expect(row?.digestTime).toBe("10:00");
+		expect(row?.enabled).toBe(true);
+		expect(row?.updatedAt).toBe(edited.updatedAt);
+		expect(await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.userId, me.id))).toEqual([]);
+
+		const turnedOff = await saveNotificationSettings(
+			db as never,
+			me.id,
+			{ ...enabledInput, enabled: false, digestTime: "10:00", baseUpdatedAt: edited.updatedAt },
+			new Date("2026-10-16T00:30:03.000Z"),
+		);
+		await expect(
+			saveNotificationSettings(
+				db as never,
+				me.id,
+				{ ...enabledInput, enabled: true, digestTime: "09:00", baseUpdatedAt: edited.updatedAt },
+				new Date("2026-10-16T00:30:04.000Z"),
+			),
+		).rejects.toMatchObject({ status: 409 });
+		const [off] = await db.select().from(notificationSettings).where(eq(notificationSettings.userId, me.id));
+		expect(off?.enabled).toBe(false);
+		expect(off?.digestTime).toBe("10:00");
+		expect(off?.updatedAt).toBe(turnedOff.updatedAt);
+	});
 });
 
 describe("push worker surface", () => {

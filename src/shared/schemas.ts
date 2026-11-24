@@ -138,7 +138,12 @@ export const deletePushSubscriptionInput = z.object({
 	endpoint: pushEndpointSchema,
 });
 
-/** 设置页一次提交完整表单，服务端不用先读再写。subscription 只在这台设备刚订阅时带上。 */
+/**
+ * 设置页一次提交完整表单。
+ * `baseUpdatedAt` 是这次修改基于的服务端 `updated_at`：有值时只有这一版还在才写入；
+ * `null` 表示客户端认为还没有行。不带这个字段时保持原来的后写覆盖（旧客户端）。
+ * subscription 只在这台设备刚订阅时带上。
+ */
 export const saveNotificationSettingsInput = z.object({
 	enabled: z.boolean(),
 	digestTime: quarterHourSchema,
@@ -147,6 +152,7 @@ export const saveNotificationSettingsInput = z.object({
 	includeOverdue: z.boolean(),
 	timeZone: z.string().trim().min(1).max(64),
 	subscription: pushSubscriptionInput.optional(),
+	baseUpdatedAt: z.string().min(10).max(40).nullable().optional(),
 });
 
 export const testNotificationInput = z.object({

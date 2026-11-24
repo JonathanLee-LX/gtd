@@ -92,6 +92,7 @@ async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
 				data.message || data.error || `请求失败 (${response.status})`,
 				response.status,
 				data.error,
+				data,
 			);
 		}
 		return data;
@@ -245,10 +246,11 @@ export const api = {
 			body: JSON.stringify(draft),
 		}),
 	notificationSettings: () => request<NotificationSettings>("/api/notifications"),
-	saveNotificationSettings: (body: SaveNotificationSettings) =>
+	saveNotificationSettings: (body: SaveNotificationSettings, opts?: { timeoutMs?: number }) =>
 		request<NotificationSettings>("/api/notifications", {
 			method: "PUT",
 			body: JSON.stringify(body),
+			...opts,
 		}),
 	upsertPushSubscription: (body: PushSubscriptionKeys, opts?: { timeoutMs?: number }) =>
 		request<{ subscriptionCount: number }>("/api/notifications/subscription", {
@@ -286,6 +288,8 @@ export type NotificationSettings = {
 	subscriptionCount: number;
 	subscriptionEndpoints?: string[];
 	vapidPublicKey: string | null;
+	/** 服务端这一行的 updated_at。没有行时为 null。 */
+	updatedAt?: string | null;
 };
 
 export type SaveNotificationSettings = {
@@ -296,4 +300,6 @@ export type SaveNotificationSettings = {
 	includeOverdue: boolean;
 	timeZone: string;
 	subscription?: PushSubscriptionKeys;
+	/** 这次修改基于的服务端版本。null 表示认为还没有保存过。 */
+	baseUpdatedAt?: string | null;
 };

@@ -251,7 +251,7 @@ for (const vp of [
 			});
 		}
 
-		it("quantifies the first empty-storage mixed inbox offset (#99 #102)", async () => {
+		it("诊断：量化首次空存储混合收件箱偏移（不是 #99/#102 达标）", async () => {
 			const key = taskKeys.list({ inbox: true });
 			const tasks = [
 				makeTask(0, { status: "inbox" }),
@@ -293,9 +293,32 @@ for (const vp of [
 			expect(real.blocks.length).toBe(4);
 			expect(report.h1Delta).toBe(0);
 			expect(report.listTopDelta).toBe(0);
-			// 空存储第一次无法知道混合形状。这里只要求量到数字；是否达到 #99/#102 由 report 字段说明，不把失败改写成通过。
 			expect(Number.isFinite(report.listHeightDelta)).toBe(true);
-			expect(report.maxAbsRowTopDelta).toBeGreaterThanOrEqual(0);
+		});
+
+		it("验收：首次空存储混合收件箱须满足 #99 不超过一行且 #102 首屏无位移", async () => {
+			const key = ["tasks", "list", { inbox: true, acceptance: vp.name }] as const;
+			const tasks = [
+				makeTask(0, { status: "inbox" }),
+				makeTask(1, { status: "next" }),
+				makeTask(2, { status: "inbox" }),
+				makeTask(3, { status: "waiting" }),
+			];
+			const first = await measureMixed(true, tasks, key);
+			const real = await measureMixed(false, tasks, key);
+			const oneRow = real.blocks.reduce((max, block) => Math.max(max, block.height), 0);
+			const listHeightDelta = first.listHeight - real.listHeight;
+			const rowTopDelta = Math.max(
+				0,
+				...real.blocks.map((block, index) => Math.abs((first.blocks[index]?.top ?? block.top) - block.top)),
+			);
+			const belowDelta = Math.abs(first.belowTop - real.belowTop);
+			expect(
+				Math.abs(listHeightDelta),
+				`${vp.name} 列表高度差 ${listHeightDelta}px，一行 ${oneRow}px`,
+			).toBeLessThanOrEqual(oneRow + 1);
+			expect(rowTopDelta, `${vp.name} 行顶位移 ${rowTopDelta}px`).toBeLessThanOrEqual(1);
+			expect(belowDelta, `${vp.name} 列表下方位移 ${belowDelta}px`).toBeLessThanOrEqual(1);
 		});
 
 		it("mixed inbox second cold load matches the stored shape (#102)", async () => {

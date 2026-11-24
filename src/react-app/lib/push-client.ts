@@ -154,12 +154,30 @@ export async function readPushSubscriptionBounded(
  * 若底层 unsubscribe() 稍后迟到成功，仅当 gtd:push-owner 仍指向同一 endpoint 的 pendingUnsubscribe 时安全收尾，
  * 绝不误清后续新登录用户的归属记录。
  */
+let pushUnsubscribeSettled: Promise<void> = Promise.resolve();
+
+/** 等已经开始的浏览器退订结束。超时返回后，新的 subscribe 必须先等它，避免旧 unsubscribe 落在新订阅之后。 */
+export function waitForPushUnsubscribe(): Promise<void> {
+	return pushUnsubscribeSettled;
+}
+
+/** 测试隔离：丢掉上一例没有结束的退订，避免它挡住后面的 subscribe。 */
+export function resetPushUnsubscribeForTests(): void {
+	pushUnsubscribeSettled = Promise.resolve();
+}
+
 export async function unsubscribePushBounded(
 	probe: PushProbe,
 	fallbackEndpoint = "",
 	timeoutMs = PUSH_UNSUBSCRIBE_TIMEOUT_MS,
 ): Promise<PushUnsubscribeResult> {
 	const raw = Promise.resolve().then(() => probe.unsubscribe());
+	const settled = raw.then(
+		() => undefined,
+		() => undefined,
+	);
+	const previous = pushUnsubscribeSettled;
+	pushUnsubscribeSettled = previous.then(() => settled, () => settled);
 	raw.catch(() => {});
 	try {
 		const raced = await raceWithTimeout(raw, timeoutMs);

@@ -12,11 +12,17 @@ import {
 	readPushSubscriptionBounded,
 	readPushSubscriptionOwner,
 	reconcilePushSubscriptionForUser,
+	resetPushUnsubscribeForTests,
 	unsubscribePushBounded,
+	waitForPushUnsubscribe,
 	writePushSubscriptionOwner,
 	type PushProbe,
 	type PushSignOutCleanupOutcome,
 } from "./push-client";
+
+afterEach(() => {
+	resetPushUnsubscribeForTests();
+});
 
 const desktop = {
 	userAgent: "Mozilla/5.0",
@@ -115,6 +121,42 @@ describe("browserPushProbe.subscribe", () => {
 			},
 		});
 		await expect(browserPushProbe.subscribe("abc")).rejects.toThrow(/Registration failed - permission denied/);
+	});
+});
+
+describe("timed-out unsubscribe versus a later subscribe", () => {
+	it("keeps the new subscribe behind the unsubscribe that already started", async () => {
+		let release: () => void = () => {};
+		const unsubscribe = vi.fn(
+			() =>
+				new Promise<{ status: "unsubscribed"; endpoint: string }>((resolve) => {
+					release = () => resolve({ status: "unsubscribed", endpoint: "https://fcm.googleapis.com/fcm/send/same" });
+				}),
+		);
+		const probe: PushProbe = {
+			inspect: () => "ok",
+			readSubscription: async () => null,
+			subscribe: async () => ({
+				endpoint: "https://fcm.googleapis.com/fcm/send/same",
+				p256dh: "p",
+				auth: "a",
+			}),
+			unsubscribe,
+		};
+		const timedOut = unsubscribePushBounded(probe, "https://fcm.googleapis.com/fcm/send/same", 20);
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		await expect(timedOut).resolves.toMatchObject({ status: "failed" });
+		let started = false;
+		const next = waitForPushUnsubscribe().then(async () => {
+			started = true;
+			return probe.subscribe("key");
+		});
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(started).toBe(false);
+		expect(unsubscribe).toHaveBeenCalledOnce();
+		release();
+		await expect(next).resolves.toMatchObject({ endpoint: "https://fcm.googleapis.com/fcm/send/same" });
+		expect(started).toBe(true);
 	});
 });
 

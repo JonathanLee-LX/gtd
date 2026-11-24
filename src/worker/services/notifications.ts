@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, lte } from "drizzle-orm";
+import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
 import type { AppDatabase } from "../../db/client";
 import { notificationLog, notificationSettings, pushSubscriptions } from "../../db/schema";
 import {
@@ -15,7 +15,7 @@ import type { PushSubscriptionInput, SaveNotificationSettingsInput } from "../..
 import { DEFAULT_TIME_ZONE } from "../../shared/constants";
 import { ymdInZone } from "../../shared/today";
 import { runQueries } from "../lib/batch";
-import { badRequest, notFound, serviceUnavailable } from "../lib/errors";
+import { AppError, badRequest, notFound, serviceUnavailable } from "../lib/errors";
 import { assertPushSubscriptionKeys } from "../lib/web-push";
 import { digestTasksQuery } from "./tasks";
 import type { ChannelTarget, DigestMessage, NotificationChannel } from "./notification-channel";
@@ -30,6 +30,7 @@ export type NotificationSettingsView = {
 	saved: boolean;
 	subscriptionCount: number;
 	subscriptionEndpoints: string[];
+	updatedAt: string | null;
 };
 
 export type DigestKind = "due" | "tomorrow";
@@ -74,6 +75,7 @@ function viewFrom(row: SettingsRow | undefined, endpoints: string[]): Notificati
 		saved: Boolean(row),
 		subscriptionCount: endpoints.length,
 		subscriptionEndpoints: endpoints,
+		updatedAt: row?.updatedAt ?? null,
 	};
 }
 
@@ -124,56 +126,89 @@ export async function saveNotificationSettings(
 	const nextDue = input.enabled ? nextQuarterFireUtc(now, timeZone, input.digestTime) : null;
 	const nextTomorrow =
 		input.enabled && input.tomorrowEnabled ? nextQuarterFireUtc(now, timeZone, input.tomorrowTime) : null;
-	const settingsWrite = db
-		.insert(notificationSettings)
-		.values({
-			userId,
-			enabled: input.enabled,
-			digestTime: input.digestTime,
-			tomorrowEnabled: input.tomorrowEnabled,
-			tomorrowTime: input.tomorrowTime,
-			includeOverdue: input.includeOverdue,
-			timeZone,
-			nextDueDigestAt: nextDue,
-			nextTomorrowAt: nextTomorrow,
-			updatedAt: at,
-		})
-		.onConflictDoUpdate({
-			target: notificationSettings.userId,
-			set: {
-				enabled: input.enabled,
-				digestTime: input.digestTime,
-				tomorrowEnabled: input.tomorrowEnabled,
-				tomorrowTime: input.tomorrowTime,
-				includeOverdue: input.includeOverdue,
-				timeZone,
-				nextDueDigestAt: nextDue,
-				nextTomorrowAt: nextTomorrow,
-				updatedAt: at,
-			},
-		});
-	const queries: PromiseLike<unknown>[] = [settingsWrite];
-	if (input.subscription) queries.push(subscriptionUpsert(db, userId, input.subscription, at));
-	queries.push(
-		db
-			.select({ endpoint: pushSubscriptions.endpoint })
-			.from(pushSubscriptions)
-			.where(eq(pushSubscriptions.userId, userId)),
-	);
-	const results = await runQueries(db, queries);
-	const subs = results[results.length - 1] as { endpoint: string }[];
-	const endpoints = subs.map((row) => row.endpoint);
-	return {
+	const values = {
+		userId,
 		enabled: input.enabled,
 		digestTime: input.digestTime,
 		tomorrowEnabled: input.tomorrowEnabled,
 		tomorrowTime: input.tomorrowTime,
 		includeOverdue: input.includeOverdue,
 		timeZone,
-		saved: true,
-		subscriptionCount: endpoints.length,
-		subscriptionEndpoints: endpoints,
+		nextDueDigestAt: nextDue,
+		nextTomorrowAt: nextTomorrow,
+		updatedAt: at,
 	};
+	const replace = {
+		enabled: input.enabled,
+		digestTime: input.digestTime,
+		tomorrowEnabled: input.tomorrowEnabled,
+		tomorrowTime: input.tomorrowTime,
+		includeOverdue: input.includeOverdue,
+		timeZone,
+		nextDueDigestAt: nextDue,
+		nextTomorrowAt: nextTomorrow,
+		updatedAt: at,
+	};
+	// 不带 baseUpdatedAt：旧客户端，后到的完整 PUT 仍覆盖。
+	if (input.baseUpdatedAt === undefined) {
+		const queries: PromiseLike<unknown>[] = [
+			db.insert(notificationSettings).values(values).onConflictDoUpdate({
+				target: notificationSettings.userId,
+				set: replace,
+			}),
+		];
+		if (input.subscription) queries.push(subscriptionUpsert(db, userId, input.subscription, at));
+		queries.push(
+			db
+				.select({ endpoint: pushSubscriptions.endpoint })
+				.from(pushSubscriptions)
+				.where(eq(pushSubscriptions.userId, userId)),
+		);
+		const results = await runQueries(db, queries);
+		const subs = results[results.length - 1] as { endpoint: string }[];
+		return viewFrom(
+			{
+				...values,
+				nextDueDigestAt: nextDue,
+				nextTomorrowAt: nextTomorrow,
+			} as SettingsRow,
+			subs.map((row) => row.endpoint),
+		);
+	}
+	// 带版本：只有 updated_at 仍是这一版（null = 还没有行）才写入。没写上就不 upsert 订阅。
+	const [written, rows, subs] = (await runQueries(db, [
+		db
+			.insert(notificationSettings)
+			.values(values)
+			.onConflictDoUpdate({
+				target: notificationSettings.userId,
+				set: replace,
+				where: sql`${notificationSettings.updatedAt} is ${input.baseUpdatedAt}`,
+			})
+			.returning({ updatedAt: notificationSettings.updatedAt }),
+		db.select().from(notificationSettings).where(eq(notificationSettings.userId, userId)).limit(1),
+		db
+			.select({ endpoint: pushSubscriptions.endpoint })
+			.from(pushSubscriptions)
+			.where(eq(pushSubscriptions.userId, userId)),
+	])) as [{ updatedAt: string }[], SettingsRow[], { endpoint: string }[]];
+	if (written.length === 0) {
+		throw new AppError(409, "conflict", "到期提醒已有更新的保存", {
+			current: viewFrom(rows[0], subs.map((row) => row.endpoint)),
+		});
+	}
+	let endpoints = subs.map((row) => row.endpoint);
+	if (input.subscription) {
+		const [, after] = (await runQueries(db, [
+			subscriptionUpsert(db, userId, input.subscription, at),
+			db
+				.select({ endpoint: pushSubscriptions.endpoint })
+				.from(pushSubscriptions)
+				.where(eq(pushSubscriptions.userId, userId)),
+		])) as [unknown, { endpoint: string }[]];
+		endpoints = after.map((row) => row.endpoint);
+	}
+	return viewFrom(rows[0] ? { ...rows[0], ...values } : (values as SettingsRow), endpoints);
 }
 
 function subscriptionUpsert(db: AppDatabase, userId: string, input: PushSubscriptionInput, at: string) {

@@ -13,7 +13,7 @@ export async function handleRoute<T>(
 	} catch (error) {
 		if (error instanceof AppError) {
 			return c.json(
-				{ error: error.code, message: error.message },
+				{ error: error.code, message: error.message, ...error.extra },
 				error.status as ContentfulStatusCode,
 			);
 		}

@@ -6,6 +6,7 @@ import type { Me, NotificationSettings, SaveNotificationSettings } from "../api"
 import {
 	clearPushSubscriptionOwner,
 	PUSH_UNSUBSCRIBE_TIMEOUT_MS,
+	resetPushUnsubscribeForTests,
 	SIGN_OUT_REQUEST_TIMEOUT_MS,
 	readPushSubscriptionOwner,
 	reconcilePushSubscriptionForUser,
@@ -130,6 +131,7 @@ afterEach(() => {
 	cleanup();
 	localStorage.clear();
 	clearPushSubscriptionOwner();
+	resetPushUnsubscribeForTests();
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
 });
@@ -292,129 +294,87 @@ describe("due reminder settings", () => {
 		};
 	}
 
-	it("keeps the switch on and the edited time when the enable save is superseded, in either response order", async () => {
-		for (const order of ["stale-first", "fresh-first"] as const) {
-			cleanup();
-			localStorage.clear();
-			clearPushSubscriptionOwner();
-			const first = hold();
-			const second = hold();
-			let calls = 0;
-			const { save } = renderCard(probe());
-			save.mockImplementation(async (body) => {
-				calls += 1;
-				await (calls === 1 ? first.promise : second.promise);
-				return savedSettings(body);
-			});
-			fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
-			await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
-			expect((screen.getByLabelText("推送时间") as HTMLSelectElement).disabled).toBe(false);
-			fireEvent.change(screen.getByLabelText("推送时间"), { target: { value: "10:00" } });
-			await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
-
-			const releaseOlder = first.release;
-			const releaseNewer = second.release;
-			if (order === "stale-first") {
-				await act(async () => {
-					releaseOlder();
-				});
-				expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
-				expect((screen.getByLabelText("推送时间") as HTMLSelectElement).value).toBe("10:00");
-				expect(screen.queryByText("开启失败，请重试")).toBeNull();
-				await act(async () => {
-					releaseNewer();
-				});
-			} else {
-				await act(async () => {
-					releaseNewer();
-				});
-				await waitFor(() => expect(screen.getByRole("status").textContent).toContain("已保存"));
-				await act(async () => {
-					releaseOlder();
-				});
-			}
-			await waitFor(() => expect(screen.getByRole("status").textContent).toContain("已保存"));
-			expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
-			expect((screen.getByLabelText("推送时间") as HTMLSelectElement).value).toBe("10:00");
-			expect(screen.queryByText("开启失败，请重试")).toBeNull();
-			expect(screen.getByRole("button", { name: "在此设备关闭" })).toBeTruthy();
-			expect(screen.queryByRole("button", { name: "在这台设备上开启" })).toBeNull();
-		}
-	});
-
-	it("does not snap the switch off when enabling fails after a newer time save has already started", async () => {
+	it("keeps the switch on and sends the edited time after the in-flight enable save settles", async () => {
 		const first = hold();
-		const second = hold();
-		let calls = 0;
 		const { save } = renderCard(probe());
 		save.mockImplementation(async (body) => {
-			calls += 1;
-			if (calls === 1) {
-				await first.promise;
-				throw new Error("服务器忙");
-			}
-			await second.promise;
-			return savedSettings({ ...body, subscription: undefined });
+			if (save.mock.calls.length === 1) await first.promise;
+			return savedSettings(body);
 		});
 		fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
 		await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+		expect((screen.getByLabelText("推送时间") as HTMLSelectElement).disabled).toBe(false);
 		fireEvent.change(screen.getByLabelText("推送时间"), { target: { value: "10:00" } });
-		await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
-
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(save).toHaveBeenCalledTimes(1);
+		expect(save.mock.calls[0]?.[0]?.digestTime).toBe("09:00");
 		await act(async () => {
 			first.release();
 		});
-		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
-		expect((screen.getByLabelText("推送时间") as HTMLSelectElement).value).toBe("10:00");
-		expect(screen.queryByText("开启失败，请重试")).toBeNull();
-
-		await act(async () => {
-			second.release();
-		});
+		await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+		expect(save.mock.calls[1]?.[0]?.digestTime).toBe("10:00");
 		await waitFor(() => expect(screen.getByRole("status").textContent).toContain("已保存"));
 		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
 		expect((screen.getByLabelText("推送时间") as HTMLSelectElement).value).toBe("10:00");
 		expect(screen.queryByText("开启失败，请重试")).toBeNull();
-		expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "在此设备关闭" })).toBeTruthy();
 	});
 
-	it("shows the newer save error and keeps the edited time when that save fails after enable succeeded", async () => {
+	it("retries the latest time after the enable save fails and does not snap the switch off", async () => {
 		const first = hold();
-		const second = hold();
-		let calls = 0;
 		const { save } = renderCard(probe());
 		save.mockImplementation(async (body) => {
-			calls += 1;
-			if (calls === 1) {
+			if (save.mock.calls.length === 1) {
+				await first.promise;
+				throw new Error("服务器忙");
+			}
+			return savedSettings(body);
+		});
+		fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
+		await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+		fireEvent.change(screen.getByLabelText("推送时间"), { target: { value: "10:00" } });
+		await act(async () => {
+			first.release();
+		});
+		await waitFor(() => expect(save.mock.calls.some((call) => call[0]?.digestTime === "10:00")).toBe(true));
+		await waitFor(() => expect(screen.getByRole("status").textContent).toContain("已保存"));
+		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
+		expect((screen.getByLabelText("推送时间") as HTMLSelectElement).value).toBe("10:00");
+		expect(screen.queryByText("开启失败，请重试")).toBeNull();
+		expect(screen.getByRole("button", { name: "在此设备关闭" })).toBeTruthy();
+	});
+
+	it("keeps the switch on and shows an error when the later time save keeps failing", async () => {
+		const first = hold();
+		const { save } = renderCard(probe());
+		save.mockImplementation(async (body) => {
+			if (body.digestTime === "09:00") {
 				await first.promise;
 				return savedSettings(body);
 			}
-			await second.promise;
 			throw new Error("保存时间失败");
 		});
 		fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
 		await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
 		fireEvent.change(screen.getByLabelText("推送时间"), { target: { value: "10:00" } });
-		await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
-
-		await act(async () => {
-			second.release();
-		});
-		expect(await screen.findByText("保存时间失败")).toBeTruthy();
 		await act(async () => {
 			first.release();
 		});
+		expect(await screen.findByText("保存时间失败")).toBeTruthy();
 		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
 		expect((screen.getByLabelText("推送时间") as HTMLSelectElement).value).toBe("10:00");
 		expect(screen.queryByText("开启失败，请重试")).toBeNull();
-		expect(screen.getByText("保存时间失败")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "在此设备关闭" })).toBeTruthy();
 	});
 
 	it("snaps the master switch off when subscribe works but saving settings fails", async () => {
 		vi.stubGlobal("Notification", { permission: "granted" });
 		const { save, upsert } = renderCard(probe());
-		save.mockRejectedValueOnce(new Error("服务器忙"));
+		save.mockImplementation(async () => {
+			throw new Error("服务器忙");
+		});
 		fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
 		await waitFor(() => {
 			expect(document.body.textContent ?? "").toMatch(/服务器忙|开启失败，请重试/);
@@ -422,7 +382,7 @@ describe("due reminder settings", () => {
 		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("false");
 		expect(screen.queryByRole("button", { name: "在这台设备上开启" })).toBeNull();
 		expect(upsert).not.toHaveBeenCalled();
-		expect(save).toHaveBeenCalledTimes(1);
+		expect(save.mock.calls.length).toBeGreaterThan(1);
 		expect(save.mock.calls[0]?.[0]).toMatchObject({ enabled: true, subscription: SUB });
 	});
 

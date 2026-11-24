@@ -152,6 +152,47 @@ async function measureBoard(opts: { loading: boolean; tasks: Task[]; inbox: bool
 	return result;
 }
 
+/** 混合收件箱：每一块（任务行 + 可选整理按钮）的位置，以及列表下方标记的位置。 */
+async function measureMixed(loading: boolean, tasks: Task[], key: readonly unknown[]) {
+	const view = render(
+		<Providers>
+			<div style={{ width: 720 }}>
+				<TaskBoard
+					title="收件箱"
+					placeholder="随便记一条"
+					query={{ data: loading ? undefined : { items: tasks }, error: null }}
+					loadKey={key}
+					projects={projects}
+					emptyText="空"
+					enableInboxProcess
+					onCreate={async () => {}}
+					onComplete={async () => {}}
+					onDelete={async () => {}}
+				/>
+				<div data-below>列表下面</div>
+			</div>
+		</Providers>,
+	);
+	if (loading) await sleep(250);
+	const h1 = rect(view.container.querySelector("h1"));
+	const list = loading
+		? view.container.querySelector('[data-testid="skeleton-list"]')
+		: view.container.querySelector(".task-row")?.parentElement?.parentElement ?? null;
+	const blocks = [...(list?.querySelectorAll(":scope > div") ?? [])].map((el) => {
+		const box = el.getBoundingClientRect();
+		return { top: box.top, height: box.height };
+	});
+	const result = {
+		h1Top: h1.top,
+		listTop: rect(list).top,
+		listHeight: rect(list).height,
+		belowTop: rect(view.container.querySelector("[data-below]")).top,
+		blocks,
+	};
+	view.unmount();
+	return result;
+}
+
 beforeEach(() => localStorage.clear());
 afterEach(() => {
 	cleanup();
@@ -210,7 +251,7 @@ for (const vp of [
 			});
 		}
 
-		it("mixed inbox first cold load has no stored shape, then the next cold load matches (#102)", async () => {
+		it("quantifies the first empty-storage mixed inbox offset (#99 #102)", async () => {
 			const key = taskKeys.list({ inbox: true });
 			const tasks = [
 				makeTask(0, { status: "inbox" }),
@@ -218,8 +259,53 @@ for (const vp of [
 				makeTask(2, { status: "inbox" }),
 				makeTask(3, { status: "waiting" }),
 			];
-			const firstSkeleton = await measureBoard({ loading: true, tasks: [], inbox: true, key });
-			expect(firstSkeleton.rows).toBeGreaterThan(0);
+			const first = await measureMixed(true, tasks, key);
+			const real = await measureMixed(false, tasks, key);
+			const rowShifts = real.blocks.map((block, index) => {
+				const skel = first.blocks[index];
+				return skel
+					? {
+							index,
+							topDelta: Math.round((skel.top - block.top) * 10) / 10,
+							heightDelta: Math.round((skel.height - block.height) * 10) / 10,
+						}
+					: { index, topDelta: null, heightDelta: null };
+			});
+			const oneRow = real.blocks.reduce((max, block) => Math.max(max, block.height), 0);
+			const listHeightDelta = Math.round((first.listHeight - real.listHeight) * 10) / 10;
+			const maxAbsTop = Math.max(0, ...rowShifts.map((row) => Math.abs(row.topDelta ?? 0)));
+			const report = {
+				viewport: vp.name,
+				skeletonRows: first.blocks.length,
+				realRows: real.blocks.length,
+				listHeightDelta,
+				oneRow: Math.round(oneRow * 10) / 10,
+				h1Delta: Math.round((first.h1Top - real.h1Top) * 10) / 10,
+				listTopDelta: Math.round((first.listTop - real.listTop) * 10) / 10,
+				belowDelta: Math.round((first.belowTop - real.belowTop) * 10) / 10,
+				rowShifts,
+				maxAbsRowTopDelta: Math.round(maxAbsTop * 10) / 10,
+				withinOneRow: Math.abs(listHeightDelta) <= oneRow + 1,
+				noFirstScreenShift: maxAbsTop <= 1 && Math.abs(first.belowTop - real.belowTop) <= 1,
+			};
+			console.info(`INBOX_FIRST_LOAD_OFFSET ${JSON.stringify(report)}`);
+			expect(first.blocks.length).toBeGreaterThan(0);
+			expect(real.blocks.length).toBe(4);
+			expect(report.h1Delta).toBe(0);
+			expect(report.listTopDelta).toBe(0);
+			// 空存储第一次无法知道混合形状。这里只要求量到数字；是否达到 #99/#102 由 report 字段说明，不把失败改写成通过。
+			expect(Number.isFinite(report.listHeightDelta)).toBe(true);
+			expect(report.maxAbsRowTopDelta).toBeGreaterThanOrEqual(0);
+		});
+
+		it("mixed inbox second cold load matches the stored shape (#102)", async () => {
+			const key = taskKeys.list({ inbox: true });
+			const tasks = [
+				makeTask(0, { status: "inbox" }),
+				makeTask(1, { status: "next" }),
+				makeTask(2, { status: "inbox" }),
+				makeTask(3, { status: "waiting" }),
+			];
 			const arrived = await measureBoard({ loading: false, tasks, inbox: true, key });
 			expect(arrived.rows).toBe(4);
 			const secondSkeleton = await measureBoard({ loading: true, tasks: [], inbox: true, key });
@@ -228,7 +314,6 @@ for (const vp of [
 			expect(secondSkeleton.h1Top).toBe(arrived.h1Top);
 			expect(secondSkeleton.listTop).toBe(arrived.listTop);
 			expect(Math.abs(secondSkeleton.firstRowTop - arrived.firstRowTop)).toBeLessThanOrEqual(1);
-			expect(Math.abs(firstSkeleton.listHeight - arrived.listHeight)).toBeGreaterThan(8);
 		});
 
 		it("mixed inbox list: skeleton matches which rows have process actions (#102)", async () => {

@@ -6,6 +6,7 @@ import type { Me, NotificationSettings, SaveNotificationSettings } from "../api"
 import {
 	clearPushSubscriptionOwner,
 	PUSH_UNSUBSCRIBE_TIMEOUT_MS,
+	SIGN_OUT_REQUEST_TIMEOUT_MS,
 	readPushSubscriptionOwner,
 	reconcilePushSubscriptionForUser,
 	writePushSubscriptionOwner,
@@ -272,6 +273,144 @@ describe("due reminder settings", () => {
 		expect(save.mock.calls[0]?.[0]).toMatchObject({ enabled: true, subscription: SUB });
 	});
 
+	function hold() {
+		let release: () => void = () => {};
+		const promise = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		return { promise, release: () => release() };
+	}
+
+	function savedSettings(body: SaveNotificationSettings): NotificationSettings {
+		return {
+			...SETTINGS,
+			...body,
+			saved: true,
+			vapidPublicKey: "test-public",
+			subscriptionCount: body.subscription ? 1 : 0,
+			subscriptionEndpoints: body.subscription ? [body.subscription.endpoint] : [],
+		};
+	}
+
+	it("keeps the switch on and the edited time when the enable save is superseded, in either response order", async () => {
+		for (const order of ["stale-first", "fresh-first"] as const) {
+			cleanup();
+			localStorage.clear();
+			clearPushSubscriptionOwner();
+			const first = hold();
+			const second = hold();
+			let calls = 0;
+			const { save } = renderCard(probe());
+			save.mockImplementation(async (body) => {
+				calls += 1;
+				await (calls === 1 ? first.promise : second.promise);
+				return savedSettings(body);
+			});
+			fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
+			await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+			expect((screen.getByLabelText("推送时间") as HTMLSelectElement).disabled).toBe(false);
+			fireEvent.change(screen.getByLabelText("推送时间"), { target: { value: "10:00" } });
+			await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+
+			const releaseOlder = first.release;
+			const releaseNewer = second.release;
+			if (order === "stale-first") {
+				await act(async () => {
+					releaseOlder();
+				});
+				expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
+				expect((screen.getByLabelText("推送时间") as HTMLSelectElement).value).toBe("10:00");
+				expect(screen.queryByText("开启失败，请重试")).toBeNull();
+				await act(async () => {
+					releaseNewer();
+				});
+			} else {
+				await act(async () => {
+					releaseNewer();
+				});
+				await waitFor(() => expect(screen.getByRole("status").textContent).toContain("已保存"));
+				await act(async () => {
+					releaseOlder();
+				});
+			}
+			await waitFor(() => expect(screen.getByRole("status").textContent).toContain("已保存"));
+			expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
+			expect((screen.getByLabelText("推送时间") as HTMLSelectElement).value).toBe("10:00");
+			expect(screen.queryByText("开启失败，请重试")).toBeNull();
+			expect(screen.getByRole("button", { name: "在此设备关闭" })).toBeTruthy();
+			expect(screen.queryByRole("button", { name: "在这台设备上开启" })).toBeNull();
+		}
+	});
+
+	it("does not snap the switch off when enabling fails after a newer time save has already started", async () => {
+		const first = hold();
+		const second = hold();
+		let calls = 0;
+		const { save } = renderCard(probe());
+		save.mockImplementation(async (body) => {
+			calls += 1;
+			if (calls === 1) {
+				await first.promise;
+				throw new Error("服务器忙");
+			}
+			await second.promise;
+			return savedSettings({ ...body, subscription: undefined });
+		});
+		fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
+		await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+		fireEvent.change(screen.getByLabelText("推送时间"), { target: { value: "10:00" } });
+		await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+
+		await act(async () => {
+			first.release();
+		});
+		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
+		expect((screen.getByLabelText("推送时间") as HTMLSelectElement).value).toBe("10:00");
+		expect(screen.queryByText("开启失败，请重试")).toBeNull();
+
+		await act(async () => {
+			second.release();
+		});
+		await waitFor(() => expect(screen.getByRole("status").textContent).toContain("已保存"));
+		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
+		expect((screen.getByLabelText("推送时间") as HTMLSelectElement).value).toBe("10:00");
+		expect(screen.queryByText("开启失败，请重试")).toBeNull();
+		expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy();
+	});
+
+	it("shows the newer save error and keeps the edited time when that save fails after enable succeeded", async () => {
+		const first = hold();
+		const second = hold();
+		let calls = 0;
+		const { save } = renderCard(probe());
+		save.mockImplementation(async (body) => {
+			calls += 1;
+			if (calls === 1) {
+				await first.promise;
+				return savedSettings(body);
+			}
+			await second.promise;
+			throw new Error("保存时间失败");
+		});
+		fireEvent.click(await screen.findByRole("switch", { name: "到期提醒" }));
+		await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+		fireEvent.change(screen.getByLabelText("推送时间"), { target: { value: "10:00" } });
+		await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+
+		await act(async () => {
+			second.release();
+		});
+		expect(await screen.findByText("保存时间失败")).toBeTruthy();
+		await act(async () => {
+			first.release();
+		});
+		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
+		expect((screen.getByLabelText("推送时间") as HTMLSelectElement).value).toBe("10:00");
+		expect(screen.queryByText("开启失败，请重试")).toBeNull();
+		expect(screen.getByText("保存时间失败")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "在此设备关闭" })).toBeTruthy();
+	});
+
 	it("snaps the master switch off when subscribe works but saving settings fails", async () => {
 		vi.stubGlobal("Notification", { permission: "granted" });
 		const { save, upsert } = renderCard(probe());
@@ -341,6 +480,7 @@ describe("due reminder settings", () => {
 		fireEvent.click(btn);
 		await waitFor(() => expect(remove).toHaveBeenCalledWith(SUB.endpoint));
 		await waitFor(() => expect(unsubscribe).toHaveBeenCalledOnce());
+		expect(unsubscribe.mock.invocationCallOrder[0]).toBeLessThan(remove.mock.invocationCallOrder[0]!);
 		expect(save).not.toHaveBeenCalled();
 		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
 		expect(await screen.findByText("其他 1 台设备已开启")).toBeTruthy();
@@ -384,13 +524,17 @@ describe("due reminder settings", () => {
 		expect(readPushSubscriptionOwner()).toBeNull();
 	});
 
-	it("does not hang on 关闭中… when browser unsubscribe stalls after server DELETE succeeds", async () => {
+	it("does not call DELETE until a stalled browser unsubscribe times out, then deletes only this device", async () => {
+		const calls: string[] = [];
 		const { remove } = renderCard(
 			probe({
 				readSubscription: async () => SUB,
-				unsubscribe: () => new Promise(() => {}),
+				unsubscribe: () => {
+					calls.push("browser");
+					return new Promise(() => {});
+				},
 			}),
-			{ ...SETTINGS, enabled: true, subscriptionCount: 1, subscriptionEndpoints: [SUB.endpoint] },
+			{ ...SETTINGS, enabled: true, subscriptionCount: 2, subscriptionEndpoints: [SUB.endpoint, OTHER_EP] },
 		);
 		const btn = await screen.findByRole("button", { name: "在此设备关闭" });
 
@@ -399,15 +543,48 @@ describe("due reminder settings", () => {
 		await act(async () => {
 			await Promise.resolve();
 			await Promise.resolve();
+		});
+		expect(remove).not.toHaveBeenCalled();
+		expect(screen.getByRole("button", { name: "关闭中…" })).toBeTruthy();
+		await act(async () => {
 			await vi.advanceTimersByTimeAsync(PUSH_UNSUBSCRIBE_TIMEOUT_MS + 50);
 		});
+		expect(calls).toEqual(["browser"]);
+		expect(remove).toHaveBeenCalledTimes(1);
 		expect(remove).toHaveBeenCalledWith(SUB.endpoint);
 		expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy();
+		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
+		expect(screen.queryByRole("alert")).toBeNull();
 		expect(screen.getByRole("status").textContent).toContain("已保存");
 		expect(readPushSubscriptionOwner()).toMatchObject({ endpoint: SUB.endpoint, pendingUnsubscribe: true });
+		expect(screen.getByText("其他 1 台设备已开启")).toBeTruthy();
 	});
 
-	it("keeps the local subscription and shows an error when DELETE fails, then succeeds on retry", async () => {
+	it("shows an error and keeps the close button when DELETE times out after the browser unsubscribe", async () => {
+		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
+		const { remove } = renderCard(
+			probe({ readSubscription: async () => SUB, unsubscribe }),
+			{ ...SETTINGS, enabled: true, subscriptionCount: 2, subscriptionEndpoints: [SUB.endpoint, OTHER_EP] },
+			{ onDelete: () => new Promise(() => {}) },
+		);
+		const btn = await screen.findByRole("button", { name: "在此设备关闭" });
+		vi.useFakeTimers();
+		fireEvent.click(btn);
+		await act(async () => {
+			await Promise.resolve();
+			await vi.advanceTimersByTimeAsync(SIGN_OUT_REQUEST_TIMEOUT_MS + 50);
+		});
+		expect(unsubscribe).toHaveBeenCalledOnce();
+		expect(remove).toHaveBeenCalledTimes(1);
+		expect(remove).toHaveBeenCalledWith(SUB.endpoint);
+		expect(screen.getByRole("button", { name: "在此设备关闭" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "在这台设备上开启" })).toBeNull();
+		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
+		expect(document.body.textContent).toContain("请求超时");
+		expect(screen.queryByText("其他 1 台设备已开启")).toBeNull();
+	});
+
+	it("keeps the close button and shows an error when DELETE fails, then succeeds on retry", async () => {
 		let failOnce = true;
 		const unsubscribe = vi.fn(async () => ({ status: "unsubscribed" as const, endpoint: SUB.endpoint }));
 		const { remove } = renderCard(
@@ -431,16 +608,20 @@ describe("due reminder settings", () => {
 		);
 		fireEvent.click(await screen.findByRole("button", { name: "在此设备关闭" }));
 		await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+		expect(unsubscribe).toHaveBeenCalledOnce();
+		expect(unsubscribe.mock.invocationCallOrder[0]).toBeLessThan(remove.mock.invocationCallOrder[0]!);
 		expect(await screen.findByText("服务暂时不可用")).toBeTruthy();
 		expect(screen.getByRole("status").textContent).toContain("保存失败");
-		// 服务端失败时不破坏浏览器订阅，按钮仍在可重试
-		expect(unsubscribe).not.toHaveBeenCalled();
+		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
 		expect(screen.getByRole("button", { name: "在此设备关闭" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "在这台设备上开启" })).toBeNull();
 
 		fireEvent.click(screen.getByRole("button", { name: "在此设备关闭" }));
 		await waitFor(() => expect(remove).toHaveBeenCalledTimes(2));
-		await waitFor(() => expect(unsubscribe).toHaveBeenCalledOnce());
+		await waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(2));
+		expect(unsubscribe.mock.invocationCallOrder[1]).toBeLessThan(remove.mock.invocationCallOrder[1]!);
 		await waitFor(() => expect(screen.getByRole("button", { name: "在这台设备上开启" })).toBeTruthy());
+		expect(screen.getByRole("switch", { name: "到期提醒" }).getAttribute("aria-checked")).toBe("true");
 	});
 
 	it("does not silently hijack a leftover browser subscription when localStorage is missing or userId is null and server does not own this endpoint", async () => {

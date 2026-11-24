@@ -106,6 +106,11 @@ export function sameAutosaveValue<F extends AutosaveField>(
 	return a === b;
 }
 
+/** 自动保存内部字段名 → 请求体字段名。目前只有 tags 会改名。 */
+export function toApiFieldKey(field: string): string {
+	return field === "tags" ? "tagIds" : field;
+}
+
 /** 内部值 → PATCH 请求体（tags → tagIds）。 */
 export function toApiPatch(values: Partial_): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
@@ -113,6 +118,22 @@ export function toApiPatch(values: Partial_): Record<string, unknown> {
 		if (!(field in values)) continue;
 		if (field === "tags") out.tagIds = (values.tags ?? []).map((tag) => tag.id);
 		else out[field] = values[field];
+	}
+	return out;
+}
+
+/**
+ * 与 toApiPatch 同一套字段名。`tags` 的写入序号记到 `tagIds` 上；
+ * 同一个请求字段有多条序号时保留较晚的一条。
+ */
+export function toApiSeq(seq: Record<string, number> | undefined): Record<string, number> | undefined {
+	if (!seq) return undefined;
+	const out: Record<string, number> = {};
+	for (const [key, value] of Object.entries(seq)) {
+		if (typeof value !== "number") continue;
+		const apiKey = toApiFieldKey(key);
+		const prev = out[apiKey];
+		if (prev === undefined || value >= prev) out[apiKey] = value;
 	}
 	return out;
 }

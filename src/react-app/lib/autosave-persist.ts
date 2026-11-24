@@ -21,6 +21,7 @@ import {
 	releaseTaskAutosave,
 	sameAutosaveValue,
 	toApiPatch,
+	toApiSeq,
 	type AutosaveField,
 	type AutosaveValues,
 	type TaskAutosaveQueue,
@@ -91,7 +92,10 @@ function sanitizeCreateBody(
  * #117：把仍在途 / 已遇 401 的临时新建与自动保存队列里尚未确认的改动合并成可暂存的新建记录。
  */
 /**
- * 多层字段合并。带写入序号时序号大的胜出；都没有序号时后面的层覆盖前面的层（旧行为）。
+ * 多层字段合并。序号和值使用同一套请求字段名（tags 的序号在 tagIds 上）。
+ * - 有序号：序号不比当前记录小才写入；
+ * - 没序号：只在这个字段还没有任何序号时写入，后一层盖过先一层的无序号值；
+ * - 已经有序号的字段，不会被缺序号的后一层抹掉。
  */
 function mergeRecordedFields(
 	base: Record<string, unknown>,
@@ -100,12 +104,12 @@ function mergeRecordedFields(
 	const out = { ...base };
 	const rank: Record<string, number> = {};
 	for (const layer of layers) {
+		const seqByKey = toApiSeq(layer.seq);
 		for (const [key, value] of Object.entries(layer.values)) {
-			const seq = layer.seq?.[key];
+			const seq = seqByKey?.[key];
 			const prev = rank[key];
 			if (typeof seq !== "number") {
-				out[key] = value;
-				if (prev === undefined) rank[key] = 0;
+				if (prev === undefined) out[key] = value;
 				continue;
 			}
 			if (prev === undefined || seq >= prev) {

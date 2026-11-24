@@ -29,10 +29,19 @@ import {
 	UNSAVED_STORAGE_PREFIX,
 } from "./autosave-persist";
 import { clearClientSession } from "./client-session";
-import { exportPendingCreates, isTempTaskId, registerPendingCreate, resetPendingCreatesForTests, touchPendingCreate } from "./pending-creates";
+import {
+	exportPendingCreates,
+	isTempTaskId,
+	recordPendingCreateSentBody,
+	registerPendingCreate,
+	resetPendingCreatesForTests,
+	takePendingCreateFold,
+	touchPendingCreate,
+	type PendingCreateSnapshot,
+} from "./pending-creates";
 import { ApiError } from "./session";
 import { shellKeys } from "./shell-keys";
-import { getTaskAutosave, peekTaskAutosave, resetTaskAutosaveForTests } from "./task-autosave";
+import { getTaskAutosave, peekTaskAutosave, resetTaskAutosaveForTests, type TaskAutosaveQueue } from "./task-autosave";
 import {
 	completeTaskMutationOptions,
 	createTaskMutationOptions,
@@ -863,5 +872,99 @@ describe("401 replay ordering and failure retention", () => {
 		const earlier = buildUnsavedCreateRecords(exportPendingCreates(), queue2)[0]!;
 		expect(earlier.body.status).toBe("next");
 		expect(earlier.body.waitingOn).toBe("老板");
+	});
+
+	it("keeps the later tag write when autosave seq is still keyed as tags", () => {
+		const tagA = { id: "A", name: "#A" };
+		const temp = task({ id: "tmp-tags-later", title: "记一下", status: "inbox", source: null, tags: [] });
+		registerPendingCreate(temp);
+		const queue = getTaskAutosave(qc);
+		queue.edit(temp, { tags: [tagA] }, { debounce: true });
+		touchPendingCreate(temp.id, { patch: { tagIds: ["B"] } });
+		const later = buildUnsavedCreateRecords(exportPendingCreates(), queue)[0]!;
+		expect(later.body.tagIds).toEqual(["B"]);
+
+		resetPendingCreatesForTests();
+		resetTaskAutosaveForTests();
+		const temp2 = task({ id: "tmp-tags-earlier", title: "记一下", status: "inbox", source: null, tags: [] });
+		registerPendingCreate(temp2);
+		touchPendingCreate(temp2.id, { patch: { tagIds: ["B"] } });
+		const queue2 = getTaskAutosave(qc);
+		queue2.edit(temp2, { tags: [tagA] }, { debounce: true });
+		const earlier = buildUnsavedCreateRecords(exportPendingCreates(), queue2)[0]!;
+		expect(earlier.body.tagIds).toEqual(["A"]);
+	});
+
+	it("uses that same tag order on the create body and the follow-up patch", () => {
+		const tagA = { id: "A", name: "#A" };
+		const key = "create-tags-order-1";
+		const temp = task({ id: "tmp-tags-patch", title: "记一下", status: "inbox", source: null, tags: [] });
+		registerPendingCreate(temp, { body: { title: "记一下", status: "inbox", idempotencyKey: key } });
+		takePendingCreateFold(temp.id);
+		recordPendingCreateSentBody(temp.id, { title: "记一下", status: "inbox", idempotencyKey: key });
+		const queue = getTaskAutosave(qc);
+		queue.edit(temp, { tags: [tagA] }, { debounce: true });
+		touchPendingCreate(temp.id, { patch: { tagIds: ["B"] } });
+		const later = buildUnsavedCreateRecords(exportPendingCreates(), queue)[0]!;
+		expect(later.body.tagIds).toEqual(["B"]);
+		expect(later.postCreatePatch?.tagIds).toEqual(["B"]);
+
+		resetPendingCreatesForTests();
+		resetTaskAutosaveForTests();
+		const key2 = "create-tags-order-2";
+		const temp2 = task({ id: "tmp-tags-patch-2", title: "记一下", status: "inbox", source: null, tags: [] });
+		registerPendingCreate(temp2, { body: { title: "记一下", status: "inbox", idempotencyKey: key2 } });
+		takePendingCreateFold(temp2.id);
+		recordPendingCreateSentBody(temp2.id, { title: "记一下", status: "inbox", idempotencyKey: key2 });
+		touchPendingCreate(temp2.id, { patch: { tagIds: ["B"] } });
+		const queue2 = getTaskAutosave(qc);
+		queue2.edit(temp2, { tags: [tagA] }, { debounce: true });
+		const earlier = buildUnsavedCreateRecords(exportPendingCreates(), queue2)[0]!;
+		expect(earlier.body.tagIds).toEqual(["A"]);
+		expect(earlier.postCreatePatch?.tagIds).toEqual(["A"]);
+	});
+
+	it("does not let a missing seq overwrite a sequenced field, and still lets a later missing seq win over an earlier one", () => {
+		const key = "create-seq-gap-01";
+		const temp = task({ id: "tmp-seq-gap", title: "原标题", status: "inbox", source: null, tags: [] });
+		registerPendingCreate(temp, { body: { title: "原标题", status: "inbox", idempotencyKey: key } });
+		const snap = exportPendingCreates()[0]!;
+		const withGap: PendingCreateSnapshot = {
+			...snap,
+			createSent: true,
+			sentBody: { title: "原标题", status: "inbox", idempotencyKey: key },
+			queuedPatch: {
+				title: "排队标题",
+				status: "waiting",
+				waitingOn: "老板",
+				tagIds: ["B"],
+				notes: "排队备注",
+			},
+			queuedPatchSeq: { title: 5, status: 5, tagIds: 5 },
+		};
+		const queue = {
+			exportTempEdits: () => ({
+				title: "自动保存标题",
+				status: "next",
+				notes: "自动保存备注",
+				tags: [{ id: "A", name: "#A" }],
+				waitingOn: "同事",
+			}),
+			exportTempEditSeq: () => ({ status: 1, waitingOn: 8 }),
+		} as unknown as TaskAutosaveQueue;
+		const merged = buildUnsavedCreateRecords([withGap], queue)[0]!;
+		expect(merged.body.title).toBe("排队标题");
+		expect(merged.body.status).toBe("waiting");
+		expect(merged.body.tagIds).toEqual(["B"]);
+		expect(merged.body.notes).toBe("自动保存备注");
+		expect(merged.body.waitingOn).toBe("同事");
+		expect(merged.postCreatePatch).toMatchObject({
+			title: "排队标题",
+			status: "waiting",
+			tagIds: ["B"],
+			notes: "自动保存备注",
+			waitingOn: "同事",
+		});
+		expect(merged.postCreatePatch?.title).not.toBe("自动保存标题");
 	});
 });

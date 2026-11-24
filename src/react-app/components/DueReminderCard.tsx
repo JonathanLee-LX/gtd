@@ -265,22 +265,25 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 		};
 	}, [block, hasSettings, mePending, currentUserId, serverSubscriptionEndpoints, probe]);
 
-	async function persist(next: FormState, subscription?: PushSubscriptionKeys): Promise<boolean> {
+	async function persist(
+		next: FormState,
+		subscription?: PushSubscriptionKeys,
+	): Promise<{ state: "saved" } | { state: "superseded"; saved: boolean } | { state: "failed" }> {
 		const seq = ++saveSeq.current;
 		setSaveState("saving");
 		setError(null);
 		try {
 			const body: SaveNotificationSettings = { ...next, subscription };
 			const saved = await api.saveNotificationSettings(body);
-			if (seq !== saveSeq.current) return false;
+			if (seq !== saveSeq.current) return { state: "superseded", saved: true };
 			queryClient.setQueryData(settingsKeys.notifications(), saved);
 			setSaveState("saved");
-			return true;
+			return { state: "saved" };
 		} catch (err) {
-			if (seq !== saveSeq.current) return false;
+			if (seq !== saveSeq.current) return { state: "superseded", saved: false };
 			setSaveState("error");
 			setError(err instanceof Error ? err.message : "保存失败");
-			return false;
+			return { state: "failed" };
 		}
 	}
 
@@ -324,11 +327,15 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 				const next = { ...form, enabled: true };
 				setForm(next);
 				const saved = await persist(next, sub);
-				if (!saved) {
-					// persist 吞掉错误并返回 false，不能留在「已开启但没记本机订阅」：
-					// 否则会走到只 upsert 订阅、不写 enabled 的「在这台设备上开启」。
+				if (saved.state === "failed") {
+					// 这次开启仍是最新的一次保存，而且失败了：开关回到关闭。
+					// 不能留在「已开启但没记本机订阅」，否则会走到只 upsert 订阅的「在这台设备上开启」。
 					setForm((current) => (current ? { ...current, enabled: false } : current));
 					setSubscribeFailed(true);
+					return;
+				}
+				if (saved.state === "superseded" && !saved.saved) {
+					// 更新的保存已经接管表单。这次订阅没写上，不要拨回开关，也不要盖掉新的时间。
 					return;
 				}
 				probedRef.current = true;
@@ -407,15 +414,15 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 		setSaveState("saving");
 		try {
 			await runSerializedPushOp(async () => {
+				// #129：先退订浏览器，再删服务端这条 endpoint。退订失败或超时仍继续删除，且不向用户报错。
+				const browserResult = await unsubscribePushBounded(probe, endpoint);
 				const result = await api.deletePushSubscription(endpoint, {
 					timeoutMs: SIGN_OUT_REQUEST_TIMEOUT_MS,
 				});
-				// 服务端已删除：本机不会再收到推送。再带超时上限地退订浏览器；退订失败或超时不向用户报错，
-				// 但记下 pendingUnsubscribe，防止残留订阅未清理并在下次登录/重进时重试。
-				const browserResult = await unsubscribePushBounded(probe, endpoint);
 				if (browserResult.status !== "failed") {
 					clearPushSubscriptionOwner();
 				} else {
+					// 浏览器退订没完成：服务端记录已经删掉，记下标记以便下次登录重试退订。
 					markPushSubscriptionPendingUnsubscribe(endpoint);
 				}
 				setLocalSub(null);
@@ -428,7 +435,7 @@ export function DueReminderCard({ probe = browserPushProbe }: { probe?: PushProb
 				if (seq === saveSeq.current) setSaveState("saved");
 			});
 		} catch (err) {
-			// 服务端删除失败或超时：不动浏览器订阅，不假装已关闭，让用户看到错误并可重试。
+			// 服务端删除失败或超时：不把本机标成已关闭，按钮留着可重试。浏览器退订已经按 #129 先做了。
 			if (seq === saveSeq.current) setSaveState("error");
 			setError(err instanceof Error ? err.message : "关闭失败，请重试");
 		} finally {

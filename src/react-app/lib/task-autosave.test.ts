@@ -10,7 +10,7 @@ vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 import { toast } from "sonner";
 import { registerPendingCreate, resetPendingCreatesForTests, resolvePendingCreate, touchPendingCreate } from "./pending-creates";
 import { ApiError } from "./session";
-import { TaskAutosaveQueue, toApiPatch } from "./task-autosave";
+import { TaskAutosaveQueue, toApiPatch, toApiSeq } from "./task-autosave";
 import {
 	completeTaskMutationOptions,
 	deleteTaskMutationOptions,
@@ -86,6 +86,8 @@ describe("TaskAutosaveQueue (#115)", () => {
 		const cached = qc.getQueryData<{ items: Task[] }>(taskKeys.list({}))!.items[0]!;
 		expect(cached.tags).toEqual([tag]);
 		expect(toApiPatch({ tags: [] })).toEqual({ tagIds: [] });
+		expect(toApiSeq({ tags: 1, title: 2 })).toEqual({ tagIds: 1, title: 2 });
+		expect(toApiSeq({ tags: 1, tagIds: 4 })).toEqual({ tagIds: 4 });
 	});
 
 	it("删除后丢掉队列：防抖到点也不再发 PATCH", async () => {
